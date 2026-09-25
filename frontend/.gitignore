@@ -2,7 +2,7 @@
 
 # dependencies
 node_modules/
-
+design-reference/
 # Expo
 .expo/
 dist/
