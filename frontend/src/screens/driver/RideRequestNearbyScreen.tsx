@@ -71,9 +71,9 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline }
             yet, so this stays generic until that's added server-side. */}
         <Card style={styles.riderCard}>
           <View style={styles.riderRow}>
-            <Avatar name="Rider" size={48} />
+            <Avatar name={activeRide?.riderName ?? 'Rider'} size={48} />
             <View style={styles.riderMeta}>
-              <Text style={styles.riderName}>New ride request</Text>
+              <Text style={styles.riderName}>{activeRide?.riderName ?? 'Rider'}</Text>
               <Text style={styles.riderSub}>
                 {activeRide?.distanceKm ? `${activeRide.distanceKm} km trip` : 'Trip details loading…'}
               </Text>

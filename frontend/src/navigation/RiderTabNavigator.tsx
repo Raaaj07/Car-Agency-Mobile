@@ -7,6 +7,15 @@ import { RideHistoryScreen } from '../screens/rider/RideHistoryScreen';
 import { RiderHomeStackNavigator } from './RiderHomeStackNavigator';
 import { BottomTabBar } from '../components/primitives/BottomTabBar';
 import { colors, typography } from '../theme/theme';
+import { ServicesScreen } from '../screens/rider/ServicesScreen'; // ADD
+import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
+
+
+const BOOKING_FLOW_ROUTES = [
+  'DestinationSearch', 'VehicleSelection', 'RideDetails', 'FindingDriver',
+  'YouGotTheRide', 'DriverEnRoute', 'TripProgress', 'ReviewRide',
+  'PaymentFareBreakdown', 'RideCompleted',
+];
 
 const Tab = createBottomTabNavigator<RiderTabParamList>();
 
@@ -25,31 +34,30 @@ export const RiderTabNavigator: React.FC = () => {
       tabBar={({ navigation, state }) => {
         const routeNames = ['home', 'explore', 'activity', 'profile'];
         const activeTabId = routeNames[state.index] || 'home';
+        const activeRoute = state.routes[state.index];
+
+        // Only the HomeTab has a nested stack that can be "mid-booking" — the
+        // other three tabs (Services/My Rides/Profile) always show the bar.
+        const nestedRouteName =
+          activeRoute.name === 'HomeTab'
+            ? getFocusedRouteNameFromRoute(activeRoute) ?? 'HomeDashboard'
+            : undefined;
+        const isBarVisible = !nestedRouteName || !BOOKING_FLOW_ROUTES.includes(nestedRouteName);
 
         const handleTabPress = (id: string) => {
           switch (id) {
-            case 'home':
-              navigation.navigate('HomeTab');
-              break;
-            case 'explore':
-              navigation.navigate('ServicesTab');
-              break;
-            case 'activity':
-              navigation.navigate('MyRidesTab');
-              break;
-            case 'profile':
-              navigation.navigate('ProfileTab');
-              break;
+            case 'home': navigation.navigate('HomeTab'); break;
+            case 'explore': navigation.navigate('ServicesTab'); break;
+            case 'activity': navigation.navigate('MyRidesTab'); break;
+            case 'profile': navigation.navigate('ProfileTab'); break;
           }
         };
 
-        return <BottomTabBar activeTab={activeTabId} onTabPress={handleTabPress} mode="rider" />;
+        return <BottomTabBar activeTab={activeTabId} onTabPress={handleTabPress} mode="rider" visible={isBarVisible} />;
       }}
     >
       <Tab.Screen name="HomeTab" component={RiderHomeStackNavigator} />
-      <Tab.Screen name="ServicesTab">
-        {() => <PlaceholderScreen title="Vazhi Services" />}
-      </Tab.Screen>
+      <Tab.Screen name="ServicesTab" component={ServicesScreen} />
       <Tab.Screen name="MyRidesTab" component={RideHistoryScreen} />
       <Tab.Screen name="ProfileTab" component={ProfileScreen} />
     </Tab.Navigator>

@@ -76,29 +76,34 @@ export class RidesService {
    * RIDE_REQUEST_TIMEOUT_SECONDS) governs how long they have to respond.
    */
   private async matchNearestDriver(ride: RideEntity): Promise<void> {
-    const candidates = await this.drivers.findNearby(
-      ride.pickup.lat,
-      ride.pickup.lng,
-      undefined,
-      ride.vehicleType,
-    );
-    if (candidates.length === 0) return;
+  const candidates = await this.drivers.findNearby(
+    ride.pickup.lat,
+    ride.pickup.lng,
+    undefined,
+    ride.vehicleType,
+  );
+  if (candidates.length === 0) return;
 
-    const nearest = candidates[0];
-    await this.drivers.setAvailability(nearest.driverId, false);
-    await this.rides.update({ id: ride.id }, { driverId: nearest.driverId });
+  const nearest = candidates[0];
+  await this.drivers.setAvailability(nearest.driverId, false);
+  await this.rides.update({ id: ride.id }, { driverId: nearest.driverId });
 
-    const driver = await this.drivers.findById(nearest.driverId);
-    this.gateway.emitRideRequestToDriver(driver.userId, {
-      rideId: ride.id,
-      pickup: ride.pickup,
-      dropoff: ride.dropoff,
-      vehicleType: ride.vehicleType,
-      fareBreakdown: ride.fareBreakdown,
-      distanceKm: ride.distanceKm,
-      expiresInSeconds: this.requestTimeoutSeconds,
-    });
-  }
+  const driver = await this.drivers.findById(nearest.driverId);
+  // Reload with the rider relation so we can tell the driver who's booking —
+  // `ride` here was only just created and doesn't have `.rider` loaded yet.
+  const withRider = await this.rides.findOne({ where: { id: ride.id }, relations: ['rider'] });
+
+  this.gateway.emitRideRequestToDriver(driver.userId, {
+    rideId: ride.id,
+    riderName: withRider?.rider?.name ?? 'Rider', // ADD
+    pickup: ride.pickup,
+    dropoff: ride.dropoff,
+    vehicleType: ride.vehicleType,
+    fareBreakdown: ride.fareBreakdown,
+    distanceKm: ride.distanceKm,
+    expiresInSeconds: this.requestTimeoutSeconds,
+  });
+}
 
   // PATCH /rides/:id/accept — driver accepts (RideRequestNearbyScreen).
   async accept(rideId: string, driverUserId: string): Promise<RideEntity> {

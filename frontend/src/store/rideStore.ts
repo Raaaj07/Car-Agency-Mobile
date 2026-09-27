@@ -46,6 +46,7 @@ export interface DriverInfo {
 export interface ActiveRide {
   id: string;
   status: string;
+  riderName?: string; // ADD
   pickupOtp?: string | null;
   fareBreakdown: FareBreakdown;
   paymentStatus: 'pending' | 'paid' | 'failed';

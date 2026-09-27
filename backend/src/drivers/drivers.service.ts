@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DriverEntity, VehicleType } from './entities/driver.entity';
 import { GeoService, NearbyDriverHit } from './geo.service';
+import { RideEntity } from '../rides/entities/ride.entity';
 
 export interface NearbyDriverResult {
   driverId: string;
@@ -23,13 +24,15 @@ export interface NearbyDriverResult {
 export class DriversService {
   private readonly defaultRadiusMeters: number;
 
-  constructor(
-    @InjectRepository(DriverEntity) private readonly drivers: Repository<DriverEntity>,
-    private readonly geo: GeoService,
-    private readonly config: ConfigService,
-  ) {
-    this.defaultRadiusMeters = this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000;
-  }
+    constructor(
+      @InjectRepository(DriverEntity) private readonly drivers: Repository<DriverEntity>,
+      @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>, // ADD
+      private readonly geo: GeoService,
+      private readonly config: ConfigService,
+    ) {
+      this.defaultRadiusMeters = this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000;
+    }
+
 
   // Creates or updates the driver profile (vehicle/plate) for a user who
   // picked "driver" on RoleSelectionScreen. Idempotent by userId.
@@ -107,6 +110,38 @@ export class DriversService {
     }
     return driver;
   }
+  
+  // New method — matches GET /drivers/me:
+async getMyProfile(userId: string) {
+  const driver = await this.findByUserId(userId); // already loads relations: ['user']
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const { sum, count } = await this.rides
+    .createQueryBuilder('ride')
+    .select(`COALESCE(SUM((ride."fareBreakdown"->>'total')::numeric), 0)`, 'sum')
+    .addSelect('COUNT(*)', 'count')
+    .where('ride.driverId = :driverId', { driverId: driver.id })
+    .andWhere('ride.status = :status', { status: 'completed' })
+    .andWhere('ride.completedAt >= :start', { start: startOfToday })
+    .getRawOne();
+
+  return {
+    name: driver.user?.name ?? 'Driver',
+    phone: driver.user?.phone ?? '',
+    avatar: driver.user?.avatar ?? null,
+    vehicleType: driver.vehicleType,
+    carModel: driver.carModel,
+    plateNumber: driver.plateNumber,
+    rating: Number(driver.rating),
+    totalTrips: driver.totalTrips, // lifetime, real column
+    todayEarnings: Number(sum ?? 0),
+    todayTrips: Number(count ?? 0),
+    isOnline: driver.isOnline,
+  };
+}
+
 
   // GET /drivers/nearby — Redis GEOSEARCH first, PostGIS ST_DWithin fallback.
   async findNearby(
@@ -127,7 +162,7 @@ export class DriversService {
 
     return this.findNearbyViaPostgis(lat, lng, radius, vehicleType);
   }
-
+  
   private async hydrateFromRedis(hits: NearbyDriverHit[]): Promise<NearbyDriverResult[]> {
     const ids = hits.map((h) => h.driverId);
     const rows = await this.drivers.find({

@@ -11,6 +11,7 @@ import { driversApi } from '../../api/drivers';
 import { getApiError } from '../../api/client';
 import { useSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
+import { DriverProfile } from '../../api/drivers';
 
 interface Props {
   onSimulateRequest: () => void;
@@ -18,6 +19,7 @@ interface Props {
 }
 
 export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRideRequest }) => {
+  const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<string>('home');
   const [driverCoords, setDriverCoords] = useState<LatLng | undefined>();
@@ -26,6 +28,9 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
 
   // Show the driver's own current position on the map, and report it once
   // so GET /drivers/nearby (rider matching) can actually find this driver.
+  useEffect(() => {
+    driversApi.getMyProfile().then(setProfile).catch(() => {});
+  }, []);
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -62,6 +67,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
       setActiveRide({
         id: request.rideId,
         status: 'requested',
+        riderName: (request as any).riderName ?? 'Rider', // ADD
         fareBreakdown: request.fareBreakdown,
         paymentStatus: 'pending',
         pickup: request.pickup,
@@ -87,10 +93,10 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
       <View style={styles.topBar}>
         <View style={styles.driverProfileRow}>
           <View style={styles.avatar}>
-            <Text style={styles.avatarText}>R</Text>
+            <Text style={styles.avatarText}>{(profile?.name ?? 'D').charAt(0).toUpperCase()}</Text>
           </View>
           <View>
-            <Text style={styles.driverName}>Rajesh Kumar</Text>
+            <Text style={styles.driverName}>{profile?.name ?? 'Driver'}</Text>
             <View style={styles.statusPillRow}>
               <View style={[styles.statusDot, { backgroundColor: isOnline ? colors.success : colors.textMuted }]} />
               <Text style={styles.statusText}>{isOnline ? 'ONLINE' : 'OFFLINE'}</Text>
@@ -125,7 +131,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
           <View style={styles.earningsHeader}>
             <View>
               <Text style={styles.earningsLabel}>TODAY&apos;S EARNINGS</Text>
-              <Text style={styles.earningsAmount}>₹1,850.00</Text>
+              <Text style={styles.earningsAmount}>₹{(profile?.todayEarnings ?? 0).toFixed(2)}</Text>
             </View>
             <View style={styles.payoutBadge}>
               <Text style={styles.payoutText}>Ready to Cash Out</Text>
@@ -134,17 +140,17 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
 
           <View style={styles.metricsRow}>
             <View style={styles.metricCol}>
-              <Text style={styles.metricVal}>8</Text>
-              <Text style={styles.metricLabel}>Trips</Text>
+              <Text style={styles.metricVal}>{profile?.todayTrips ?? 0}</Text>
+              <Text style={styles.metricLabel}>Trips Today</Text>
             </View>
             <View style={styles.divider} />
             <View style={styles.metricCol}>
-              <Text style={styles.metricVal}>6.2 hrs</Text>
-              <Text style={styles.metricLabel}>Online Time</Text>
+              <Text style={styles.metricVal}>{profile?.totalTrips ?? 0}</Text>
+              <Text style={styles.metricLabel}>Lifetime Trips</Text>
             </View>
             <View style={styles.divider} />
             <View style={styles.metricCol}>
-              <Text style={styles.metricVal}>4.9 ★</Text>
+              <Text style={styles.metricVal}>{profile ? `${profile.rating.toFixed(1)} ★` : '—'}</Text>
               <Text style={styles.metricLabel}>Rating</Text>
             </View>
           </View>

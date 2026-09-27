@@ -29,6 +29,14 @@ export class DriversController {
     return this.drivers.setStatus(user.userId, dto.isOnline);
   }
 
+  // Matches DriverDashboardScreen's top bar + earnings card, and DriverAccountScreen.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('driver')
+  @Get('me')
+  getMyProfile(@CurrentUser() user: AuthenticatedUser) {
+    return this.drivers.getMyProfile(user.userId);
+  }
+
   // Matches TurnByTurnNavigationScreen's periodic location pings.
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('driver')
