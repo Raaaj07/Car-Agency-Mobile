@@ -46,18 +46,19 @@ export const RiderHomeStackNavigator: React.FC = () => {
         )}
       </Stack.Screen>
 
-      <Stack.Screen name="DestinationSearch">
+        <Stack.Screen name="DestinationSearch">
         {({ navigation }) => (
-          <DestinationSearchScreen
-            onBack={() => navigation.goBack()}
-            onSelectDestination={(place) => {
-              setDropoff(place.title, place.subtitle);
-              navigation.navigate('VehicleSelection');
-            }}
-          />
-        )}
-      </Stack.Screen>
-
+              <DestinationSearchScreen
+                onBack={() => navigation.goBack()}
+                onSelectDestination={() => {
+                  // setPickup/setDropoff already happened inside DestinationSearchScreen
+                  // (it needs the store to know which field — pickup or dropoff —
+                  // was being edited when a suggestion was tapped).
+                  navigation.navigate('VehicleSelection');
+                }}
+              />
+            )}
+          </Stack.Screen>
       <Stack.Screen name="VehicleSelection">
         {({ navigation }) => (
           <VehicleSelectionScreen
@@ -74,14 +75,16 @@ export const RiderHomeStackNavigator: React.FC = () => {
         {({ navigation }) => (
           <RideDetailsScreen
             onBack={() => navigation.goBack()}
-            onConfirmRide={async () => {
-              const state = useRideStore.getState();
+              onConfirmRide={async () => {
+                const state = useRideStore.getState();
+              if (!state.pickupCoords || !state.dropoffCoords) {
+                Alert.alert('Missing location', 'Please pick a pickup and drop-off location first.');
+                return;
+              }
               try {
-                // The demo locations are Bengaluru coordinates; configure the backend seed
-                // for Bengaluru too (see backend README) so an online driver can be matched.
                 const ride = await ridesApi.create({
-                  pickup: { address: state.pickupAddress, lat: 12.9756, lng: 77.6066 },
-                  dropoff: { address: state.dropoffAddress, lat: 12.9716, lng: 77.6412 },
+                  pickup: { address: state.pickupAddress, lat: state.pickupCoords.lat, lng: state.pickupCoords.lng },
+                  dropoff: { address: state.dropoffAddress, lat: state.dropoffCoords.lat, lng: state.dropoffCoords.lng },
                   vehicleType: state.selectedVehicle.id,
                   promoCode: state.promoCode,
                   paymentMethod: 'upi',

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
-import Mapbox, { Camera, MapView, PointAnnotation } from '@rnmapbox/maps';
+import Mapbox, { Camera, MapView, PointAnnotation, ShapeSource, LineLayer } from '@rnmapbox/maps';
 
 Mapbox.setAccessToken(process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '');
 
@@ -14,23 +14,51 @@ interface Props {
   pickup?: LatLng;
   dropoff?: LatLng;
   driverPosition?: LatLng; // live position for tracking/navigation modes
+  route?: [number, number][]; // [lng, lat] pairs from getRoute(), drawn as a road-following line
   onMapPress?: (coords: LatLng) => void; // picker mode: tap to set a point
   darkTheme?: boolean;
 }
 
-export const RealMapView: React.FC<Props> = ({ mode, pickup, dropoff, driverPosition, onMapPress, darkTheme }) => {
+export const RealMapView: React.FC<Props> = ({ mode, pickup, dropoff, driverPosition, route, onMapPress, darkTheme }) => {
   const cameraRef = useRef<Camera>(null);
+  const isMountedRef = useRef(true); // ADD
 
-  // Keep the camera following the driver in tracking/navigation modes.
   useEffect(() => {
-    if ((mode === 'tracking' || mode === 'navigation') && driverPosition && cameraRef.current) {
-      cameraRef.current.setCamera({
-        centerCoordinate: [driverPosition.lng, driverPosition.lat],
-        zoomLevel: 15,
-        animationDuration: 800,
-      });
+    return () => {
+      isMountedRef.current = false; // ADD — flips false right as the screen unmounts
+    };
+  }, []);
+
+  useEffect(() => {
+    if ((mode === 'tracking' || mode === 'navigation') && driverPosition && cameraRef.current && isMountedRef.current) {
+      try {
+        cameraRef.current.setCamera({
+          centerCoordinate: [driverPosition.lng, driverPosition.lat],
+          zoomLevel: 15,
+          animationDuration: 800,
+        });
+      } catch {
+        // Native view was already torn down mid-transition — safe to ignore.
+      }
     }
   }, [driverPosition, mode]);
+
+  useEffect(() => {
+    if (mode === 'picker' && pickup && dropoff && cameraRef.current && isMountedRef.current) {
+      try {
+        const lats = [pickup.lat, dropoff.lat];
+        const lngs = [pickup.lng, dropoff.lng];
+        cameraRef.current.fitBounds(
+          [Math.max(...lngs), Math.max(...lats)],
+          [Math.min(...lngs), Math.min(...lats)],
+          [80, 60, 80, 60],
+          800,
+        );
+      } catch {
+        // Same as above.
+      }
+    }
+  }, [mode, pickup?.lat, pickup?.lng, dropoff?.lat, dropoff?.lng]);
 
   return (
     <View style={styles.container}>
@@ -51,6 +79,18 @@ export const RealMapView: React.FC<Props> = ({ mode, pickup, dropoff, driverPosi
             pickup ? [pickup.lng, pickup.lat] : [78.146, 11.6643] // Salem, TN fallback
           }
         />
+
+        {route && route.length > 1 && (
+          <ShapeSource
+            id="routeSource"
+            shape={{ type: 'Feature', geometry: { type: 'LineString', coordinates: route }, properties: {} }}
+          >
+            <LineLayer
+              id="routeLine"
+              style={{ lineColor: '#211B4E', lineWidth: 4, lineCap: 'round', lineJoin: 'round', lineOpacity: 0.85 }}
+            />
+          </ShapeSource>
+        )}
 
         {pickup && (
           <PointAnnotation id="pickup" coordinate={[pickup.lng, pickup.lat]}>

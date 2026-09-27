@@ -1,36 +1,56 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Switch, Alert } from 'react-native';
-import { Zap, ChevronRight } from 'lucide-react-native';
+import { View, Text, StyleSheet, Switch, Alert, TouchableOpacity } from 'react-native';
+import { AlertCircle } from 'lucide-react-native';
 import * as Location from 'expo-location';
+import { useNavigation } from '@react-navigation/native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
-import { Button } from '../../components/primitives/Button';
 import { BottomTabBar } from '../../components/primitives/BottomTabBar';
 import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
-import { driversApi } from '../../api/drivers';
+import { driversApi, DriverProfile } from '../../api/drivers';
 import { getApiError } from '../../api/client';
 import { useSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
-import { DriverProfile } from '../../api/drivers';
+import { NotificationBar } from '../../components/primitives/NotificationBar';
+import { useAuthStore } from '../../store/authStore';
 
 interface Props {
-  onSimulateRequest: () => void;
   onRideRequest: () => void;
 }
 
-export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRideRequest }) => {
+export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
+  const navigation = useNavigation<any>();
   const [profile, setProfile] = useState<DriverProfile | null>(null);
-  const [isOnline, setIsOnline] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<string>('home');
+  const [isOnline, setIsOnline] = useState(false);
+  const [isRegistered, setIsRegistered] = useState<boolean | null>(null); // null = still checking
+  const [activeTab, setActiveTab] = useState('home');
   const [driverCoords, setDriverCoords] = useState<LatLng | undefined>();
+  const [showWelcome, setShowWelcome] = useState(false);
   const socket = useSocket();
   const setActiveRide = useRideStore((state) => state.setActiveRide);
 
-  // Show the driver's own current position on the map, and report it once
-  // so GET /drivers/nearby (rider matching) can actually find this driver.
   useEffect(() => {
-    driversApi.getMyProfile().then(setProfile).catch(() => {});
+    if (useAuthStore.getState().justLoggedIn) {
+      setShowWelcome(true);
+      useAuthStore.getState().clearJustLoggedIn();
+    }
   }, []);
+
+  const loadProfile = () => {
+    driversApi
+      .getMyProfile()
+      .then((p) => {
+        setProfile(p);
+        setIsOnline(p.isOnline); // sync real backend state, don't assume false
+        setIsRegistered(true);
+      })
+      .catch(() => {
+        setIsRegistered(false); // no driver row yet — needs to register a vehicle first
+      });
+  };
+
+  useEffect(loadProfile, []);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -53,21 +73,11 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
 
   useEffect(() => {
     if (!socket) return;
-    const handleRideRequest = (request: {
-      rideId: string;
-      pickup: { address: string; lat: number; lng: number };
-      dropoff: { address: string; lat: number; lng: number };
-      vehicleType: string;
-      fareBreakdown: { baseFare: number; distanceFare: number; timeCharge: number; tollFee: number; taxes: number; discount: number; total: number };
-      distanceKm?: string;
-      expiresInSeconds?: number;
-    }) => {
-      // Previously only rideId + fareBreakdown were kept, so
-      // RideRequestNearbyScreen had no pickup/dropoff to show on its map.
+    const handleRideRequest = (request: any) => {
       setActiveRide({
         id: request.rideId,
         status: 'requested',
-        riderName: (request as any).riderName ?? 'Rider', // ADD
+        riderName: request.riderName ?? 'Rider',
         fareBreakdown: request.fareBreakdown,
         paymentStatus: 'pending',
         pickup: request.pickup,
@@ -84,12 +94,22 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
     };
   }, [socket, setActiveRide, onRideRequest]);
 
+  const handleToggle = async (nextStatus: boolean) => {
+    try {
+      await driversApi.setStatus(nextStatus);
+      setIsOnline(nextStatus);
+      if (nextStatus && driverCoords) {
+        driversApi.updateLocation(driverCoords.lat, driverCoords.lng).catch(() => {});
+      }
+    } catch (error) {
+      Alert.alert('Unable to update availability', getApiError(error));
+    }
+  };
+
   return (
     <View style={styles.container}>
-      {/* Live map centered on the driver's current position */}
       <RealMapView mode="picker" pickup={driverCoords} />
 
-      {/* Top Floating Driver Bar */}
       <View style={styles.topBar}>
         <View style={styles.driverProfileRow}>
           <View style={styles.avatar}>
@@ -104,29 +124,29 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
           </View>
         </View>
 
-        <View style={styles.toggleWrap}>
-          <Switch
-            value={isOnline}
-            onValueChange={async (nextStatus) => {
-              try {
-                await driversApi.setStatus(nextStatus);
-                setIsOnline(nextStatus);
-                if (nextStatus && driverCoords) {
-                  driversApi.updateLocation(driverCoords.lat, driverCoords.lng).catch(() => {});
-                }
-              } catch (error) {
-                Alert.alert('Unable to update availability', getApiError(error));
-              }
-            }}
-            trackColor={{ false: colors.border, true: colors.successLight }}
-            thumbColor={isOnline ? colors.success : '#9CA3AF'}
-          />
-        </View>
+        <Switch
+          value={isOnline}
+          disabled={isRegistered !== true}
+          onValueChange={handleToggle}
+          trackColor={{ false: colors.border, true: colors.successLight }}
+          thumbColor={isOnline ? colors.success : '#9CA3AF'}
+        />
       </View>
 
-      {/* Bottom Sheet Dashboard Card */}
       <View style={styles.bottomSheet}>
-        {/* Earnings Card Header */}
+        {isRegistered === false && (
+          <TouchableOpacity
+            style={styles.registerBanner}
+            onPress={() => navigation.getParent()?.navigate('AccountTab')}
+          >
+            <AlertCircle size={20} color={colors.danger} />
+            <View style={styles.registerTextWrap}>
+              <Text style={styles.registerTitle}>Complete your driver registration</Text>
+              <Text style={styles.registerSub}>Add your vehicle details in Account to start going online</Text>
+            </View>
+          </TouchableOpacity>
+        )}
+
         <Card style={styles.earningsCard}>
           <View style={styles.earningsHeader}>
             <View>
@@ -156,29 +176,19 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onSimulateRequest, onRi
           </View>
         </Card>
 
-        {/* High Demand Alert Banner */}
-        <TouchableOpacity style={styles.demandBanner} onPress={onSimulateRequest}>
-          <View style={styles.demandIcon}>
-            <Zap size={22} color={colors.accent} />
-          </View>
-          <View style={styles.demandTextWrap}>
-            <Text style={styles.demandTitle}>High Demand in Indiranagar 🔥</Text>
-            <Text style={styles.demandSub}>Surge pricing +1.5x active nearby</Text>
-          </View>
-          <ChevronRight size={20} color={colors.textSecondary} />
-        </TouchableOpacity>
-
-        {/* Trigger incoming request button */}
-        <Button
-          title="Simulate Incoming Ride Request"
-          onPress={onSimulateRequest}
-          variant="accent"
-          size="large"
-          disabled={!isOnline}
-        />
+        <Text style={styles.waitingText}>
+          {isOnline ? "You're online — waiting for ride requests…" : 'Go online to start receiving ride requests'}
+        </Text>
       </View>
 
       <BottomTabBar activeTab={activeTab} onTabPress={setActiveTab} mode="driver" />
+
+      <NotificationBar
+        visible={showWelcome}
+        title={`Welcome, ${profile?.name ?? 'Driver'} 👋`}
+        subtitle="You're all set to go online"
+        onDismiss={() => setShowWelcome(false)}
+      />
     </View>
   );
 };
@@ -198,12 +208,19 @@ const styles = StyleSheet.create({
   statusPillRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusText: { ...typography.metaBold, fontSize: 11 },
-  toggleWrap: {},
   bottomSheet: {
     position: 'absolute', bottom: 84, left: 0, right: 0,
     backgroundColor: colors.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
     padding: 20, ...shadows.modal, gap: 14,
   },
+  registerBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: 'rgba(239,68,68,0.3)',
+    padding: 12, borderRadius: radii.card,
+  },
+  registerTextWrap: { flex: 1 },
+  registerTitle: { ...typography.bodyBold, fontSize: 13, color: colors.danger },
+  registerSub: { ...typography.meta, fontSize: 11 },
   earningsCard: { padding: 18, backgroundColor: colors.primary },
   earningsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
   earningsLabel: { ...typography.metaBold, fontSize: 10, color: 'rgba(255, 255, 255, 0.7)', letterSpacing: 1 },
@@ -215,9 +232,5 @@ const styles = StyleSheet.create({
   metricVal: { ...typography.cardTitle, fontSize: 16, color: '#FFFFFF' },
   metricLabel: { ...typography.meta, fontSize: 11, color: 'rgba(255, 255, 255, 0.7)' },
   divider: { width: 1, height: 24, backgroundColor: 'rgba(255, 255, 255, 0.2)' },
-  demandBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF6ED', padding: 12, borderRadius: radii.card, borderWidth: 1, borderColor: 'rgba(224, 138, 52, 0.3)' },
-  demandIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.accentLight, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
-  demandTextWrap: { flex: 1 },
-  demandTitle: { ...typography.bodyBold, fontSize: 14, color: colors.textPrimary },
-  demandSub: { ...typography.meta, fontSize: 12 },
+  waitingText: { ...typography.meta, textAlign: 'center', color: colors.textMuted },
 });

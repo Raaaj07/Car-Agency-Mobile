@@ -1,56 +1,19 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { Clock, Users, ArrowRight, CreditCard, ChevronDown } from 'lucide-react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { Clock, Users, ArrowRight, CreditCard, ChevronDown, MapPin, Navigation } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
-import { MapPlaceholder } from '../../components/primitives/MapPlaceholder';
+import { RealMapView } from '../../components/primitives/RealMapView';
 import { Header } from '../../components/primitives/Header';
 import { useRideStore, VehicleOption } from '../../store/rideStore';
+import { getRoute, RouteResult } from '../../api/mapbox';
 
 const vehicles: VehicleOption[] = [
-  {
-    id: 'auto',
-    name: 'Vazhi Auto',
-    type: 'Affordable 3-wheeler',
-    price: '₹110',
-    numericPrice: 110,
-    eta: '3 min',
-    seats: 3,
-    badge: 'Popular',
-    icon: '🛺',
-  },
-  {
-    id: 'mini',
-    name: 'Economy Mini',
-    type: 'Compact hatchbacks',
-    price: '₹180',
-    numericPrice: 180,
-    eta: '4 min',
-    seats: 4,
-    icon: '🚗',
-  },
-  {
-    id: 'sedan',
-    name: 'Comfort Sedan',
-    type: 'Spacious AC sedans',
-    price: '₹240',
-    numericPrice: 240,
-    eta: '2 min',
-    seats: 4,
-    badge: 'Fastest',
-    icon: '🚘',
-  },
-  {
-    id: 'suv',
-    name: 'Premium SUV',
-    type: '6-seater family rides',
-    price: '₹350',
-    numericPrice: 350,
-    eta: '6 min',
-    seats: 6,
-    icon: '🚙',
-  },
+  { id: 'auto', name: 'Vazhi Auto', type: 'Affordable 3-wheeler', price: '₹110', numericPrice: 110, eta: '3 min', seats: 3, badge: 'Popular', icon: '🛺' },
+  { id: 'mini', name: 'Economy Mini', type: 'Compact hatchbacks', price: '₹180', numericPrice: 180, eta: '4 min', seats: 4, icon: '🚗' },
+  { id: 'sedan', name: 'Comfort Sedan', type: 'Spacious AC sedans', price: '₹240', numericPrice: 240, eta: '2 min', seats: 4, badge: 'Fastest', icon: '🚘' },
+  { id: 'suv', name: 'Premium SUV', type: '6-seater family rides', price: '₹350', numericPrice: 350, eta: '6 min', seats: 6, icon: '🚙' },
 ];
 
 interface Props {
@@ -58,14 +21,59 @@ interface Props {
   onConfirmVehicle?: (vehicle: VehicleOption) => void;
 }
 
+function formatDistance(meters: number): string {
+  return meters >= 1000 ? `${(meters / 1000).toFixed(1)} km` : `${Math.round(meters)} m`;
+}
+
+function formatDuration(seconds: number): string {
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m`;
+}
+
 export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehicle }) => {
   const storeSelectedVehicle = useRideStore((state) => state.selectedVehicle);
   const setSelectedVehicleStore = useRideStore((state) => state.setSelectedVehicle);
-  const pickup = useRideStore((state) => state.pickup);
-  const dropoff = useRideStore((state) => state.dropoff);
+  const pickupCoords = useRideStore((state) => state.pickupCoords);
+  const dropoffCoords = useRideStore((state) => state.dropoffCoords);
 
   const [selectedId, setSelectedId] = useState<string>(storeSelectedVehicle?.id || 'sedan');
+  const [route, setRoute] = useState<RouteResult | null>(null);
+  const [isLoadingRoute, setIsLoadingRoute] = useState(false);
+  const [routeError, setRouteError] = useState(false);
+
   const selectedVehicle = vehicles.find((v) => v.id === selectedId) || vehicles[2];
+
+  // Fetch the real road-following route (and distance/ETA) once both ends
+  // of the trip are known.
+  useEffect(() => {
+    let mounted = true;
+    if (!pickupCoords || !dropoffCoords) {
+      setRoute(null);
+      return;
+    }
+    setIsLoadingRoute(true);
+    setRouteError(false);
+    getRoute(pickupCoords, dropoffCoords)
+      .then((result) => {
+        if (!mounted) return;
+        if (result) {
+          setRoute(result);
+        } else {
+          setRouteError(true);
+        }
+      })
+      .catch(() => {
+        if (mounted) setRouteError(true);
+      })
+      .finally(() => {
+        if (mounted) setIsLoadingRoute(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [pickupCoords?.lat, pickupCoords?.lng, dropoffCoords?.lat, dropoffCoords?.lng]);
 
   const handleSelect = (v: VehicleOption) => {
     setSelectedId(v.id);
@@ -83,8 +91,31 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
     <View style={styles.container}>
       {/* Top Map View */}
       <View style={styles.mapWrap}>
-        <MapPlaceholder pickupText={pickup} dropText={dropoff} showRoute />
+        <RealMapView mode="picker" pickup={pickupCoords} dropoff={dropoffCoords} route={route?.coordinates} />
         {onBack && <Header onBack={onBack} transparent style={styles.mapHeader} />}
+
+        {/* Distance / ETA strip */}
+        <View style={styles.routeInfoBar}>
+          {isLoadingRoute ? (
+            <View style={styles.routeInfoRow}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={styles.routeInfoText}>Calculating route…</Text>
+            </View>
+          ) : route ? (
+            <View style={styles.routeInfoRow}>
+              <Navigation size={14} color={colors.primary} />
+              <Text style={styles.routeInfoText}>{formatDistance(route.distanceMeters)}</Text>
+              <Text style={styles.routeInfoDot}>•</Text>
+              <Clock size={14} color={colors.primary} />
+              <Text style={styles.routeInfoText}>{formatDuration(route.durationSeconds)}</Text>
+            </View>
+          ) : routeError ? (
+            <View style={styles.routeInfoRow}>
+              <MapPin size={14} color={colors.textMuted} />
+              <Text style={styles.routeInfoText}>Route unavailable</Text>
+            </View>
+          ) : null}
+        </View>
       </View>
 
       {/* Vehicle Options Bottom Sheet */}
@@ -96,12 +127,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
           {vehicles.map((v) => {
             const isSelected = selectedId === v.id;
             return (
-              <Card
-                key={v.id}
-                onPress={() => handleSelect(v)}
-                selected={isSelected}
-                style={styles.vehicleCard}
-              >
+              <Card key={v.id} onPress={() => handleSelect(v)} selected={isSelected} style={styles.vehicleCard}>
                 <View style={styles.vehicleRow}>
                   <Text style={styles.vehicleEmoji}>{v.icon}</Text>
 
@@ -109,18 +135,8 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
                     <View style={styles.nameRow}>
                       <Text style={styles.vehicleName}>{v.name}</Text>
                       {v.badge && (
-                        <View
-                          style={[
-                            styles.badge,
-                            { backgroundColor: v.badge === 'Fastest' ? colors.successLight : colors.accentLight },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.badgeText,
-                              { color: v.badge === 'Fastest' ? colors.success : colors.accent },
-                            ]}
-                          >
+                        <View style={[styles.badge, { backgroundColor: v.badge === 'Fastest' ? colors.successLight : colors.accentLight }]}>
+                          <Text style={[styles.badgeText, { color: v.badge === 'Fastest' ? colors.success : colors.accent }]}>
                             {v.badge}
                           </Text>
                         </View>
@@ -137,9 +153,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
                   </View>
 
                   <View style={styles.priceCol}>
-                    <Text style={[styles.priceText, isSelected && styles.priceTextActive]}>
-                      {v.price}
-                    </Text>
+                    <Text style={[styles.priceText, isSelected && styles.priceTextActive]}>{v.price}</Text>
                   </View>
                 </View>
               </Card>
@@ -170,136 +184,47 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  mapWrap: {
-    height: '42%',
-    position: 'relative',
-  },
-  mapHeader: {
-    position: 'absolute',
-    top: 10,
-    left: 0,
-    right: 0,
-  },
-  bottomSheet: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    marginTop: -20,
-    paddingTop: 12,
-    paddingHorizontal: 20,
-    ...shadows.modal,
-  },
-  dragHandle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-    alignSelf: 'center',
-    marginBottom: 12,
-  },
-  sheetTitle: {
-    ...typography.subheading,
-    fontSize: 18,
-    marginBottom: 14,
-  },
-  list: {
-    gap: 12,
-    paddingBottom: 100,
-  },
-  vehicleCard: {
-    padding: 14,
-  },
-  vehicleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  vehicleEmoji: {
-    fontSize: 34,
-    marginRight: 14,
-  },
-  infoCol: {
-    flex: 1,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  vehicleName: {
-    ...typography.cardTitle,
-    fontSize: 16,
-  },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: radii.pill,
-  },
-  badgeText: {
-    ...typography.metaBold,
-    fontSize: 10,
-  },
-  vehicleType: {
-    ...typography.meta,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 4,
-  },
-  metaText: {
-    ...typography.meta,
-    fontSize: 11,
-  },
-  metaDot: {
-    color: colors.textMuted,
-  },
-  priceCol: {
-    alignItems: 'flex-end',
-  },
-  priceText: {
-    ...typography.heading,
-    fontSize: 18,
-  },
-  priceTextActive: {
-    color: colors.accent,
-  },
-  footerPanel: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: '#FFFFFF',
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
-    gap: 12,
+  container: { flex: 1, backgroundColor: colors.background },
+  mapWrap: { height: '42%', position: 'relative' },
+  mapHeader: { position: 'absolute', top: 10, left: 0, right: 0 },
+  routeInfoBar: {
+    position: 'absolute', bottom: 12, alignSelf: 'center',
+    backgroundColor: '#FFFFFF', borderRadius: radii.pill, paddingHorizontal: 16, paddingVertical: 8,
     ...shadows.card,
   },
+  routeInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  routeInfoText: { ...typography.bodyBold, fontSize: 13, color: colors.textPrimary },
+  routeInfoDot: { color: colors.textMuted, marginHorizontal: 2 },
+  bottomSheet: {
+    flex: 1, backgroundColor: colors.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    marginTop: -20, paddingTop: 12, paddingHorizontal: 20, ...shadows.modal,
+  },
+  dragHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: colors.border, alignSelf: 'center', marginBottom: 12 },
+  sheetTitle: { ...typography.subheading, fontSize: 18, marginBottom: 14 },
+  list: { gap: 12, paddingBottom: 100 },
+  vehicleCard: { padding: 14 },
+  vehicleRow: { flexDirection: 'row', alignItems: 'center' },
+  vehicleEmoji: { fontSize: 34, marginRight: 14 },
+  infoCol: { flex: 1 },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  vehicleName: { ...typography.cardTitle, fontSize: 16 },
+  badge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: radii.pill },
+  badgeText: { ...typography.metaBold, fontSize: 10 },
+  vehicleType: { ...typography.meta, fontSize: 12, marginTop: 2 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  metaText: { ...typography.meta, fontSize: 11 },
+  metaDot: { color: colors.textMuted },
+  priceCol: { alignItems: 'flex-end' },
+  priceText: { ...typography.heading, fontSize: 18 },
+  priceTextActive: { color: colors.accent },
+  footerPanel: {
+    position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#FFFFFF',
+    padding: 16, borderTopWidth: 1, borderTopColor: colors.borderLight, gap: 12, ...shadows.card,
+  },
   paymentSelector: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: radii.md,
-    gap: 8,
-    alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderColor: colors.border,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8FAFC', paddingHorizontal: 14, paddingVertical: 8,
+    borderRadius: radii.md, gap: 8, alignSelf: 'flex-start', borderWidth: 1, borderColor: colors.border,
   },
-  paymentText: {
-    ...typography.bodyBold,
-    fontSize: 13,
-  },
-  confirmBtn: {
-    width: '100%',
-  },
+  paymentText: { ...typography.bodyBold, fontSize: 13 },
+  confirmBtn: { width: '100%' },
 });

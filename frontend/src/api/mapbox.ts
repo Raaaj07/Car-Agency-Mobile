@@ -24,3 +24,29 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string> 
   const data = await res.json();
   return data.features?.[0]?.place_name ?? `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
+
+export interface RouteResult {
+  // [lng, lat] pairs, already in the order Mapbox's own map layers expect.
+  coordinates: [number, number][];
+  distanceMeters: number;
+  durationSeconds: number;
+}
+
+// Road-following route between two points, via the Mapbox Directions API —
+// used to draw the actual road path (not a straight line) and to show
+// real distance/ETA on VehicleSelectionScreen.
+export async function getRoute(
+  pickup: { lat: number; lng: number },
+  dropoff: { lat: number; lng: number },
+): Promise<RouteResult | null> {
+  const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}?geometries=geojson&overview=full&access_token=${MAPBOX_TOKEN}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  const route = data.routes?.[0];
+  if (!route) return null;
+  return {
+    coordinates: route.geometry.coordinates,
+    distanceMeters: route.distance,
+    durationSeconds: route.duration,
+  };
+}

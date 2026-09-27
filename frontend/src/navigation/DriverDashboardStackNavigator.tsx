@@ -24,13 +24,12 @@ const [otpError, setOtpError] = useState<string | undefined>();
       screenOptions={{ headerShown: false, animation: 'slide_from_right' }}
     >
       <Stack.Screen name="DriverDashboard">
-        {({ navigation }) => (
-          <DriverDashboardScreen
-            onSimulateRequest={() => navigation.navigate('RideRequestNearby')}
-            onRideRequest={() => navigation.navigate('RideRequestNearby')}
-          />
-        )}
-      </Stack.Screen>
+  {({ navigation }) => (
+    <DriverDashboardScreen
+      onRideRequest={() => navigation.navigate('RideRequestNearby')}
+    />
+  )}
+</Stack.Screen>
 
       <Stack.Screen name="RideRequestNearby">
         {({ navigation }) => (

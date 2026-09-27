@@ -8,13 +8,15 @@ import {
 import {
   Search,
   Bell,
-  MapPin,
   Car,
   Zap,
   Clock,
   ChevronRight,
 } from 'lucide-react-native';
 
+
+
+import { NotificationBar } from '../../components/primitives/NotificationBar'; 
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
 import { BottomTabBar } from '../../components/primitives/BottomTabBar';
@@ -22,6 +24,7 @@ import { RealMapView } from '../../components/primitives/RealMapView';
 import { reverseGeocode } from '../../api/mapbox';
 import * as Location from 'expo-location';
 import { useRideStore } from '../../store/rideStore';
+import { useAuthStore } from '../../store/authStore';
 
 interface Props {
   onSearchPress: () => void;
@@ -38,7 +41,17 @@ export const HomeDashboardScreen: React.FC<Props> = ({
 
   // Get pickup coordinates from the Zustand store.
   const pickupCoords = useRideStore((state) => state.pickupCoords);
+  const pickupAddress = useRideStore((state) => state.pickupAddress);
+  const user = useAuthStore((state) => state.user);
+  const firstName = user?.name?.trim().split(' ')[0] || 'there';
+  const [showWelcome, setShowWelcome] = useState(false);
 
+  useEffect(() => {
+    if (useAuthStore.getState().justLoggedIn) {
+      setShowWelcome(true);
+      useAuthStore.getState().clearJustLoggedIn();
+    }
+  }, []);
   // Get the user's real current location when the screen loads.
   useEffect(() => {
     let mounted = true;
@@ -96,43 +109,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
         pickup={pickupCoords}
       />
 
-      {/* Top Floating App Bar */}
-      <View style={styles.topBar}>
-        <View style={styles.userRow}>
-          <View style={styles.avatarCircle}>
-            <Text style={styles.avatarText}>A</Text>
-          </View>
-
-          <View>
-            <Text style={styles.greetingText}>
-              Hello, Alex 👋
-            </Text>
-
-            <View style={styles.locationPill}>
-              <MapPin
-                size={12}
-                color={colors.accent}
-              />
-
-              <Text
-                style={styles.locationText}
-                numberOfLines={1}
-              >
-                MG Road, Bengaluru
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        <TouchableOpacity style={styles.iconBtn}>
-          <Bell
-            size={20}
-            color={colors.textPrimary}
-          />
-
-          <View style={styles.notificationDot} />
-        </TouchableOpacity>
-      </View>
+        
 
       {/* Bottom Sheet Card Panel */}
       <View style={styles.bottomSheet}>
@@ -285,10 +262,14 @@ export const HomeDashboardScreen: React.FC<Props> = ({
       </View>
 
       {/* Floating Bottom Tab Navigation */}
-      <BottomTabBar
-        activeTab={activeTab}
-        onTabPress={setActiveTab}
-        mode="rider"
+            <BottomTabBar activeTab={activeTab} onTabPress={setActiveTab} mode="rider" />
+
+      <NotificationBar
+        visible={showWelcome}
+        title={`Welcome back, ${firstName} 👋`}
+        subtitle="Ready when you are"
+        icon={<Bell size={18} color={colors.success} />}
+        onDismiss={() => setShowWelcome(false)}
       />
     </View>
   );

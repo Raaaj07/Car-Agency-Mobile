@@ -13,6 +13,8 @@ import { VerifyPickupOtpDto } from './dto/verify-pickup-otp.dto';
 import { RideEntity } from './entities/ride.entity';
 import { computeFareBreakdown, computeNumericPrice } from './fare-catalog';
 import { RidesGateway } from './gateway/rides.gateway';
+import { Logger } from '@nestjs/common';
+
 
 const PROMO_CODES: Record<string, number> = {
   VAZHI20: 40, // matches rideStore.applyPromoCode's exact VAZHI20 -> 40 rule
@@ -27,6 +29,8 @@ function generateOtp(length = 4): string {
 @Injectable()
 export class RidesService {
   private readonly requestTimeoutSeconds: number;
+  private readonly logger = new Logger(RidesService.name);
+  
 
   constructor(
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
@@ -34,34 +38,46 @@ export class RidesService {
     private readonly geo: GeoService,
     private readonly gateway: RidesGateway,
     private readonly config: ConfigService,
+    
   ) {
     this.requestTimeoutSeconds = this.config.get<number>('RIDE_REQUEST_TIMEOUT_SECONDS') ?? 15;
   }
 
   // POST /rides — create + trigger nearest-driver matching.
   async create(riderId: string, dto: CreateRideDto): Promise<RideEntity> {
-    const distanceKm = haversineKm(dto.pickup, dto.dropoff);
-    const numericPrice = computeNumericPrice(dto.vehicleType, distanceKm);
-    const discount = this.resolveDiscount(dto.promoCode);
-    const fareBreakdown = computeFareBreakdown(numericPrice, discount);
+  const distanceKm = haversineKm(dto.pickup, dto.dropoff);
+  const numericPrice = computeNumericPrice(dto.vehicleType, distanceKm);
+  const discount = this.resolveDiscount(dto.promoCode);
+  const fareBreakdown = computeFareBreakdown(numericPrice, discount);
 
-    let ride = this.rides.create({
-      riderId,
-      status: 'requested',
-      vehicleType: dto.vehicleType,
-      pickup: dto.pickup,
-      dropoff: dto.dropoff,
-      promoCode: dto.promoCode ?? null,
-      fareBreakdown,
-      distanceKm: distanceKm.toFixed(2),
-      paymentMethod: dto.paymentMethod ?? 'upi',
-      paymentStatus: 'pending',
-    });
-    ride = await this.rides.save(ride);
+  let ride = this.rides.create({
+    riderId,
+    status: 'requested',
+    vehicleType: dto.vehicleType,
+    pickup: dto.pickup,
+    dropoff: dto.dropoff,
+    promoCode: dto.promoCode ?? null,
+    fareBreakdown,
+    distanceKm: distanceKm.toFixed(2),
+    paymentMethod: dto.paymentMethod ?? 'upi',
+    paymentStatus: 'pending',
+  });
+  ride = await this.rides.save(ride);
 
+  // Matching a driver is a best-effort follow-up step, not part of "did the
+  // booking succeed." A Redis hiccup or zero-drivers-nearby case should
+  // never turn into the rider seeing "booking failed" when their ride
+  // record was already created successfully.
+  try {
     await this.matchNearestDriver(ride);
-    return this.findById(ride.id, riderId);
+  } catch (error) {
+    this.logger.error(`matchNearestDriver failed for ride ${ride.id}`, error as Error);
+    // Ride stays in 'requested' status, unmatched — rider still sees a
+    // successful booking and can retry/wait, rather than a hard failure.
   }
+
+  return this.findById(ride.id, riderId);
+}
 
   private resolveDiscount(promoCode?: string): number {
     if (!promoCode) return 0;
