@@ -1,43 +1,110 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Navigation, ShieldAlert, Share2, MapPin, Gauge, CheckCircle } from 'lucide-react-native';
-import { colors, radii, typography, shadows } from '../../theme/theme';
+import React, { useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+} from 'react-native';
+
+import {
+  ShieldAlert,
+  Share2,
+  MapPin,
+  Gauge,
+  CheckCircle,
+} from 'lucide-react-native';
+
+import {
+  colors,
+  radii,
+  typography,
+  shadows,
+} from '../../theme/theme';
+
 import { Button } from '../../components/primitives/Button';
-import { MapPlaceholder } from '../../components/primitives/MapPlaceholder';
+import { RealMapView } from '../../components/primitives/RealMapView';
+import { useRideSocket } from '../../hooks/useSocket';
+import { useRideStore } from '../../store/rideStore';
 
 interface Props {
   onCompleteTrip: () => void;
   onEmergencyPress?: () => void;
 }
 
-export const TripProgressScreen: React.FC<Props> = ({ onCompleteTrip, onEmergencyPress }) => {
+export const TripProgressScreen: React.FC<Props> = ({
+  onCompleteTrip,
+  onEmergencyPress,
+}) => {
+  const [driverPosition, setDriverPosition] = useState<
+    { lat: number; lng: number } | undefined
+  >();
+
+  const activeRide = useRideStore((state) => state.activeRide);
+
+  const pickupCoords = useRideStore(
+    (state) => state.pickupCoords
+  );
+
+  const dropoffCoords = useRideStore(
+    (state) => state.dropoffCoords
+  );
+
+  useRideSocket(activeRide?.id, {
+  onDriverLocation: (event) => {
+    setDriverPosition({
+      lat: event.lat,
+      lng: event.lng,
+    });
+  },
+}); 
+
   return (
     <View style={styles.container}>
-      <MapPlaceholder
-        showRoute
-        showDriverPin
-        driverEta="12 MIN"
-        pickupText="On Trip to Indiranagar"
-        dropText="Indiranagar 100 Feet Rd"
+      {/* Live Tracking Map */}
+      <RealMapView
+        mode="tracking"
+        pickup={pickupCoords}
+        dropoff={dropoffCoords}
+        driverPosition={driverPosition}
       />
 
       {/* Top Floating Speed & ETA Bar */}
       <View style={styles.topInfoBar}>
         <View style={styles.etaCol}>
-          <Text style={styles.etaTitle}>12 MINS</Text>
-          <Text style={styles.etaSub}>Estimated Arrival: 5:45 PM</Text>
+          <Text style={styles.etaTitle}>
+            12 MINS
+          </Text>
+
+          <Text style={styles.etaSub}>
+            Estimated Arrival: 5:45 PM
+          </Text>
         </View>
 
         <View style={styles.speedPill}>
-          <Gauge size={16} color={colors.accent} />
-          <Text style={styles.speedText}>42 km/h</Text>
+          <Gauge
+            size={16}
+            color={colors.accent}
+          />
+
+          <Text style={styles.speedText}>
+            42 km/h
+          </Text>
         </View>
       </View>
 
       {/* Safety SOS Quick Button */}
-      <TouchableOpacity style={styles.sosFloatingBtn} onPress={onEmergencyPress}>
-        <ShieldAlert size={22} color="#FFFFFF" />
-        <Text style={styles.sosText}>SOS</Text>
+      <TouchableOpacity
+        style={styles.sosFloatingBtn}
+        onPress={onEmergencyPress}
+      >
+        <ShieldAlert
+          size={22}
+          color="#FFFFFF"
+        />
+
+        <Text style={styles.sosText}>
+          SOS
+        </Text>
       </TouchableOpacity>
 
       {/* Bottom Sheet Navigation Card */}
@@ -45,22 +112,47 @@ export const TripProgressScreen: React.FC<Props> = ({ onCompleteTrip, onEmergenc
         <View style={styles.dragHandle} />
 
         <View style={styles.destHeader}>
-          <MapPin size={22} color={colors.danger} />
+          <MapPin
+            size={22}
+            color={colors.danger}
+          />
+
           <View style={styles.destInfo}>
-            <Text style={styles.destLabel}>HEADING TO</Text>
-            <Text style={styles.destName}>Indiranagar 100 Feet Road, Hub 4</Text>
+            <Text style={styles.destLabel}>
+              HEADING TO
+            </Text>
+
+            <Text style={styles.destName}>
+              Indiranagar 100 Feet Road, Hub 4
+            </Text>
           </View>
         </View>
 
         <View style={styles.actionsRow}>
-          <TouchableOpacity style={styles.actionChip}>
-            <Share2 size={16} color={colors.primary} />
-            <Text style={styles.chipText}>Share Trip</Text>
+          <TouchableOpacity
+            style={styles.actionChip}
+          >
+            <Share2
+              size={16}
+              color={colors.primary}
+            />
+
+            <Text style={styles.chipText}>
+              Share Trip
+            </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.actionChip}>
-            <ShieldAlert size={16} color={colors.primary} />
-            <Text style={styles.chipText}>Safety Toolkit</Text>
+          <TouchableOpacity
+            style={styles.actionChip}
+          >
+            <ShieldAlert
+              size={16}
+              color={colors.primary}
+            />
+
+            <Text style={styles.chipText}>
+              Safety Toolkit
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -69,7 +161,12 @@ export const TripProgressScreen: React.FC<Props> = ({ onCompleteTrip, onEmergenc
           onPress={onCompleteTrip}
           variant="success"
           size="large"
-          leftIcon={<CheckCircle size={20} color="#FFFFFF" />}
+          leftIcon={
+            <CheckCircle
+              size={20}
+              color="#FFFFFF"
+            />
+          }
         />
       </View>
     </View>
@@ -81,6 +178,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+
   topInfoBar: {
     position: 'absolute',
     top: 20,
@@ -95,17 +193,21 @@ const styles = StyleSheet.create({
     borderRadius: radii.card,
     ...shadows.card,
   },
+
   etaCol: {},
+
   etaTitle: {
     ...typography.heading,
     fontSize: 20,
     color: colors.accent,
   },
+
   etaSub: {
     ...typography.meta,
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.8)',
   },
+
   speedPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -115,11 +217,13 @@ const styles = StyleSheet.create({
     borderRadius: radii.pill,
     gap: 6,
   },
+
   speedText: {
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 13,
   },
+
   sosFloatingBtn: {
     position: 'absolute',
     top: 90,
@@ -133,11 +237,13 @@ const styles = StyleSheet.create({
     gap: 4,
     ...shadows.button,
   },
+
   sosText: {
     color: '#FFFFFF',
     fontWeight: '800',
     fontSize: 12,
   },
+
   bottomSheet: {
     position: 'absolute',
     bottom: 0,
@@ -150,6 +256,7 @@ const styles = StyleSheet.create({
     ...shadows.modal,
     gap: 14,
   },
+
   dragHandle: {
     width: 40,
     height: 4,
@@ -158,6 +265,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginBottom: 4,
   },
+
   destHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -168,22 +276,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E5E7EB',
   },
+
   destInfo: {
     flex: 1,
   },
+
   destLabel: {
     ...typography.metaBold,
     fontSize: 9,
     color: colors.textMuted,
   },
+
   destName: {
     ...typography.bodyBold,
     fontSize: 14,
   },
+
   actionsRow: {
     flexDirection: 'row',
     gap: 10,
   },
+
   actionChip: {
     flex: 1,
     flexDirection: 'row',
@@ -194,6 +307,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.button,
     gap: 6,
   },
+
   chipText: {
     ...typography.bodyBold,
     fontSize: 13,

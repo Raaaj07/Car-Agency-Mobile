@@ -4,6 +4,8 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { DriverTabParamList } from './types';
 
 import { DriverDashboardStackNavigator } from './DriverDashboardStackNavigator';
+import { DriverTripsScreen } from '../screens/driver/DriverTripsScreen';
+import { DriverEarningsScreen } from '../screens/driver/DriverEarningsScreen';
 import { BottomTabBar } from '../components/primitives/BottomTabBar';
 import { colors, typography } from '../theme/theme';
 
@@ -46,12 +48,8 @@ export const DriverTabNavigator: React.FC = () => {
       }}
     >
       <Tab.Screen name="DashboardTab" component={DriverDashboardStackNavigator} />
-      <Tab.Screen name="TripsTab">
-        {() => <PlaceholderScreen title="Driver Trips History" />}
-      </Tab.Screen>
-      <Tab.Screen name="EarningsTab">
-        {() => <PlaceholderScreen title="Earnings & Daily Payouts" />}
-      </Tab.Screen>
+      <Tab.Screen name="TripsTab" component={DriverTripsScreen} />
+      <Tab.Screen name="EarningsTab" component={DriverEarningsScreen} />
       <Tab.Screen name="AccountTab">
         {() => <PlaceholderScreen title="Driver Profile & Vehicle Documents" />}
       </Tab.Screen>
@@ -60,20 +58,7 @@ export const DriverTabNavigator: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  placeholderContainer: {
-    flex: 1,
-    backgroundColor: colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  placeholderTitle: {
-    ...typography.heading,
-    color: colors.primary,
-    marginBottom: 8,
-  },
-  placeholderSub: {
-    ...typography.body,
-    color: colors.textSecondary,
-  },
+  placeholderContainer: { flex: 1, backgroundColor: colors.background, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  placeholderTitle: { ...typography.heading, color: colors.primary, marginBottom: 8 },
+  placeholderSub: { ...typography.body, color: colors.textSecondary },
 });

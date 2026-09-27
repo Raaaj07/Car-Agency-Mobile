@@ -6,12 +6,14 @@ import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { MapPlaceholder } from '../../components/primitives/MapPlaceholder';
+import { useRideStore } from '../../store/rideStore';
 
 interface Props {
   onTrackDriver: () => void;
 }
 
 export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver }) => {
+  const pickupOtp = useRideStore((state) => state.activeRide?.pickupOtp);
   return (
     <View style={styles.container}>
       {/* Map Background with Driver Pin */}
@@ -35,7 +37,7 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver }) => {
             <KeyRound size={20} color={colors.primary} />
             <Text style={styles.otpLabel}>START RIDE OTP</Text>
           </View>
-          <Text style={styles.otpValue}>4892</Text>
+          <Text style={styles.otpValue}>{pickupOtp ?? '----'}</Text>
         </View>
 
         {/* Driver Details Card */}

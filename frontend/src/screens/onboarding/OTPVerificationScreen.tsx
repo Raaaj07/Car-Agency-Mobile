@@ -9,16 +9,22 @@ import { Header } from '../../components/primitives/Header';
 interface Props {
   phone?: string;
   onBack: () => void;
-  onVerify: () => void;
+  onVerify: (otp: string) => Promise<void> | void;
+  onResend?: () => Promise<void> | void;
+  developmentOtp?: string | null;
 }
 
 export const OTPVerificationScreen: React.FC<Props> = ({
   phone = '+91 98765 43210',
   onBack,
   onVerify,
+  onResend,
+  developmentOtp,
 }) => {
   const [code, setCode] = useState<string[]>(['', '', '', '']);
   const [timer, setTimer] = useState<number>(30);
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (timer > 0) {
@@ -29,9 +35,22 @@ export const OTPVerificationScreen: React.FC<Props> = ({
 
   const isComplete = code.join('').length === 4;
 
-  const handleResend = () => {
-    setTimer(30);
-    setCode(['', '', '', '']);
+  const handleResend = async () => {
+    try {
+      await onResend?.();
+      setTimer(30);
+      setCode(['', '', '', '']);
+      setError('');
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : 'Unable to resend OTP');
+    }
+  };
+
+  const handleVerify = async () => {
+    setIsSubmitting(true);
+    try { await onVerify(code.join('')); }
+    catch (verifyError) { setError(verifyError instanceof Error ? verifyError.message : 'Unable to verify OTP'); }
+    finally { setIsSubmitting(false); }
   };
 
   return (
@@ -49,6 +68,13 @@ export const OTPVerificationScreen: React.FC<Props> = ({
         </Text>
 
         <OTPInput code={code} setCode={setCode} length={4} />
+        {!!developmentOtp && (
+          <View style={styles.devCodeBox}>
+            <Text style={styles.devCodeLabel}>DEVELOPMENT OTP</Text>
+            <Text style={styles.devCodeValue}>{developmentOtp}</Text>
+          </View>
+        )}
+        {!!error && <Text style={styles.errorText}>{error}</Text>}
 
         <View style={styles.resendRow}>
           {timer > 0 ? (
@@ -67,10 +93,10 @@ export const OTPVerificationScreen: React.FC<Props> = ({
       <View style={styles.footer}>
         <Button
           title="Verify & Continue"
-          onPress={onVerify}
+          onPress={handleVerify}
           variant="primary"
           size="large"
-          disabled={!isComplete}
+          disabled={!isComplete || isSubmitting}
         />
       </View>
     </View>
@@ -147,4 +173,8 @@ const styles = StyleSheet.create({
     borderTopColor: colors.borderLight,
     ...shadows.card,
   },
+  devCodeBox: { marginTop: 18, alignItems: 'center', backgroundColor: colors.accentLight, padding: 12, borderRadius: radii.md },
+  devCodeLabel: { ...typography.metaBold, color: colors.accent, fontSize: 10, letterSpacing: 1 },
+  devCodeValue: { color: colors.textPrimary, fontWeight: '800', fontSize: 24, letterSpacing: 4, marginTop: 2 },
+  errorText: { color: colors.danger, fontSize: 13, marginTop: 12, textAlign: 'center' },
 });

@@ -4,6 +4,8 @@ import { Navigation, X, ShieldAlert } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { MapPlaceholder } from '../../components/primitives/MapPlaceholder';
+import { ridesApi } from '../../api/rides';
+import { useRideStore } from '../../store/rideStore';
 
 interface Props {
   onDriverFound: () => void;
@@ -12,20 +14,32 @@ interface Props {
 
 export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancel }) => {
   const [progress, setProgress] = useState<number>(30);
+  const activeRide = useRideStore((state) => state.activeRide);
+  const setActiveRide = useRideStore((state) => state.setActiveRide);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(timer);
+    if (!activeRide) return;
+    let isMounted = true;
+    const checkRide = async () => {
+      try {
+        const ride = await ridesApi.get(activeRide.id);
+        if (!isMounted) return;
+        setActiveRide(ride);
+        if (ride.status === 'matched' || ride.status === 'driver_en_route') {
           onDriverFound();
-          return 100;
+        } else if (ride.status === 'cancelled') {
+          onCancel();
+        } else {
+          setProgress((current) => Math.min(current + 5, 90));
         }
-        return prev + 15;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+      } catch {
+        // Keep the search screen visible; the user can retry by returning and booking again.
+      }
+    };
+    void checkRide();
+    const timer = setInterval(() => void checkRide(), 3000);
+    return () => { isMounted = false; clearInterval(timer); };
+  }, [activeRide?.id, onCancel, onDriverFound, setActiveRide]);
 
   return (
     <View style={styles.container}>

@@ -1,5 +1,16 @@
 import { create } from 'zustand';
 
+export interface LatLng {
+  lat: number;
+  lng: number;
+}
+
+export interface RideLocation {
+  address: string;
+  lat: number;
+  lng: number;
+}
+
 export interface VehicleOption {
   id: string;
   name: string;
@@ -32,11 +43,28 @@ export interface DriverInfo {
   phone: string;
 }
 
+export interface ActiveRide {
+  id: string;
+  status: string;
+  pickupOtp?: string | null;
+  fareBreakdown: FareBreakdown;
+  paymentStatus: 'pending' | 'paid' | 'failed';
+  // Populated once available (ride:request socket payload, or any /rides
+  // response) so driver screens can show the real route/map instead of demo text.
+  pickup?: RideLocation;
+  dropoff?: RideLocation;
+  vehicleType?: string;
+  distanceKm?: string | null;
+  expiresInSeconds?: number;
+}
+
 interface RideState {
   pickup: string;
   dropoff: string;
   pickupAddress: string;
   dropoffAddress: string;
+  pickupCoords?: LatLng;
+  dropoffCoords?: LatLng;
   selectedVehicle: VehicleOption;
   driver: DriverInfo;
   promoCode: string | null;
@@ -45,15 +73,17 @@ interface RideState {
   rating: number;
   compliments: string[];
   tipAmount: number;
+  activeRide: ActiveRide | null;
 
-  setPickup: (location: string, address?: string) => void;
-  setDropoff: (location: string, address?: string) => void;
+  setPickup: (location: string, address?: string, coords?: LatLng) => void;
+  setDropoff: (location: string, address?: string, coords?: LatLng) => void;
   setSelectedVehicle: (vehicle: VehicleOption) => void;
   applyPromoCode: (code: string) => void;
   setCancellationReason: (reason: string) => void;
   setRating: (rating: number) => void;
   toggleCompliment: (compliment: string) => void;
   setTipAmount: (amount: number) => void;
+  setActiveRide: (ride: ActiveRide | null) => void;
   getFareBreakdown: () => FareBreakdown;
   resetRide: () => void;
 }
@@ -85,6 +115,8 @@ export const useRideStore = create<RideState>((set, get) => ({
   pickupAddress: 'MG Road Metro Station, Entrance Gate 2',
   dropoff: 'Indiranagar 100 Feet Rd',
   dropoffAddress: 'Indiranagar 100 Feet Road, Hub 4',
+  pickupCoords: undefined,
+  dropoffCoords: undefined,
   selectedVehicle: defaultVehicle,
   driver: defaultDriver,
   promoCode: 'VAZHI20',
@@ -93,18 +125,21 @@ export const useRideStore = create<RideState>((set, get) => ({
   rating: 5,
   compliments: ['Safe Driver 🛡️'],
   tipAmount: 20,
+  activeRide: null,
 
-  setPickup: (location, address) =>
-    set({
+  setPickup: (location, address, coords) =>
+    set((state) => ({
       pickup: location,
       pickupAddress: address || location,
-    }),
+      pickupCoords: coords ?? state.pickupCoords,
+    })),
 
-  setDropoff: (location, address) =>
-    set({
+  setDropoff: (location, address, coords) =>
+    set((state) => ({
       dropoff: location,
       dropoffAddress: address || location,
-    }),
+      dropoffCoords: coords ?? state.dropoffCoords,
+    })),
 
   setSelectedVehicle: (vehicle) =>
     set({
@@ -131,15 +166,17 @@ export const useRideStore = create<RideState>((set, get) => ({
     })),
 
   setTipAmount: (amount) => set({ tipAmount: amount }),
+  setActiveRide: (ride) => set({ activeRide: ride }),
 
   getFareBreakdown: () => {
-    const { selectedVehicle, discountAmount } = get();
+    const { selectedVehicle, discountAmount, activeRide } = get();
+    if (activeRide) return activeRide.fareBreakdown;
     const base = Math.round(selectedVehicle.numericPrice * 0.5);
     const dist = Math.round(selectedVehicle.numericPrice * 0.3);
     const time = Math.round(selectedVehicle.numericPrice * 0.1);
     const toll = 40;
     const taxes = 28;
-    const total = selectedVehicle.numericPrice;
+    const total = Math.max(selectedVehicle.numericPrice - discountAmount, 0);
 
     return {
       baseFare: base,
@@ -155,13 +192,17 @@ export const useRideStore = create<RideState>((set, get) => ({
   resetRide: () =>
     set({
       pickup: 'MG Road Metro Station',
+      pickupAddress: 'MG Road Metro Station, Entrance Gate 2',
       dropoff: 'Indiranagar 100 Feet Rd',
-      selectedVehicle: defaultVehicle,
+      dropoffAddress: 'Indiranagar 100 Feet Road, Hub 4',
+      pickupCoords: undefined,
+      dropoffCoords: undefined,
       promoCode: 'VAZHI20',
       discountAmount: 40,
       cancellationReason: 'Driver is taking too long to arrive',
       rating: 5,
       compliments: ['Safe Driver 🛡️'],
       tipAmount: 20,
+      activeRide: null,
     }),
 }));

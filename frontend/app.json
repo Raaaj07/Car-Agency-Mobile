@@ -3,11 +3,13 @@
     "name": "CarAgencyMobile",
     "slug": "CarAgencyMobile",
     "version": "1.0.0",
+    "scheme": "caragencymobile",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "usesAppleSignIn": true
     },
     "android": {
       "adaptiveIcon": {
@@ -22,6 +24,11 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "plugins": [
+  "expo-apple-authentication",
+  "expo-web-browser",
+  "@rnmapbox/maps"
+],
     "extra": {
       "eas": {
         "projectId": "c7e345e5-c776-46af-997a-dc3f2823c768"

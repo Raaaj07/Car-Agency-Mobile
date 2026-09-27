@@ -8,20 +8,28 @@ import { Header } from '../../components/primitives/Header';
 
 interface Props {
   onBack: () => void;
-  onSendOTP: (phone: string) => void;
+  onSendOTP: (phone: string) => Promise<void> | void;
 }
 
 export const MobileNumberScreen: React.FC<Props> = ({ onBack, onSendOTP }) => {
   const [phoneNumber, setPhoneNumber] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (phoneNumber.length < 10) {
       setError('Please enter a valid 10-digit mobile number');
       return;
     }
     setError('');
-    onSendOTP(phoneNumber);
+    setIsSubmitting(true);
+    try {
+      await onSendOTP(phoneNumber);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Unable to send OTP');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -70,7 +78,7 @@ export const MobileNumberScreen: React.FC<Props> = ({ onBack, onSendOTP }) => {
           onPress={handleSubmit}
           variant="primary"
           size="large"
-          disabled={phoneNumber.length < 10}
+          disabled={phoneNumber.length < 10 || isSubmitting}
           rightIcon={<ArrowRight size={20} color="#FFFFFF" />}
         />
       </View>

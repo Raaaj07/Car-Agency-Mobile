@@ -1,4 +1,5 @@
 import React from 'react';
+import { Alert } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RiderHomeStackParamList, RootStackParamList } from './types';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -16,6 +17,9 @@ import { ReviewRideScreen } from '../screens/rider/ReviewRideScreen';
 import { PaymentFareBreakdownScreen } from '../screens/rider/PaymentFareBreakdownScreen';
 import { RideCompletedScreen } from '../screens/rider/RideCompletedScreen';
 import { useRideStore } from '../store/rideStore';
+import { ridesApi } from '../api/rides';
+import { paymentsApi } from '../api/payments';
+import { getApiError } from '../api/client';
 
 const Stack = createNativeStackNavigator<RiderHomeStackParamList>();
 
@@ -26,6 +30,7 @@ export const RiderHomeStackNavigator: React.FC = () => {
   const setDropoff = useRideStore((state) => state.setDropoff);
   const setSelectedVehicle = useRideStore((state) => state.setSelectedVehicle);
   const resetRide = useRideStore((state) => state.resetRide);
+  const setActiveRide = useRideStore((state) => state.setActiveRide);
 
   return (
     <Stack.Navigator
@@ -69,7 +74,24 @@ export const RiderHomeStackNavigator: React.FC = () => {
         {({ navigation }) => (
           <RideDetailsScreen
             onBack={() => navigation.goBack()}
-            onConfirmRide={() => navigation.navigate('FindingDriver')}
+            onConfirmRide={async () => {
+              const state = useRideStore.getState();
+              try {
+                // The demo locations are Bengaluru coordinates; configure the backend seed
+                // for Bengaluru too (see backend README) so an online driver can be matched.
+                const ride = await ridesApi.create({
+                  pickup: { address: state.pickupAddress, lat: 12.9756, lng: 77.6066 },
+                  dropoff: { address: state.dropoffAddress, lat: 12.9716, lng: 77.6412 },
+                  vehicleType: state.selectedVehicle.id,
+                  promoCode: state.promoCode,
+                  paymentMethod: 'upi',
+                });
+                setActiveRide(ride);
+                navigation.navigate('FindingDriver');
+              } catch (error) {
+                Alert.alert('Booking failed', getApiError(error));
+              }
+            }}
           />
         )}
       </Stack.Screen>
@@ -111,7 +133,20 @@ export const RiderHomeStackNavigator: React.FC = () => {
         {({ navigation }) => (
           <ReviewRideScreen
             onBack={() => navigation.goBack()}
-            onSubmitReview={() => navigation.navigate('PaymentFareBreakdown')}
+            onSubmitReview={async (rating, compliments, tipAmount) => {
+              const ride = useRideStore.getState().activeRide;
+              if (!ride) return Alert.alert('Ride unavailable', 'No active ride was found.');
+              try {
+                const updated = await ridesApi.review(ride.id, { rating, compliments, tipAmount });
+                setActiveRide(updated);
+                const order = await paymentsApi.createOrder(updated.id, 'upi');
+                await paymentsApi.verify(updated.id, order.orderId);
+                setActiveRide({ ...updated, paymentStatus: 'paid' });
+                navigation.navigate('PaymentFareBreakdown');
+              } catch (error) {
+                Alert.alert('Unable to submit review', getApiError(error));
+              }
+            }}
           />
         )}
       </Stack.Screen>

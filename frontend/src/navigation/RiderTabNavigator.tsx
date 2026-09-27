@@ -2,7 +2,8 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { RiderTabParamList } from './types';
-
+import { ProfileScreen } from '../screens/rider/ProfileScreen';
+import { RideHistoryScreen } from '../screens/rider/RideHistoryScreen';
 import { RiderHomeStackNavigator } from './RiderHomeStackNavigator';
 import { BottomTabBar } from '../components/primitives/BottomTabBar';
 import { colors, typography } from '../theme/theme';
@@ -49,31 +50,14 @@ export const RiderTabNavigator: React.FC = () => {
       <Tab.Screen name="ServicesTab">
         {() => <PlaceholderScreen title="Vazhi Services" />}
       </Tab.Screen>
-      <Tab.Screen name="MyRidesTab">
-        {() => <PlaceholderScreen title="My Rides History" />}
-      </Tab.Screen>
-      <Tab.Screen name="ProfileTab">
-        {() => <PlaceholderScreen title="User Profile & Settings" />}
-      </Tab.Screen>
+      <Tab.Screen name="MyRidesTab" component={RideHistoryScreen} />
+      <Tab.Screen name="ProfileTab" component={ProfileScreen} />
     </Tab.Navigator>
   );
 };
 
 const styles = StyleSheet.create({
-  placeholderContainer: {
-    flex: 1,
-    backgroundColor: colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  placeholderTitle: {
-    ...typography.heading,
-    color: colors.primary,
-    marginBottom: 8,
-  },
-  placeholderSub: {
-    ...typography.body,
-    color: colors.textSecondary,
-  },
+  placeholderContainer: { flex: 1, backgroundColor: colors.background, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  placeholderTitle: { ...typography.heading, color: colors.primary, marginBottom: 8 },
+  placeholderSub: { ...typography.body, color: colors.textSecondary },
 });

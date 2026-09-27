@@ -8,6 +8,7 @@ export type OnboardingStackParamList = {
   SignIn: undefined;
   MobileNumber: undefined;
   OTPVerification: undefined;
+  CompleteProfile: undefined; // ADD
 };
 
 // Rider Home Stack Types
@@ -33,14 +34,6 @@ export type RiderTabParamList = {
   ProfileTab: undefined;
 };
 
-// Driver Stack Types
-export type DriverDashboardStackParamList = {
-  DriverDashboard: undefined;
-  RideRequestNearby: undefined;
-  TurnByTurnNavigation: undefined;
-  RideAvailableAgain: undefined;
-};
-
 // Driver Tab Types
 export type DriverTabParamList = {
   DashboardTab: NavigatorScreenParams<DriverDashboardStackParamList>;
@@ -57,4 +50,12 @@ export type RootStackParamList = {
   CancelRideConfirmation: undefined;
   RideCancelled: { reason?: string };
   RideAnnouncementsSettings: undefined;
+};
+
+export type DriverDashboardStackParamList = {
+  DriverDashboard: undefined;
+  RideRequestNearby: undefined;
+  TurnByTurnNavigation: { phase: 'to_pickup' | 'in_progress' };
+  DriverOtpEntry: undefined;
+  RideAvailableAgain: undefined;
 };

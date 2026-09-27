@@ -11,6 +11,9 @@ import { CancelRideConfirmationScreen } from '../screens/shared/CancelRideConfir
 import { RideCancelledScreen } from '../screens/shared/RideCancelledScreen';
 import { RideAnnouncementsSettingsScreen } from '../screens/shared/RideAnnouncementsSettingsScreen';
 import { useRideStore } from '../store/rideStore';
+import { ridesApi } from '../api/rides';
+import { getApiError } from '../api/client';
+import { Alert } from 'react-native';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -32,9 +35,15 @@ export const AppNavigator: React.FC = () => {
             {({ navigation }) => (
               <CancelRideConfirmationScreen
                 onBack={() => navigation.goBack()}
-                onConfirmCancel={(reason) => {
-                  useRideStore.getState().setCancellationReason(reason);
-                  navigation.navigate('RideCancelled', { reason });
+                onConfirmCancel={async (reason) => {
+                  try {
+                    const ride = useRideStore.getState().activeRide;
+                    if (ride) await ridesApi.cancel(ride.id, reason);
+                    useRideStore.getState().setCancellationReason(reason);
+                    navigation.navigate('RideCancelled', { reason });
+                  } catch (error) {
+                    Alert.alert('Cancellation failed', getApiError(error));
+                  }
                 }}
               />
             )}

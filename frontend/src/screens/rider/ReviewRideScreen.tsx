@@ -9,7 +9,7 @@ import { Header } from '../../components/primitives/Header';
 
 interface Props {
   onBack: () => void;
-  onSubmitReview: (rating: number) => void;
+  onSubmitReview: (rating: number, compliments: string[], tipAmount: number) => Promise<void> | void;
 }
 
 const compliments = [
@@ -107,7 +107,7 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
       <View style={styles.footer}>
         <Button
           title="Submit Rating & Feedback"
-          onPress={() => onSubmitReview(rating)}
+          onPress={() => onSubmitReview(rating, selectedCompliments, Number(selectedTip.replace('₹', '')))}
           variant="primary"
           size="large"
         />
