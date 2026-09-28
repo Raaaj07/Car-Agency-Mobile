@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -11,13 +11,13 @@ export interface NearbyDriverResult {
   userId: string;
   name: string;
   vehicleType: VehicleType;
-  carModel: string;
-  plateNumber: string;
+  carModel?: string;
   rating: number;
   distanceMeters: number;
   etaMinutes: number;
   lat: number;
   lng: number;
+  heading?: number;
 }
 
 @Injectable()
@@ -69,6 +69,14 @@ export class DriversService {
   // POST /drivers/status — DriverDashboardScreen's online/offline Switch.
   async setStatus(userId: string, isOnline: boolean): Promise<DriverEntity> {
     const driver = await this.findByUserId(userId);
+
+    if (isOnline) {
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+      if (!driver.location || !driver.locationUpdatedAt || driver.locationUpdatedAt < twoMinutesAgo) {
+        throw new ConflictException('Location required to go online. Please ensure GPS is active.');
+      }
+    }
+
     driver.isOnline = isOnline;
     driver.isAvailable = isOnline;
     await this.drivers.save(driver);
@@ -142,28 +150,53 @@ async getMyProfile(userId: string) {
   };
 }
 
-
   // GET /drivers/nearby — Redis GEOSEARCH first, PostGIS ST_DWithin fallback.
   async findNearby(
     lat: number,
     lng: number,
     radiusMeters?: number,
     vehicleType?: VehicleType,
-  ): Promise<NearbyDriverResult[]> {
+    groupByType?: boolean,
+  ): Promise<any> {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       throw new BadRequestException('lat/lng required');
     }
     const radius = radiusMeters ?? this.defaultRadiusMeters;
+    const ninetySecAgo = new Date(Date.now() - 90 * 1000);
 
+    let results: NearbyDriverResult[] = [];
     const redisHits = await this.geo.searchNearby(lat, lng, radius, vehicleType);
     if (redisHits.length > 0) {
-      return this.hydrateFromRedis(redisHits);
+      results = await this.hydrateFromRedis(redisHits, ninetySecAgo);
     }
 
-    return this.findNearbyViaPostgis(lat, lng, radius, vehicleType);
+    // Fall back to PostGIS if Redis returned 0 results or all were filtered out
+    if (results.length === 0) {
+      results = await this.findNearbyViaPostgis(lat, lng, radius, vehicleType, ninetySecAgo);
+    }
+
+    if (groupByType) {
+      const countsByType: Record<string, { count: number; bestEtaMinutes: number | null }> = {
+        auto: { count: 0, bestEtaMinutes: null },
+        mini: { count: 0, bestEtaMinutes: null },
+        sedan: { count: 0, bestEtaMinutes: null },
+        suv: { count: 0, bestEtaMinutes: null },
+      };
+      for (const d of results) {
+        if (countsByType[d.vehicleType]) {
+          countsByType[d.vehicleType].count += 1;
+          const current = countsByType[d.vehicleType].bestEtaMinutes;
+          countsByType[d.vehicleType].bestEtaMinutes =
+            current === null ? d.etaMinutes : Math.min(current, d.etaMinutes);
+        }
+      }
+      return { drivers: results, countsByType };
+    }
+
+    return results;
   }
   
-  private async hydrateFromRedis(hits: NearbyDriverHit[]): Promise<NearbyDriverResult[]> {
+  private async hydrateFromRedis(hits: NearbyDriverHit[], minUpdatedAt: Date): Promise<NearbyDriverResult[]> {
     const ids = hits.map((h) => h.driverId);
     const rows = await this.drivers.find({
       where: ids.map((id) => ({ id })),
@@ -172,7 +205,15 @@ async getMyProfile(userId: string) {
     const byId = new Map(rows.map((r) => [r.id, r]));
 
     return hits
-      .filter((h) => byId.get(h.driverId)?.isOnline && byId.get(h.driverId)?.isAvailable)
+      .filter((h) => {
+        const d = byId.get(h.driverId);
+        return (
+          d?.isOnline &&
+          d?.isAvailable &&
+          d.locationUpdatedAt &&
+          d.locationUpdatedAt >= minUpdatedAt
+        );
+      })
       .map((h) => {
         const d = byId.get(h.driverId)!;
         return this.toResult(d, h.distanceMeters, h.lat, h.lng);
@@ -184,7 +225,9 @@ async getMyProfile(userId: string) {
     lng: number,
     radiusMeters: number,
     vehicleType?: VehicleType,
+    minUpdatedAt?: Date,
   ): Promise<NearbyDriverResult[]> {
+    const ninetySecAgo = minUpdatedAt ?? new Date(Date.now() - 90 * 1000);
     const qb = this.drivers
       .createQueryBuilder('d')
       .leftJoinAndSelect('d.user', 'user')
@@ -195,10 +238,11 @@ async getMyProfile(userId: string) {
       .where('d.isOnline = true')
       .andWhere('d.isAvailable = true')
       .andWhere('d.location IS NOT NULL')
+      .andWhere('d.locationUpdatedAt >= :ninetySecAgo', { ninetySecAgo })
       .andWhere(
         `ST_DWithin(d.location::geography, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, :radius)`,
       )
-      .setParameters({ lat, lng, radius: radiusMeters })
+      .setParameters({ lat, lng, radius: radiusMeters, ninetySecAgo })
       .orderBy('distance_meters', 'ASC')
       .limit(20);
 
@@ -222,7 +266,6 @@ async getMyProfile(userId: string) {
       name: d.user?.name ?? 'Driver',
       vehicleType: d.vehicleType,
       carModel: d.carModel,
-      plateNumber: d.plateNumber,
       rating: Number(d.rating),
       distanceMeters: Math.round(distanceMeters),
       etaMinutes,

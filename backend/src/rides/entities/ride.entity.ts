@@ -88,7 +88,7 @@ export class RideEntity {
   cancellationReason?: string | null;
 
   @Column({ type: 'varchar', length: 10, nullable: true })
-  cancelledBy?: 'rider' | 'driver' | null;
+  cancelledBy?: 'rider' | 'driver' | 'system' | null;
 
   @Column({ type: 'varchar', length: 10, default: 'upi' })
   paymentMethod!: PaymentMethod;
@@ -114,6 +114,21 @@ export class RideEntity {
 
   @Column({ type: 'timestamptz', nullable: true })
   matchedAt?: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  offeredAt?: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  offerExpiresAt?: Date | null;
+
+  @Column({ type: 'text', array: true, default: '{}' })
+  declinedDriverIds!: string[];
+
+  @Column({ type: 'int', default: 0 })
+  otpAttempts!: number;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  otpLockedUntil?: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   startedAt?: Date | null;

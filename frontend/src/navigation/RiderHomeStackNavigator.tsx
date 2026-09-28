@@ -99,11 +99,20 @@ export const RiderHomeStackNavigator: React.FC = () => {
         )}
       </Stack.Screen>
 
-      <Stack.Screen name="FindingDriver">
+            <Stack.Screen name="FindingDriver">
         {({ navigation }) => (
           <FindingDriverScreen
             onDriverFound={() => navigation.navigate('YouGotTheRide')}
-            onCancel={() => rootNavigation.navigate('CancelRideConfirmation')}
+            onCancelPress={() => rootNavigation.navigate('CancelRideConfirmation')}
+            onRideCancelled={() => {
+              // The ride is already cancelled by the time this fires — go
+              // straight to the outcome screen instead of re-prompting for
+              // confirmation (that re-prompt was the double-modal bug).
+              const ride = useRideStore.getState().activeRide;
+              rootNavigation.navigate('RideCancelled', {
+                reason: ride?.cancellationReason ?? undefined,
+              });
+            }}
           />
         )}
       </Stack.Screen>

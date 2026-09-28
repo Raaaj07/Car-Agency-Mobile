@@ -1,9 +1,6 @@
 import React, { useState } from 'react';
-import { Alert } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { OnboardingStackParamList, RootStackParamList } from './types';
-import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useNavigation } from '@react-navigation/native';
+import { OnboardingStackParamList } from './types';
 
 import { LanguageSelectionScreen } from '../screens/onboarding/LanguageSelectionScreen';
 import { RoleSelectionScreen } from '../screens/onboarding/RoleSelectionScreen';
@@ -18,10 +15,7 @@ import { CompleteProfileScreen } from '../screens/onboarding/CompleteProfileScre
 
 const Stack = createNativeStackNavigator<OnboardingStackParamList>();
 
-type RootNavProp = NativeStackNavigationProp<RootStackParamList>;
-
 export const OnboardingNavigator: React.FC = () => {
-  const rootNavigation = useNavigation<RootNavProp>();
   const setLanguage = useAuthStore((state) => state.setLanguage);
   const setRole = useAuthStore((state) => state.setRole);
   const setPhone = useAuthStore((state) => state.setPhone);
@@ -73,11 +67,9 @@ export const OnboardingNavigator: React.FC = () => {
               }
               try {
                 const result = await authApi.googleSignIn(idToken, currentRole);
+                // login() flips isAuthenticated — AppNavigator's conditional
+                // render swaps to RiderMain/DriverMain by itself from there.
                 login(result.user, result);
-                rootNavigation.reset({
-                  index: 0,
-                  routes: [{ name: currentRole === 'driver' ? 'DriverMain' : 'RiderMain' }],
-                });
               } catch (error) {
                 console.log('Google sign-in failed:', error);
                 setSocialAuthError(getApiError(error));
@@ -93,10 +85,6 @@ export const OnboardingNavigator: React.FC = () => {
               try {
                 const result = await authApi.appleSignIn(identityToken, fullName, currentRole);
                 login(result.user, result);
-                rootNavigation.reset({
-                  index: 0,
-                  routes: [{ name: currentRole === 'driver' ? 'DriverMain' : 'RiderMain' }],
-                });
               } catch (error) {
                 console.log('Apple sign-in failed:', error);
                 setSocialAuthError(getApiError(error));
@@ -150,16 +138,11 @@ export const OnboardingNavigator: React.FC = () => {
                 // for drivers, their vehicle) before they ever reach the app.
                 if (result.isNewUser) {
                   navigation.navigate('CompleteProfile');
-                  return;
                 }
+                // Existing user: login() alone is enough — AppNavigator
+                // switches to RiderMain/DriverMain on its own.
               } catch (error) {
                 throw new Error(getApiError(error));
-              }
-              const currentRole = useAuthStore.getState().role;
-              if (currentRole === 'driver') {
-                rootNavigation.reset({ index: 0, routes: [{ name: 'DriverMain' }] });
-              } else {
-                rootNavigation.reset({ index: 0, routes: [{ name: 'RiderMain' }] });
               }
             }}
           />
@@ -184,15 +167,11 @@ export const OnboardingNavigator: React.FC = () => {
                   if (!vehicle) {
                     throw new Error('Vehicle details are required to continue as a driver');
                   }
-                  // Registers the vehicle/plate the backend requires before a
-                  // driver can go online (DriverDashboardScreen assumes this exists).
                   await driversApi.register(vehicle);
                 }
-
-                rootNavigation.reset({
-                  index: 0,
-                  routes: [{ name: currentRole === 'driver' ? 'DriverMain' : 'RiderMain' }],
-                });
+                // Nothing else to do — isAuthenticated has been true since
+                // login() in OTPVerification; AppNavigator already swapped
+                // to RiderMain/DriverMain underneath this screen.
               } catch (error) {
                 setProfileError(getApiError(error));
               } finally {

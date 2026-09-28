@@ -24,4 +24,7 @@ export class CreateRideDto {
   @IsOptional()
   @IsIn(['upi', 'wallet', 'card', 'cash'])
   paymentMethod?: PaymentMethod;
+
+  @IsOptional()
+  allowUpgrade?: boolean;
 }

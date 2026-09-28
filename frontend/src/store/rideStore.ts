@@ -46,17 +46,18 @@ export interface DriverInfo {
 export interface ActiveRide {
   id: string;
   status: string;
-  riderName?: string; // ADD
+  riderName?: string;
   pickupOtp?: string | null;
   fareBreakdown: FareBreakdown;
   paymentStatus: 'pending' | 'paid' | 'failed';
-  // Populated once available (ride:request socket payload, or any /rides
-  // response) so driver screens can show the real route/map instead of demo text.
   pickup?: RideLocation;
   dropoff?: RideLocation;
   vehicleType?: string;
   distanceKm?: string | null;
   expiresInSeconds?: number;
+  // Needed so FindingDriverScreen can hand the real cancellation reason to
+  // RideCancelledScreen when the poll (not the modal) detects the cancel.
+  cancellationReason?: string | null;
 }
 
 interface RideState {
@@ -167,7 +168,19 @@ export const useRideStore = create<RideState>((set, get) => ({
     })),
 
   setTipAmount: (amount) => set({ tipAmount: amount }),
-  setActiveRide: (ride) => set({ activeRide: ride }),
+  setActiveRide: (ride) =>
+    set((state) => ({
+      activeRide: ride
+        ? {
+            ...state.activeRide,
+            ...ride,
+            pickupOtp: ride.pickupOtp !== undefined ? ride.pickupOtp : state.activeRide?.pickupOtp ?? null,
+            riderName: ride.riderName ?? state.activeRide?.riderName,
+            pickup: ride.pickup ?? state.activeRide?.pickup,
+            dropoff: ride.dropoff ?? state.activeRide?.dropoff,
+          }
+        : null,
+    })),
 
   getFareBreakdown: () => {
     const { selectedVehicle, discountAmount, activeRide } = get();

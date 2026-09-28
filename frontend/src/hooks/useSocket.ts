@@ -1,28 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
-import { API_URL } from '../api/client';
-import { useAuthStore } from '../store/authStore';
+import { Socket } from 'socket.io-client';
+import { subscribeSocket } from '../lib/socket';
 
-/** Authenticated realtime connection for ride offers, status and driver location. */
+/** Returns the live singleton socket, or null while disconnected. */
 export function useSocket(): Socket | null {
   const [socket, setSocket] = useState<Socket | null>(null);
-  const token = useAuthStore((state) => state.accessToken);
 
   useEffect(() => {
-    if (!token) return;
-    const baseUrl = API_URL.replace(/\/api\/v1$/, '');
-    const connection = io(`${baseUrl}/realtime`, {
-      auth: { token },
-      transports: ['websocket', 'polling'],
-    });
-    const handleConnect = () => setSocket(connection);
-    connection.on('connect', handleConnect);
-    return () => {
-      connection.off('connect', handleConnect);
-      connection.disconnect();
-      setSocket((current) => (current === connection ? null : current));
-    };
-  }, [token]);
+    const unsubscribe = subscribeSocket((s) => setSocket(s));
+    return unsubscribe;
+  }, []);
 
   return socket;
 }
@@ -53,18 +40,23 @@ interface RideSocketHandlers {
  * `ride:<id>` room (see rides.gateway.ts) and forwards that ride's
  * `driver:location` / `ride:status` events to the given handlers.
  * Used by TripProgressScreen for the live tracking map.
+ *
+ * Because the socket is a module-level singleton, re-joining on
+ * reconnect is handled here: whenever a new non-null socket arrives
+ * from subscribeSocket we emit `ride:join` again automatically.
  */
 export function useRideSocket(rideId: string | undefined, handlers: RideSocketHandlers): Socket | null {
   const socket = useSocket();
 
-  // Keep the latest handlers available to the listeners below without
-  // needing to re-subscribe (and re-join the room) on every render.
+  // Keep the latest handlers available without re-subscribing on every render.
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
 
   useEffect(() => {
     if (!socket || !rideId) return;
 
+    // Always re-join on mount or when a new socket instance arrives
+    // (which happens after every reconnect via subscribeSocket).
     socket.emit('ride:join', { rideId });
 
     const handleDriverLocation = (event: DriverLocationEvent) => {

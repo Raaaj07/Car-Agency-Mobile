@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
 import { LogOut, Car } from 'lucide-react-native';
 import { colors, typography, radii } from '../../theme/theme';
 import { useAuthStore } from '../../store/authStore';
+import { useRideStore } from '../../store/rideStore';
 import { driversApi, DriverProfile, VehicleType } from '../../api/drivers';
 import { getApiError } from '../../api/client';
 import { Card } from '../../components/primitives/Card';
@@ -20,6 +21,7 @@ const VEHICLE_TYPES: { id: VehicleType; label: string }[] = [
 
 export const DriverAccountScreen: React.FC = () => {
   const logout = useAuthStore((s) => s.logout);
+  const resetRide = useRideStore((s) => s.resetRide);
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [vehicleType, setVehicleType] = useState<VehicleType>('sedan');
   const [carModel, setCarModel] = useState('');
@@ -57,6 +59,19 @@ export const DriverAccountScreen: React.FC = () => {
     }
   };
 
+  const handleLogout = async () => {
+    // Best-effort — if this fails (e.g. no driver profile registered yet),
+    // logging out still proceeds; we just don't want an online driver
+    // silently staying "available" after they've left the app.
+    try {
+      await driversApi.setStatus(false);
+    } catch {
+      // ignore
+    }
+    resetRide();
+    logout();
+  };
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.header}>
@@ -82,7 +97,7 @@ export const DriverAccountScreen: React.FC = () => {
             <Pill
               key={id}
               label={label}
-              active={vehicleType === id}  
+              active={vehicleType === id}
               onPress={() => setVehicleType(id)}
             />
           ))}
@@ -112,7 +127,7 @@ export const DriverAccountScreen: React.FC = () => {
         onPress={() =>
           Alert.alert('Log out?', 'You will need to sign in again.', [
             { text: 'Cancel', style: 'cancel' },
-            { text: 'Log out', style: 'destructive', onPress: logout },
+            { text: 'Log out', style: 'destructive', onPress: handleLogout },
           ])
         }
         leftIcon={<LogOut size={18} color={colors.danger} />}

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { connectSocket, disconnectSocket } from '../lib/socket';
 
 export interface User {
   name: string;
@@ -46,14 +47,20 @@ export const useAuthStore = create<AuthState>((set) => ({
   setPhone: (phone) => set({ phone }),
   setDevelopmentOtp: (otp) => set({ developmentOtp: otp }),
 
-  login: (userData, tokens) =>
+  login: (userData, tokens) => {
     set((state) => ({
       isAuthenticated: true,
       accessToken: tokens?.accessToken ?? state.accessToken,
       refreshToken: tokens?.refreshToken ?? state.refreshToken,
       user: userData,
       justLoggedIn: true,
-    })),
+    }));
+    // Connect the shared singleton socket as soon as we have a token.
+    const token = tokens?.accessToken;
+    if (token) {
+      connectSocket(token);
+    }
+  },
 
   updateUser: (patch) =>
     set((state) => ({
@@ -62,7 +69,8 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   clearJustLoggedIn: () => set({ justLoggedIn: false }),
 
-  logout: () =>
+  logout: () => {
+    disconnectSocket();
     set({
       isAuthenticated: false,
       user: null,
@@ -71,5 +79,6 @@ export const useAuthStore = create<AuthState>((set) => ({
       refreshToken: null,
       developmentOtp: null,
       justLoggedIn: false,
-    }),
+    });
+  },
 }));

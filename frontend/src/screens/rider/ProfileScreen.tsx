@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
 import { LogOut, Mail, Phone, Edit2 } from 'lucide-react-native';
 import { colors, typography, radii } from '../../theme/theme';
 import { useAuthStore } from '../../store/authStore';
+import { useRideStore } from '../../store/rideStore';
 import { authApi } from '../../api/auth';
 import { getApiError } from '../../api/client';
 import { Card } from '../../components/primitives/Card';
@@ -14,6 +15,7 @@ export const ProfileScreen: React.FC = () => {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const updateUser = useAuthStore((s) => s.updateUser);
+  const resetRide = useRideStore((s) => s.resetRide);
 
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(user?.name ?? '');
@@ -32,6 +34,11 @@ export const ProfileScreen: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleLogout = () => {
+    resetRide();
+    logout();
   };
 
   return (
@@ -79,7 +86,7 @@ export const ProfileScreen: React.FC = () => {
         onPress={() =>
           Alert.alert('Log out?', 'You will need to sign in again.', [
             { text: 'Cancel', style: 'cancel' },
-            { text: 'Log out', style: 'destructive', onPress: logout },
+            { text: 'Log out', style: 'destructive', onPress: handleLogout },
           ])
         }
         leftIcon={<LogOut size={18} color={colors.danger} />}

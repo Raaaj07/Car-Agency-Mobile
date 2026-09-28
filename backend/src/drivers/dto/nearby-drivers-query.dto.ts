@@ -20,4 +20,8 @@ export class NearbyDriversQueryDto {
   @IsOptional()
   @IsIn(['auto', 'mini', 'sedan', 'suv'])
   vehicleType?: VehicleType;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  groupByType?: boolean;
 }

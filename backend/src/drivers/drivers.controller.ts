@@ -50,6 +50,12 @@ export class DriversController {
   @UseGuards(JwtAuthGuard)
   @Get('nearby')
   findNearby(@Query() query: NearbyDriversQueryDto) {
-    return this.drivers.findNearby(query.lat, query.lng, query.radiusMeters, query.vehicleType);
+    return this.drivers.findNearby(
+      query.lat,
+      query.lng,
+      query.radiusMeters,
+      query.vehicleType,
+      query.groupByType,
+    );
   }
 }

@@ -102,17 +102,51 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
+  @SubscribeMessage('ride:request:ack')
+  onRideRequestAck(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() data: { rideId: string },
+  ): void {
+    this.logger.log(`Driver ${client.data.userId} acknowledged ride request ${data?.rideId}`);
+  }
+
+  @SubscribeMessage('nearby:subscribe')
+  onNearbySubscribe(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() _data: { lat: number; lng: number },
+  ): void {
+    if (!client.data.userId) return;
+    client.join('nearby:drivers');
+  }
+
+  @SubscribeMessage('nearby:unsubscribe')
+  onNearbyUnsubscribe(@ConnectedSocket() client: AuthedSocket): void {
+    client.leave('nearby:drivers');
+  }
+
+  emitNearbyUpdate(payload: unknown): void {
+    this.server.to('nearby:drivers').emit('nearby:update', payload);
+  }
+
   /** Server-initiated push: a new ride request to the matched driver. */
   emitRideRequestToDriver(driverUserId: string, payload: unknown): void {
     this.server.to(this.userRoom(driverUserId)).emit('ride:request', payload);
   }
 
   /** Server-initiated push: a status change to the rider (and driver, if online). */
-  emitRideStatus(rideId: string, riderUserId: string, driverUserId: string | null, payload: unknown): void {
+  emitRideStatus(rideId: string, riderUserId: string, driverUserId: string | null, payload: any): void {
+    // Rider receives full payload including pickupOtp
     this.server.to(this.userRoom(riderUserId)).emit('ride:status', payload);
-    if (driverUserId) {
-      this.server.to(this.userRoom(driverUserId)).emit('ride:status', payload);
+
+    // Driver and public room receive status with pickupOtp omitted (driver must collect OTP from rider)
+    const driverPayload = payload && typeof payload === 'object' ? { ...payload } : payload;
+    if (driverPayload && typeof driverPayload === 'object' && 'pickupOtp' in driverPayload) {
+      delete driverPayload.pickupOtp;
     }
-    this.server.to(this.rideRoom(rideId)).emit('ride:status', payload);
+
+    if (driverUserId) {
+      this.server.to(this.userRoom(driverUserId)).emit('ride:status', driverPayload);
+    }
+    this.server.to(this.rideRoom(rideId)).emit('ride:status', driverPayload);
   }
 }

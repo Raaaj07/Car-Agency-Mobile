@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Phone, MessageSquare, Shield, Clock, MapPin, AlertCircle } from 'lucide-react-native';
+import { Phone, MessageSquare, Clock, MapPin, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
-import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { MapPlaceholder } from '../../components/primitives/MapPlaceholder';
+import { useRideStore } from '../../store/rideStore';
+import { useRideSocket } from '../../hooks/useSocket';
+import { ridesApi } from '../../api/rides';
 
 interface Props {
   onStartTrip: () => void;
@@ -13,29 +15,81 @@ interface Props {
 }
 
 export const DriverEnRouteScreen: React.FC<Props> = ({ onStartTrip, onCancelRide }) => {
+  const activeRide = useRideStore((state) => state.activeRide);
+  const pickupOtp = activeRide?.pickupOtp;
+  const pickupText = activeRide?.pickup?.address || 'Pickup Location';
+  const dropText = activeRide?.dropoff?.address || 'Drop-off Location';
+  const driverName = activeRide?.riderName ? 'Assigned Driver' : 'Rajesh Kumar';
+
+  // Guard: ensure onStartTrip is called exactly once (socket + poll may both fire).
+  const startedRef = useRef(false);
+  const safeStartTrip = () => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    onStartTrip();
+  };
+
+  // Listen for real-time ride status update: when driver verifies OTP, status becomes in_progress
+  useRideSocket(activeRide?.id, {
+    onStatus: (event) => {
+      if (event.status === 'in_progress') {
+        safeStartTrip();
+      }
+    },
+  });
+
+  // Polling fallback to catch OTP verification in case of socket reconnection
+  useEffect(() => {
+    if (!activeRide?.id) return;
+    const interval = setInterval(async () => {
+      try {
+        const current = await ridesApi.get(activeRide.id);
+        if (current.status === 'in_progress') {
+          safeStartTrip();
+        }
+      } catch {
+        // Polling failure ignored
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRide?.id]);
+
   return (
     <View style={styles.container}>
       <MapPlaceholder
         showDriverPin
         driverEta="8 MIN"
-        pickupText="MG Road Metro Entrance Gate 2"
-        dropText="Indiranagar 100 Feet Rd"
+        pickupText={pickupText}
+        dropText={dropText}
       />
 
       {/* Floating Status Pill Header */}
       <View style={styles.statusPill}>
         <Clock size={16} color="#FFFFFF" />
-        <Text style={styles.statusPillText}>Driver is 8 mins away from pickup</Text>
+        <Text style={styles.statusPillText}>Driver is on the way to your pickup</Text>
       </View>
 
       {/* Bottom Sheet Card */}
       <View style={styles.bottomSheet}>
         <View style={styles.dragHandle} />
 
+        {/* Start OTP Code Box */}
+        <View style={styles.otpBox}>
+          <View style={styles.otpLeft}>
+            <KeyRound size={20} color={colors.primary} />
+            <View>
+              <Text style={styles.otpLabel}>START RIDE OTP</Text>
+              <Text style={styles.otpSubLabel}>Share with driver at pickup</Text>
+            </View>
+          </View>
+          <Text style={styles.otpValue}>{pickupOtp ?? '----'}</Text>
+        </View>
+
         <View style={styles.driverRow}>
-          <Avatar name="Rajesh Kumar" rating={4.9} size={50} online />
+          <Avatar name={driverName} rating={4.9} size={50} online />
           <View style={styles.driverMeta}>
-            <Text style={styles.driverName}>Rajesh Kumar</Text>
+            <Text style={styles.driverName}>{driverName}</Text>
             <Text style={styles.vehicleInfo}>White Maruti Dzire • KA 05 MN 4821</Text>
           </View>
 
@@ -53,7 +107,7 @@ export const DriverEnRouteScreen: React.FC<Props> = ({ onStartTrip, onCancelRide
           <MapPin size={18} color={colors.success} />
           <View style={styles.pickupTextWrap}>
             <Text style={styles.pickupLabel}>PICKUP LOCATION</Text>
-            <Text style={styles.pickupAddr} numberOfLines={1}>MG Road Metro Entrance Gate 2</Text>
+            <Text style={styles.pickupAddr} numberOfLines={1}>{pickupText}</Text>
           </View>
         </View>
 
@@ -66,7 +120,7 @@ export const DriverEnRouteScreen: React.FC<Props> = ({ onStartTrip, onCancelRide
             style={styles.cancelBtn}
           />
           <Button
-            title="Driver Arrived (Start)"
+            title="Trip Started"
             onPress={onStartTrip}
             variant="primary"
             size="medium"
@@ -179,5 +233,38 @@ const styles = StyleSheet.create({
   },
   startBtn: {
     flex: 2,
+  },
+  otpBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#EEF2FF',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: 'rgba(33, 27, 78, 0.15)',
+  },
+  otpLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  otpLabel: {
+    ...typography.metaBold,
+    fontSize: 11,
+    color: colors.primary,
+    letterSpacing: 1,
+  },
+  otpSubLabel: {
+    ...typography.meta,
+    fontSize: 10,
+    color: colors.textMuted,
+  },
+  otpValue: {
+    ...typography.heading,
+    fontSize: 22,
+    color: colors.primary,
+    letterSpacing: 4,
   },
 });

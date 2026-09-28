@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Switch, Alert, TouchableOpacity } from 'react-native';
 import { AlertCircle } from 'lucide-react-native';
 import * as Location from 'expo-location';
@@ -8,11 +8,14 @@ import { Card } from '../../components/primitives/Card';
 import { BottomTabBar } from '../../components/primitives/BottomTabBar';
 import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
 import { driversApi, DriverProfile } from '../../api/drivers';
+import { ridesApi } from '../../api/rides';
 import { getApiError } from '../../api/client';
 import { useSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
 import { NotificationBar } from '../../components/primitives/NotificationBar';
 import { useAuthStore } from '../../store/authStore';
+
+const LOCATION_HEARTBEAT_MS = 5000;
 
 interface Props {
   onRideRequest: () => void;
@@ -26,6 +29,9 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const [activeTab, setActiveTab] = useState('home');
   const [driverCoords, setDriverCoords] = useState<LatLng | undefined>();
   const [showWelcome, setShowWelcome] = useState(false);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const latestCoords = useRef<LatLng | undefined>(undefined);
+
   const socket = useSocket();
   const setActiveRide = useRideStore((state) => state.setActiveRide);
 
@@ -41,16 +47,17 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
       .getMyProfile()
       .then((p) => {
         setProfile(p);
-        setIsOnline(p.isOnline); // sync real backend state, don't assume false
+        setIsOnline(p.isOnline);
         setIsRegistered(true);
       })
       .catch(() => {
-        setIsRegistered(false); // no driver row yet — needs to register a vehicle first
+        setIsRegistered(false);
       });
   };
 
   useEffect(loadProfile, []);
 
+  // ── Initial GPS fix (shows driver dot on the map) ─────────────────────────
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -61,16 +68,77 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         if (!mounted) return;
         const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
         setDriverCoords(coords);
-        driversApi.updateLocation(coords.lat, coords.lng).catch(() => {});
+        latestCoords.current = coords;
       } catch {
-        // Map just falls back to its default center if location isn't available.
+        // Map falls back to its default center if location isn't available.
       }
     })();
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, []);
 
+  // ── Location heartbeat while online ───────────────────────────────────────
+  const startHeartbeat = useCallback(() => {
+    if (heartbeatRef.current) return;
+    heartbeatRef.current = setInterval(async () => {
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+        setDriverCoords(coords);
+        latestCoords.current = coords;
+        driversApi.updateLocation(coords.lat, coords.lng).catch(() => {});
+      } catch {
+        // Ignored — GPS may be momentarily unavailable
+      }
+    }, LOCATION_HEARTBEAT_MS);
+  }, []);
+
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOnline) {
+      startHeartbeat();
+    } else {
+      stopHeartbeat();
+    }
+    return stopHeartbeat;
+  }, [isOnline, startHeartbeat, stopHeartbeat]);
+
+  // ── Check for a pending offer on mount and on socket reconnect ────────────
+  const checkPendingOffer = useCallback(async () => {
+    try {
+      const pending = await ridesApi.getPendingOffer();
+      if (pending?.ride) {
+        setActiveRide({
+          ...pending.ride,
+          expiresInSeconds: pending.remainingSeconds,
+        });
+        onRideRequest();
+      }
+    } catch {
+      // Ignored
+    }
+  }, [setActiveRide, onRideRequest]);
+
+  // Run check on mount
+  useEffect(() => {
+    checkPendingOffer();
+  }, [checkPendingOffer]);
+
+  // Re-run whenever the socket reconnects (new non-null socket reference from singleton)
+  const prevSocket = useRef<typeof socket>(null);
+  useEffect(() => {
+    if (socket && socket !== prevSocket.current) {
+      prevSocket.current = socket;
+      checkPendingOffer();
+    }
+  }, [socket, checkPendingOffer]);
+
+  // ── Listen for incoming ride requests ─────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
     const handleRideRequest = (request: any) => {
@@ -94,13 +162,34 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     };
   }, [socket, setActiveRide, onRideRequest]);
 
+  // ── Go-online toggle ───────────────────────────────────────────────────────
   const handleToggle = async (nextStatus: boolean) => {
+    if (nextStatus) {
+      // 1. Ensure location permission
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Location Required',
+          'Please grant location permission to go online. Open Settings and enable location for this app.',
+        );
+        return;
+      }
+      // 2. Get a fresh GPS fix and push it before toggling status
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+        setDriverCoords(coords);
+        latestCoords.current = coords;
+        await driversApi.updateLocation(coords.lat, coords.lng);
+      } catch {
+        Alert.alert('GPS Error', 'Unable to get your current location. Please try again.');
+        return;
+      }
+    }
+
     try {
       await driversApi.setStatus(nextStatus);
       setIsOnline(nextStatus);
-      if (nextStatus && driverCoords) {
-        driversApi.updateLocation(driverCoords.lat, driverCoords.lng).catch(() => {});
-      }
     } catch (error) {
       Alert.alert('Unable to update availability', getApiError(error));
     }

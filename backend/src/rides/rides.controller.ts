@@ -30,6 +30,14 @@ export class RidesController {
     return this.rides.list(user.userId, user.role ?? 'rider', query.page, query.limit);
   }
 
+  // Matches driver reconnect / app opening to fetch active offer
+  @UseGuards(RolesGuard)
+  @Roles('driver')
+  @Get('offers/pending')
+  getPendingOffer(@CurrentUser() user: AuthenticatedUser) {
+    return this.rides.getPendingOffer(user.userId);
+  }
+
   @Get(':id')
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.rides.findById(id, user.userId);

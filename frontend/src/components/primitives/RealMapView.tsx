@@ -15,17 +15,27 @@ interface Props {
   dropoff?: LatLng;
   driverPosition?: LatLng; // live position for tracking/navigation modes
   route?: [number, number][]; // [lng, lat] pairs from getRoute(), drawn as a road-following line
+  nearbyDrivers?: LatLng[]; // other online/available drivers around pickup — shown as small dots
   onMapPress?: (coords: LatLng) => void; // picker mode: tap to set a point
   darkTheme?: boolean;
 }
 
-export const RealMapView: React.FC<Props> = ({ mode, pickup, dropoff, driverPosition, route, onMapPress, darkTheme }) => {
+export const RealMapView: React.FC<Props> = ({
+  mode,
+  pickup,
+  dropoff,
+  driverPosition,
+  route,
+  nearbyDrivers,
+  onMapPress,
+  darkTheme,
+}) => {
   const cameraRef = useRef<Camera>(null);
-  const isMountedRef = useRef(true); // ADD
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
     return () => {
-      isMountedRef.current = false; // ADD — flips false right as the screen unmounts
+      isMountedRef.current = false;
     };
   }, []);
 
@@ -75,9 +85,7 @@ export const RealMapView: React.FC<Props> = ({ mode, pickup, dropoff, driverPosi
         <Camera
           ref={cameraRef}
           zoomLevel={14}
-          centerCoordinate={
-            pickup ? [pickup.lng, pickup.lat] : [78.146, 11.6643] // Salem, TN fallback
-          }
+          centerCoordinate={pickup ? [pickup.lng, pickup.lat] : [78.146, 11.6643]}
         />
 
         {route && route.length > 1 && (
@@ -91,6 +99,12 @@ export const RealMapView: React.FC<Props> = ({ mode, pickup, dropoff, driverPosi
             />
           </ShapeSource>
         )}
+
+        {nearbyDrivers?.map((d, index) => (
+          <PointAnnotation key={`nearby-${index}`} id={`nearby-${index}`} coordinate={[d.lng, d.lat]}>
+            <View style={[styles.pin, styles.nearbyPin]} />
+          </PointAnnotation>
+        ))}
 
         {pickup && (
           <PointAnnotation id="pickup" coordinate={[pickup.lng, pickup.lat]}>
@@ -116,4 +130,5 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
   pin: { width: 16, height: 16, borderRadius: 8, borderWidth: 2, borderColor: '#FFF' },
+  nearbyPin: { width: 12, height: 12, backgroundColor: '#3B82F6' },
 });

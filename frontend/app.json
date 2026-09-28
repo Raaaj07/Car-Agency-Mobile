@@ -9,7 +9,10 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "usesAppleSignIn": true
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": ["comgooglemaps", "googlechromes", "google.navigation"]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,16 +22,23 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.vijayrajvj.CarAgencyMobile"
+      "package": "com.vijayrajvj.CarAgencyMobile",
+      "intentFilters": [
+        {
+          "action": "android.intent.action.VIEW",
+          "data": [{ "scheme": "google.navigation" }],
+          "category": ["android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-  "expo-apple-authentication",
-  "expo-web-browser",
-  "@rnmapbox/maps"
-],
+      "expo-apple-authentication",
+      "expo-web-browser",
+      "@rnmapbox/maps"
+    ],
     "extra": {
       "eas": {
         "projectId": "c7e345e5-c776-46af-997a-dc3f2823c768"

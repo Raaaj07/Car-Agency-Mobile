@@ -43,4 +43,6 @@ export const ridesApi = {
   verifyPickupOtp: async (rideId: string, otp: string) => (await api.patch<Ride>(`/rides/${rideId}/verify-pickup-otp`, { otp })).data,
   complete: async (rideId: string, actualDistanceKm?: number) =>
     (await api.patch<Ride>(`/rides/${rideId}/complete`, actualDistanceKm ? { actualDistanceKm } : {})).data,
+  getPendingOffer: async () =>
+    (await api.get<{ ride: Ride; remainingSeconds: number } | null>('/rides/offers/pending')).data,
 };
