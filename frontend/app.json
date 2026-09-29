@@ -37,7 +37,17 @@
     "plugins": [
       "expo-apple-authentication",
       "expo-web-browser",
-      "@rnmapbox/maps"
+      "@rnmapbox/maps",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableProguardInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "buildArchs": ["arm64-v8a", "armeabi-v7a"]
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {
