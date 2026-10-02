@@ -26,12 +26,13 @@ export interface Ride {
 }
 
 export const ridesApi = {
-  create: async (input: { pickup: RideLocation; dropoff: RideLocation; vehicleType: string; promoCode?: string | null; paymentMethod?: PaymentMethod }) =>
+  create: async (input: { pickup: RideLocation; dropoff: RideLocation; vehicleType: string; promoCode?: string | null; paymentMethod?: PaymentMethod; allowUpgrade?: boolean }) =>
     (await api.post<Ride>('/rides', input)).data,
   // Backend infers rider vs driver from the JWT, so no role param needed —
   // riders get their bookings, drivers get rides they've driven.
-  list: async (page = 1, limit = 20) =>
-    (await api.get<{ items: Ride[]; total: number }>('/rides', { params: { page, limit } })).data,
+  // Unified accounts: pass as='rider'|'driver' to select the side.
+  list: async (page = 1, limit = 20, as?: 'rider' | 'driver') =>
+    (await api.get<{ items: Ride[]; total: number }>('/rides', { params: { page, limit, ...(as ? { as } : {}) } })).data,
   get: async (rideId: string) => (await api.get<Ride>(`/rides/${rideId}`)).data,
   cancel: async (rideId: string, reason: string) => (await api.patch<Ride>(`/rides/${rideId}/cancel`, { reason })).data,
   review: async (rideId: string, input: { rating: number; compliments: string[]; tipAmount: number }) =>

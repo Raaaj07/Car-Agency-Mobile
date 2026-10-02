@@ -20,7 +20,7 @@ import { RazorpayPaymentProvider } from './providers/razorpay-payment.provider';
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService, DevPaymentProvider, RazorpayPaymentProvider],
       useFactory: (config: ConfigService, dev: DevPaymentProvider, razorpay: RazorpayPaymentProvider) =>
-        (config.get<string>('PAYMENTS_DEV_MODE') ?? 'true') === 'true' ? dev : razorpay,
+        (config.get<string>('PAYMENTS_DEV_MODE') ?? 'false') === 'true' ? dev : razorpay,
     },
   ],
   exports: [PaymentsService],

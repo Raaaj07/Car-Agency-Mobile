@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type Redis from 'ioredis';
 import { REDIS_CLIENT } from '../config/redis.module';
 import { VehicleType } from './entities/driver.entity';
@@ -16,6 +16,8 @@ export interface NearbyDriverHit {
 
 @Injectable()
 export class GeoService {
+  private readonly logger = new Logger(GeoService.name);
+
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
 
   private geoKey(vehicleType: VehicleType) {
@@ -79,7 +81,8 @@ export class GeoService {
         lng: parseFloat(coord[0]),
         lat: parseFloat(coord[1]),
       }));
-    } catch {
+    } catch (err) {
+      this.logger.warn(`GEOSEARCH failed, falling back to PostGIS: ${(err as Error).message}`);
       return [];
     }
   }

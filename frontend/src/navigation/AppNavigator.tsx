@@ -1,42 +1,108 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { View, ActivityIndicator, Text } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './types';
 
 import { OnboardingNavigator } from './OnboardingNavigator';
-import { RiderTabNavigator } from './RiderTabNavigator';
-import { DriverTabNavigator } from './DriverTabNavigator';
+import { MainTabNavigator } from './MainTabNavigator';
+import { AdminTabNavigator } from './AdminTabNavigator';
 
 import { CancelRideConfirmationScreen } from '../screens/shared/CancelRideConfirmationScreen';
 import { RideCancelledScreen } from '../screens/shared/RideCancelledScreen';
 import { RideAnnouncementsSettingsScreen } from '../screens/shared/RideAnnouncementsSettingsScreen';
+import { BecomeDriverScreen } from '../screens/driver/BecomeDriverScreen';
+import { CompleteProfileScreen } from '../screens/onboarding/CompleteProfileScreen';
 import { useAuthStore } from '../store/authStore';
 import { useRideStore } from '../store/rideStore';
 import { ridesApi } from '../api/rides';
+import { authApi } from '../api/auth';
 import { getApiError } from '../api/client';
 import { Alert } from 'react-native';
+import { colors } from '../theme/theme';
+import { Button } from '../components/primitives/Button';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export const AppNavigator: React.FC = () => {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
-  const role = useAuthStore((state) => state.role);
+  const hydrated = useAuthStore((state) => state.hydrated);
+  const bootOffline = useAuthStore((state) => state.bootOffline);
+  const user = useAuthStore((state) => state.user);
+  const restoreSession = useAuthStore((state) => state.restoreSession);
+  const [completing, setCompleting] = useState(false);
+  const [profileError, setProfileError] = useState<string | undefined>();
+
+  useEffect(() => {
+    restoreSession();
+  }, [restoreSession]);
+
+  if (!hydrated) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  // Stored tokens exist but the server is unreachable: keep the tokens and
+  // offer Retry instead of dropping to the login flow.
+  if (bootOffline && !isAuthenticated) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background, padding: 32, gap: 12 }}>
+        <Text style={{ fontSize: 18, fontWeight: '700', color: colors.textPrimary, textAlign: 'center' }}>
+          You're offline
+        </Text>
+        <Text style={{ fontSize: 14, color: colors.textMuted, textAlign: 'center' }}>
+          Couldn't reach the server. Check your connection and try again — you're still signed in on this device.
+        </Text>
+        <Button title="Retry" onPress={() => restoreSession()} />
+      </View>
+    );
+  }
+
+  const needsProfile = isAuthenticated && user && user.profileComplete === false;
 
   return (
     <NavigationContainer>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!isAuthenticated ? (
           <Stack.Screen name="Onboarding" component={OnboardingNavigator} />
+        ) : needsProfile ? (
+          <Stack.Screen name="CompleteProfile">
+            {() => (
+              <CompleteProfileScreen
+                isSubmitting={completing}
+                serverError={profileError}
+                onSubmit={async (name) => {
+                  setCompleting(true);
+                  setProfileError(undefined);
+                  try {
+                    const updated = await authApi.updateMe({ name });
+                    useAuthStore.getState().updateUser(updated);
+                  } catch (error) {
+                    setProfileError(getApiError(error));
+                  } finally {
+                    setCompleting(false);
+                  }
+                }}
+              />
+            )}
+          </Stack.Screen>
         ) : (
           <>
-            {/* Only the main screen for this account's role exists in the
-                tree, so a driver can never land on the rider dashboard.
-                (role is set on RoleSelection, long before login.) */}
-            {role === 'driver' ? (
-              <Stack.Screen name="DriverMain" component={DriverTabNavigator} />
+            {/* Admins get the review console; everyone else gets the unified app. */}
+            {user?.role === 'admin' ? (
+              <Stack.Screen name="Admin" component={AdminTabNavigator} />
             ) : (
-              <Stack.Screen name="RiderMain" component={RiderTabNavigator} />
+              <Stack.Screen name="Main" component={MainTabNavigator} />
             )}
+
+            <Stack.Screen name="BecomeDriver">
+              {({ navigation }) => (
+                <BecomeDriverScreen onBack={() => navigation.goBack()} onDone={() => navigation.goBack()} />
+              )}
+            </Stack.Screen>
 
             <Stack.Group screenOptions={{ presentation: 'modal', animation: 'slide_from_bottom' }}>
               <Stack.Screen name="CancelRideConfirmation">
@@ -63,17 +129,11 @@ export const AppNavigator: React.FC = () => {
                     reason={route.params?.reason}
                     onBookNew={() => {
                       useRideStore.getState().resetRide();
-                      navigation.navigate('RiderMain', {
-                        screen: 'HomeTab',
-                        params: { screen: 'HomeDashboard' },
-                      });
+                      navigation.navigate('Main', { screen: 'HomeTab' } as any);
                     }}
                     onGoHome={() => {
                       useRideStore.getState().resetRide();
-                      navigation.navigate('RiderMain', {
-                        screen: 'HomeTab',
-                        params: { screen: 'HomeDashboard' },
-                      });
+                      navigation.navigate('Main', { screen: 'HomeTab' } as any);
                     }}
                   />
                 )}

@@ -31,7 +31,7 @@ export const DriverTripsScreen: React.FC = () => {
   const load = useCallback(async () => {
     try {
       setError(undefined);
-      const { items } = await ridesApi.list(1, 30);
+      const { items } = await ridesApi.list(1, 30, 'driver');
       setRides(items);
     } catch (err) {
       setError(getApiError(err));

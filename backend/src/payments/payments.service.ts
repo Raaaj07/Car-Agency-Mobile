@@ -81,8 +81,8 @@ export class PaymentsService {
     }
 
     await this.rides.update({ id: ride.id }, { paymentStatus: 'paid' });
-    // PaymentFareBreakdownScreen's exact shape: total, plus a receipt id.
-    return { paid: true, total: ride.fareBreakdown.total, receiptId: payment.id };
+    // Include tip so receipt matches what was charged (total + tip).
+    return { paid: true, total: ride.fareBreakdown.total + (ride.tipAmount ?? 0), receiptId: payment.id };
   }
 
   private async getRideForRider(rideId: string, riderId: string): Promise<RideEntity> {

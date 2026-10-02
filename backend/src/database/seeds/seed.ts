@@ -58,6 +58,10 @@ async function seed() {
   const spreadKm = parseFloat(process.env.SEED_SPREAD_KM ?? '6');
   const driverCount = parseInt(process.env.SEED_DRIVER_COUNT ?? '40', 10);
 
+  if ((process.env.NODE_ENV ?? 'development') === 'production') {
+    throw new Error('Refusing to seed in production (NODE_ENV=production)');
+  }
+
   console.log(`Seeding ${driverCount} mock drivers around ${cityName} (${centerLat}, ${centerLng})...`);
 
   const dataSource = new DataSource(dataSourceOptions);

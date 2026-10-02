@@ -44,6 +44,64 @@ export class DriverEntity {
   @Column({ type: 'varchar', length: 20 })
   plateNumber!: string;
 
+  // ── Driver onboarding documents (uploaded from Profile > Become a Driver) ──
+  // Stored as URLs (Supabase/S3) or data-URLs for local dev. All nullable so
+  // legacy rows without documents keep working.
+  @Column({ type: 'text', nullable: true })
+  profilePhotoUrl?: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  carImageUrl?: string | null;
+
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  drivingLicenceNumber?: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  drivingLicenceImageUrl?: string | null;
+
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  rcNumber?: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  rcImageUrl?: string | null;
+
+  // NOTE: `verificationStatus`/`verificationNote` columns are deprecated and
+  // no longer read anywhere — `status`/`rejectionReason` are the source of
+  // truth. The columns stay in the DB for now (no destructive migration).
+  @Column({ type: 'varchar', length: 20, default: 'approved' })
+  verificationStatus!: 'pending' | 'approved' | 'rejected';
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  verificationNote?: string | null;
+
+  // ── Canonical application lifecycle (Phase 2; verificationStatus kept as a
+  // legacy mirror). One profile per user, so state lives on this row.
+  @Column({ type: 'varchar', length: 20, default: 'pending' })
+  status!: 'pending' | 'approved' | 'rejected' | 'suspended';
+
+  @Column({ type: 'varchar', length: 300, nullable: true })
+  rejectionReason?: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  reviewedByUserId?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  reviewedAt?: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  submittedAt?: Date | null;
+
+  // Local-disk document paths (backend/uploads/, never public static).
+  // URL fields above remain for legacy/remote URIs.
+  @Column({ type: 'text', nullable: true })
+  licenseImagePath?: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  rcImagePath?: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  vehiclePhotoPath?: string | null;
+
   @Column({ type: 'boolean', default: false })
   isOnline!: boolean;
 

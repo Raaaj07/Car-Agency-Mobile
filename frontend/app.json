@@ -10,8 +10,17 @@
     "ios": {
       "supportsTablet": true,
       "usesAppleSignIn": true,
+      "bundleIdentifier": "com.vijayrajvj.CarAgencyMobile",
       "infoPlist": {
-        "LSApplicationQueriesSchemes": ["comgooglemaps", "googlechromes", "google.navigation"]
+        "LSApplicationQueriesSchemes": [
+          "comgooglemaps",
+          "googlechromes",
+          "google.navigation"
+        ],
+        "NSLocationWhenInUseUsageDescription": "We need your location to find nearby drivers and track your ride.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Driver mode needs background location to share live trip updates.",
+        "NSCameraUsageDescription": "Camera is used to capture your profile photo and driver documents (car, licence, RC).",
+        "NSPhotoLibraryUsageDescription": "Photo library is used to upload your profile photo and driver documents."
       }
     },
     "android": {
@@ -23,11 +32,22 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.vijayrajvj.CarAgencyMobile",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ],
       "intentFilters": [
         {
           "action": "android.intent.action.VIEW",
-          "data": [{ "scheme": "google.navigation" }],
-          "category": ["android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"]
+          "data": [
+            {
+              "scheme": "google.navigation"
+            }
+          ],
+          "category": [
+            "android.intent.category.DEFAULT",
+            "android.intent.category.BROWSABLE"
+          ]
         }
       ]
     },
@@ -37,6 +57,18 @@
     "plugins": [
       "expo-apple-authentication",
       "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access photos for profile and driver documents."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to find rides and track trips."
+        }
+      ],
       "@rnmapbox/maps",
       [
         "expo-build-properties",
@@ -44,10 +76,14 @@
           "android": {
             "enableProguardInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
-            "buildArchs": ["arm64-v8a", "armeabi-v7a"]
+            "buildArchs": [
+              "arm64-v8a",
+              "armeabi-v7a"
+            ]
           }
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {

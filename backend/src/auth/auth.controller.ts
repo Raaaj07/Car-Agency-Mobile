@@ -1,11 +1,13 @@
-import { Body, Controller, Get, HttpCode,Patch, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthService } from './auth.service';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuthenticatedUser } from './strategies/jwt.strategy';
-import { GoogleSignInDto, AppleSignInDto } from './dto/social-signin.dto';
+import { GoogleSignInDto, AppleSignInDto, RefreshTokenDto } from './dto/social-signin.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 
 
@@ -25,17 +27,30 @@ export class AuthController {
     return this.auth.verifyOtp(dto);
   }
 
-  @Post('google')
-@HttpCode(HttpStatus.OK)
-googleSignIn(@Body() dto: GoogleSignInDto) {
-  return this.auth.googleSignIn(dto.idToken, dto.role);
-}
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.auth.refresh(dto.refreshToken);
+  }
 
-@Post('apple')
-@HttpCode(HttpStatus.OK)
-appleSignIn(@Body() dto: AppleSignInDto) {
-  return this.auth.appleSignIn(dto.identityToken, dto.fullName, dto.role);
-}
+  @Post('google')
+  @HttpCode(HttpStatus.OK)
+  googleSignIn(@Body() dto: GoogleSignInDto) {
+    return this.auth.googleSignIn(dto.idToken);
+  }
+
+  @Post('apple')
+  @HttpCode(HttpStatus.OK)
+  appleSignIn(@Body() dto: AppleSignInDto) {
+    return this.auth.appleSignIn(dto.identityToken, dto.fullName);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  logout(@CurrentUser() user: AuthenticatedUser) {
+    return this.auth.logout(user.userId);
+  }
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
@@ -46,5 +61,15 @@ appleSignIn(@Body() dto: AppleSignInDto) {
   @Patch('me')
   updateMe(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateMeDto) {
     return this.auth.updateMe(user.userId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('me/avatar')
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(
+    FileInterceptor('avatar', { storage: memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 1 } }),
+  )
+  uploadAvatar(@CurrentUser() user: AuthenticatedUser, @UploadedFile() file: Express.Multer.File) {
+    return this.auth.uploadAvatar(user.userId, file);
   }
 }

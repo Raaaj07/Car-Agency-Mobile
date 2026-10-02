@@ -41,8 +41,12 @@ export interface DriverInfo {
 }
 
 export interface User {
+  id?: string;
   name: string;
   phone: string;
+  role?: 'rider' | 'driver' | 'admin';
+  profileComplete?: boolean;
+  driverStatus?: 'none' | 'pending' | 'approved' | 'rejected' | 'suspended';
   email?: string;
   avatar?: string;
 }

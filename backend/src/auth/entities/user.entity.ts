@@ -8,7 +8,7 @@ import {
 } from 'typeorm';
 import { User as FrontendUser } from '../../common/frontend-contracts';
 
-export type UserRole = 'rider' | 'driver';
+export type UserRole = 'rider' | 'driver' | 'admin';
 
 @Entity('users')
 export class UserEntity {
@@ -37,6 +37,14 @@ export class UserEntity {
   @Column({ type: 'varchar', length: 10, nullable: true })
   role?: UserRole | null;
 
+  @Column({ type: 'boolean', default: false })
+  profileComplete!: boolean;
+
+  // SHA-256 hash of the current refresh token (rotation + logout revocation).
+  // Never holds the raw token.
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  refreshTokenHash?: string | null;
+
   @Column({ type: 'varchar', length: 10, default: 'en' })
   language!: string;
 
@@ -54,11 +62,14 @@ export class UserEntity {
    * expects, so nothing needs remapping client-side.
    */
   toFrontendUser(): FrontendUser {
-  return {
-    name: this.name,
-    phone: this.phone ?? '',
-    ...(this.email ? { email: this.email } : {}),
-    ...(this.avatar ? { avatar: this.avatar } : {}),
-  };
-}
+    return {
+      id: this.id,
+      name: this.name,
+      phone: this.phone ?? '',
+      role: (this.role ?? 'rider') as 'rider' | 'driver' | 'admin',
+      profileComplete: this.profileComplete ?? false,
+      ...(this.email ? { email: this.email } : {}),
+      ...(this.avatar ? { avatar: this.avatar } : {}),
+    };
+  }
 }

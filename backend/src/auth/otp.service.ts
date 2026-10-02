@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomInt } from 'crypto';
 import type Redis from 'ioredis';
 import { REDIS_CLIENT } from '../config/redis.module';
 
@@ -29,11 +30,9 @@ export class OtpService {
   }
 
   generateCode(): string {
+    // crypto-secure: Math.random is predictable, never use for OTPs.
     const max = 10 ** this.otpLength;
-    const code = Math.floor(Math.random() * max)
-      .toString()
-      .padStart(this.otpLength, '0');
-    return code;
+    return randomInt(0, max).toString().padStart(this.otpLength, '0');
   }
 
   async issue(phone: string): Promise<string> {

@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
+import { IsOptional, IsString, Matches } from 'class-validator';
 
 export class VerifyOtpDto {
   @IsString()
@@ -11,11 +11,6 @@ export class VerifyOtpDto {
   @IsString()
   @Matches(/^\d{4}$/, { message: 'otp must be a 4-digit code' })
   otp!: string;
-
-  // RoleSelectionScreen result, only used the first time a user is created.
-  @IsOptional()
-  @IsIn(['rider', 'driver'])
-  role?: 'rider' | 'driver';
 
   @IsOptional()
   @IsString()

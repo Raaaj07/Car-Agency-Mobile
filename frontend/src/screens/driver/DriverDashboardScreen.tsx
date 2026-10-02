@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Switch, Alert, TouchableOpacity } from 'react-native';
-import { AlertCircle } from 'lucide-react-native';
+import { View, Text, StyleSheet, Switch, Alert, ScrollView, TouchableOpacity } from 'react-native';
+import { Bell, Phone, Clock, ChevronRight } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { useNavigation } from '@react-navigation/native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
-import { BottomTabBar } from '../../components/primitives/BottomTabBar';
-import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
+import { Button } from '../../components/primitives/Button';
+import { LatLng } from '../../components/primitives/RealMapView';
 import { driversApi, DriverProfile } from '../../api/drivers';
 import { ridesApi } from '../../api/rides';
 import { getApiError } from '../../api/client';
@@ -14,6 +14,8 @@ import { useSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
 import { NotificationBar } from '../../components/primitives/NotificationBar';
 import { useAuthStore } from '../../store/authStore';
+import { connectSocket, disconnectSocket } from '../../lib/socket';
+import { tokenManager } from '../../lib/tokenManager';
 
 const LOCATION_HEARTBEAT_MS = 5000;
 
@@ -21,12 +23,22 @@ interface Props {
   onRideRequest: () => void;
 }
 
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function inr(n: number): string {
+  return `₹${Math.round(n).toLocaleString('en-IN')}`;
+}
+
 export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const navigation = useNavigation<any>();
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [isOnline, setIsOnline] = useState(false);
   const [isRegistered, setIsRegistered] = useState<boolean | null>(null); // null = still checking
-  const [activeTab, setActiveTab] = useState('home');
   const [driverCoords, setDriverCoords] = useState<LatLng | undefined>();
   const [showWelcome, setShowWelcome] = useState(false);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -34,6 +46,8 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
 
   const socket = useSocket();
   const setActiveRide = useRideStore((state) => state.setActiveRide);
+  const activeRide = useRideStore((state) => state.activeRide);
+  const firstName = (profile?.name ?? 'Driver').trim().split(' ')[0];
 
   useEffect(() => {
     if (useAuthStore.getState().justLoggedIn) {
@@ -46,6 +60,12 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     driversApi
       .getMyProfile()
       .then((p) => {
+        if (!p) {
+          setProfile(null);
+          setIsOnline(false);
+          setIsRegistered(false);
+          return;
+        }
         setProfile(p);
         setIsOnline(p.isOnline);
         setIsRegistered(true);
@@ -57,7 +77,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
 
   useEffect(loadProfile, []);
 
-  // ── Initial GPS fix (shows driver dot on the map) ─────────────────────────
+  // ── Initial GPS fix ───────────────────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -70,7 +90,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         setDriverCoords(coords);
         latestCoords.current = coords;
       } catch {
-        // Map falls back to its default center if location isn't available.
+        // Location stays unset; going online will prompt for GPS.
       }
     })();
     return () => { mounted = false; };
@@ -109,6 +129,8 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   }, [isOnline, startHeartbeat, stopHeartbeat]);
 
   // ── Check for a pending offer on mount and on socket reconnect ────────────
+  // Populates the "Available rides" list; live offers still pop the request
+  // screen via the socket handler below.
   const checkPendingOffer = useCallback(async () => {
     try {
       const pending = await ridesApi.getPendingOffer();
@@ -117,12 +139,11 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
           ...pending.ride,
           expiresInSeconds: pending.remainingSeconds,
         });
-        onRideRequest();
       }
     } catch {
       // Ignored
     }
-  }, [setActiveRide, onRideRequest]);
+  }, [setActiveRide]);
 
   // Run check on mount
   useEffect(() => {
@@ -195,82 +216,140 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     }
   };
 
+  // ── Switch to Rider mode ─────────────────────────────────────────────
+  // Online drivers are set offline first; an active trip blocks the switch.
+  const switchToRider = async () => {
+    const current = useRideStore.getState().activeRide;
+    if (current && ['matched', 'driver_en_route', 'in_progress'].includes(current.status)) {
+      Alert.alert('Trip in progress', 'You cannot switch modes while a trip is active. Complete or cancel it first.');
+      return;
+    }
+    try {
+      if (isOnline) {
+        await driversApi.setStatus(false);
+        setIsOnline(false);
+      }
+    } catch (error) {
+      Alert.alert('Unable to go offline', getApiError(error));
+      return;
+    }
+    stopHeartbeat();
+    useAuthStore.getState().setActiveMode('rider');
+    useRideStore.getState().resetRide();
+    disconnectSocket();
+    const token = tokenManager.getAccessToken();
+    if (token) connectSocket(token, 'rider');
+    // No explicit navigation: MainTabNavigator swaps to the rider tree
+    // (initial route HomeTab) as soon as activeMode flips.
+  };
+
+  const openNotifications = () => {
+    (navigation.getParent()?.getParent()?.getParent() as any)?.navigate?.('RideAnnouncementsSettings');
+  };
+
+  const pendingRequest = activeRide && activeRide.status === 'requested' ? activeRide : null;
+  const status = (profile as any)?.status as string | undefined;
+
   return (
     <View style={styles.container}>
-      <RealMapView mode="picker" pickup={driverCoords} />
-
-      <View style={styles.topBar}>
-        <View style={styles.driverProfileRow}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{(profile?.name ?? 'D').charAt(0).toUpperCase()}</Text>
-          </View>
-          <View>
-            <Text style={styles.driverName}>{profile?.name ?? 'Driver'}</Text>
-            <View style={styles.statusPillRow}>
-              <View style={[styles.statusDot, { backgroundColor: isOnline ? colors.success : colors.textMuted }]} />
-              <Text style={styles.statusText}>{isOnline ? 'ONLINE' : 'OFFLINE'}</Text>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        {/* Navy header */}
+        <View style={styles.header}>
+          <View style={styles.topRow}>
+            <View style={styles.brandRow}>
+              <View style={styles.logoBadge}>
+                <Phone size={18} color={colors.accent} />
+              </View>
+              <Text style={styles.brandText}>vazhi</Text>
             </View>
+            <TouchableOpacity style={styles.bellBtn} onPress={openNotifications} activeOpacity={0.7}>
+              <Bell size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.greeting}>{greeting()}, {firstName}</Text>
+
+          <View style={styles.onlineRow}>
+            <View style={styles.onlineLeft}>
+              <View style={[styles.onlineDot, { backgroundColor: isOnline ? colors.success : '#6B7280' }]} />
+              <Text style={styles.onlineText}>{isOnline ? 'ONLINE' : 'OFFLINE'}</Text>
+            </View>
+            <Switch
+              value={isOnline}
+              disabled={isRegistered !== true}
+              onValueChange={handleToggle}
+              trackColor={{ false: 'rgba(255,255,255,0.25)', true: colors.success }}
+              thumbColor="#FFFFFF"
+            />
           </View>
         </View>
 
-        <Switch
-          value={isOnline}
-          disabled={isRegistered !== true}
-          onValueChange={handleToggle}
-          trackColor={{ false: colors.border, true: colors.successLight }}
-          thumbColor={isOnline ? colors.success : '#9CA3AF'}
-        />
-      </View>
+        {/* Stat cards */}
+        <View style={styles.statsRow}>
+          <View style={styles.statCard}>
+            <Text style={styles.statLabel}>Today's earnings</Text>
+            <Text style={styles.earningsValue}>{inr(profile?.todayEarnings ?? 0)}</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statLabel}>Completed trips</Text>
+            <Text style={styles.tripsValue}>{profile?.todayTrips ?? 0}</Text>
+          </View>
+        </View>
 
-      <View style={styles.bottomSheet}>
-        {isRegistered === false && (
-          <TouchableOpacity
-            style={styles.registerBanner}
-            onPress={() => navigation.getParent()?.navigate('AccountTab')}
-          >
-            <AlertCircle size={20} color={colors.danger} />
-            <View style={styles.registerTextWrap}>
-              <Text style={styles.registerTitle}>Complete your driver registration</Text>
-              <Text style={styles.registerSub}>Add your vehicle details in Account to start going online</Text>
+        {status === 'pending' ? (
+          <Card style={styles.statusCard}>
+            <Text style={styles.statusTitle}>Application under review</Text>
+            <Text style={styles.statusSub}>You will be able to go online once approved.</Text>
+          </Card>
+        ) : null}
+
+        {/* Available rides */}
+        <Text style={styles.sectionTitle}>Available rides</Text>
+        {pendingRequest ? (
+          <View style={styles.rideCard}>
+            <View style={styles.rideTopRow}>
+              <View style={styles.timeChip}>
+                <Text style={styles.timeChipText}>Just now</Text>
+              </View>
+              <Text style={styles.fareText}>{inr(pendingRequest.fareBreakdown.total)}</Text>
             </View>
-          </TouchableOpacity>
+            <View style={styles.pointRow}>
+              <View style={[styles.dot, { backgroundColor: colors.success }]} />
+              <Text style={styles.pointVal} numberOfLines={1}>
+                {pendingRequest.pickup?.address ?? 'Pickup location'}
+              </Text>
+            </View>
+            <View style={styles.routeLine} />
+            <View style={styles.pointRow}>
+              <View style={[styles.square, { backgroundColor: colors.accent }]} />
+              <Text style={styles.pointVal} numberOfLines={1}>
+                {pendingRequest.dropoff?.address ?? 'Drop location'}
+              </Text>
+            </View>
+            <View style={styles.rideBottomRow}>
+              <View style={styles.distanceRow}>
+                <Clock size={14} color={colors.textMuted} />
+                <Text style={styles.distanceText}>
+                  {pendingRequest.distanceKm ? `${pendingRequest.distanceKm} km` : '—'}
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.viewRideBtn} onPress={onRideRequest} activeOpacity={0.85}>
+                <Text style={styles.viewRideText}>View Ride</Text>
+                <ChevronRight size={16} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.rideCard}>
+            <Text style={styles.emptyTitle}>No ride requests right now</Text>
+            <Text style={styles.emptySub}>
+              {isOnline ? 'Stay online — new requests will appear here.' : 'Go online to start receiving ride requests.'}
+            </Text>
+          </View>
         )}
 
-        <Card style={styles.earningsCard}>
-          <View style={styles.earningsHeader}>
-            <View>
-              <Text style={styles.earningsLabel}>TODAY&apos;S EARNINGS</Text>
-              <Text style={styles.earningsAmount}>₹{(profile?.todayEarnings ?? 0).toFixed(2)}</Text>
-            </View>
-            <View style={styles.payoutBadge}>
-              <Text style={styles.payoutText}>Ready to Cash Out</Text>
-            </View>
-          </View>
-
-          <View style={styles.metricsRow}>
-            <View style={styles.metricCol}>
-              <Text style={styles.metricVal}>{profile?.todayTrips ?? 0}</Text>
-              <Text style={styles.metricLabel}>Trips Today</Text>
-            </View>
-            <View style={styles.divider} />
-            <View style={styles.metricCol}>
-              <Text style={styles.metricVal}>{profile?.totalTrips ?? 0}</Text>
-              <Text style={styles.metricLabel}>Lifetime Trips</Text>
-            </View>
-            <View style={styles.divider} />
-            <View style={styles.metricCol}>
-              <Text style={styles.metricVal}>{profile ? `${profile.rating.toFixed(1)} ★` : '—'}</Text>
-              <Text style={styles.metricLabel}>Rating</Text>
-            </View>
-          </View>
-        </Card>
-
-        <Text style={styles.waitingText}>
-          {isOnline ? "You're online — waiting for ride requests…" : 'Go online to start receiving ride requests'}
-        </Text>
-      </View>
-
-      <BottomTabBar activeTab={activeTab} onTabPress={setActiveTab} mode="driver" />
+        <Button title="Switch to Rider mode" variant="outline" onPress={switchToRider} style={styles.switchBtn} />
+      </ScrollView>
 
       <NotificationBar
         visible={showWelcome}
@@ -284,42 +363,66 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  topBar: {
-    position: 'absolute', top: 16, left: 16, right: 16,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#FFFFFF', padding: 12, borderRadius: radii.card,
-    ...shadows.card, borderWidth: 1, borderColor: '#EEECF2',
+  scroll: { paddingBottom: 120 },
+  header: {
+    backgroundColor: colors.primary,
+    paddingTop: 56,
+    paddingHorizontal: 20,
+    paddingBottom: 30,
   },
-  driverProfileRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  avatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { color: '#FFFFFF', fontWeight: '700', fontSize: 18 },
-  driverName: { ...typography.bodyBold, fontSize: 15 },
-  statusPillRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  statusText: { ...typography.metaBold, fontSize: 11 },
-  bottomSheet: {
-    position: 'absolute', bottom: 84, left: 0, right: 0,
-    backgroundColor: colors.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    padding: 20, ...shadows.modal, gap: 14,
+  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  logoBadge: {
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center', justifyContent: 'center',
   },
-  registerBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: 'rgba(239,68,68,0.3)',
-    padding: 12, borderRadius: radii.card,
+  brandText: { color: '#FFFFFF', fontSize: 22, fontWeight: '700' },
+  bellBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center', justifyContent: 'center',
   },
-  registerTextWrap: { flex: 1 },
-  registerTitle: { ...typography.bodyBold, fontSize: 13, color: colors.danger },
-  registerSub: { ...typography.meta, fontSize: 11 },
-  earningsCard: { padding: 18, backgroundColor: colors.primary },
-  earningsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
-  earningsLabel: { ...typography.metaBold, fontSize: 10, color: 'rgba(255, 255, 255, 0.7)', letterSpacing: 1 },
-  earningsAmount: { ...typography.heading, fontSize: 28, color: colors.accent },
-  payoutBadge: { backgroundColor: colors.success, paddingHorizontal: 10, paddingVertical: 4, borderRadius: radii.pill },
-  payoutText: { color: '#FFFFFF', fontWeight: '700', fontSize: 10 },
-  metricsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255, 255, 255, 0.15)' },
-  metricCol: { alignItems: 'center' },
-  metricVal: { ...typography.cardTitle, fontSize: 16, color: '#FFFFFF' },
-  metricLabel: { ...typography.meta, fontSize: 11, color: 'rgba(255, 255, 255, 0.7)' },
-  divider: { width: 1, height: 24, backgroundColor: 'rgba(255, 255, 255, 0.2)' },
-  waitingText: { ...typography.meta, textAlign: 'center', color: colors.textMuted },
+  greeting: { color: '#FFFFFF', fontSize: 26, fontWeight: '700', marginBottom: 14 },
+  onlineRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  onlineLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  onlineDot: { width: 10, height: 10, borderRadius: 5 },
+  onlineText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700', letterSpacing: 1 },
+  statsRow: { flexDirection: 'row', gap: 12, paddingHorizontal: 20, marginTop: -0, paddingTop: 16 },
+  statCard: {
+    flex: 1, backgroundColor: '#FFFFFF', borderRadius: radii.lg, padding: 16,
+    ...shadows.card,
+  },
+  statLabel: { ...typography.meta, fontSize: 12, marginBottom: 6 },
+  earningsValue: { fontSize: 22, fontWeight: '800', color: colors.accent },
+  tripsValue: { fontSize: 22, fontWeight: '800', color: colors.textPrimary },
+  statusCard: { marginHorizontal: 20, marginTop: 14 },
+  statusTitle: { ...typography.bodyBold, fontSize: 14 },
+  statusSub: { ...typography.meta, fontSize: 12 },
+  sectionTitle: { ...typography.cardTitle, fontSize: 18, paddingHorizontal: 20, marginTop: 20, marginBottom: 12 },
+  rideCard: {
+    backgroundColor: '#FFFFFF', borderRadius: radii.lg, padding: 16, marginHorizontal: 20,
+    marginBottom: 12, gap: 6, ...shadows.card,
+  },
+  rideTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  timeChip: { backgroundColor: colors.successLight, paddingHorizontal: 12, paddingVertical: 5, borderRadius: radii.pill },
+  timeChipText: { color: colors.success, fontSize: 12, fontWeight: '700' },
+  fareText: { fontSize: 20, fontWeight: '800', color: colors.textPrimary },
+  pointRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  dot: { width: 10, height: 10, borderRadius: 5 },
+  square: { width: 10, height: 10, borderRadius: 2 },
+  pointVal: { ...typography.bodyBold, fontSize: 14, flex: 1 },
+  routeLine: { width: 2, height: 14, backgroundColor: colors.border, marginLeft: 4 },
+  rideBottomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+  distanceRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  distanceText: { ...typography.meta, fontSize: 13 },
+  viewRideBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: colors.primary, paddingHorizontal: 16, paddingVertical: 10,
+    borderRadius: radii.pill,
+  },
+  viewRideText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+  emptyTitle: { ...typography.bodyBold, fontSize: 15, textAlign: 'center' },
+  emptySub: { ...typography.meta, fontSize: 13, textAlign: 'center' },
+  switchBtn: { marginHorizontal: 20, marginTop: 8 },
 });

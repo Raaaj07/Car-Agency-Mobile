@@ -42,6 +42,7 @@ export const RiderHomeStackNavigator: React.FC = () => {
           <HomeDashboardScreen
             onSearchPress={() => navigation.navigate('DestinationSearch')}
             onSelectVehicle={() => navigation.navigate('VehicleSelection')}
+            onBellPress={() => rootNavigation.navigate('RideAnnouncementsSettings')}
           />
         )}
       </Stack.Screen>
@@ -88,6 +89,10 @@ export const RiderHomeStackNavigator: React.FC = () => {
                   vehicleType: state.selectedVehicle.id,
                   promoCode: state.promoCode,
                   paymentMethod: 'upi',
+                  // Allow larger vehicle to accept (auto->mini->sedan->suv) so a
+                  // sedan request can still match an SUV driver when no sedan
+                  // is nearby. Backend defaults this to false.
+                  allowUpgrade: true,
                 });
                 setActiveRide(ride);
                 navigation.navigate('FindingDriver');

@@ -93,10 +93,15 @@ src/
 | ------ | ---------------------------------- | -------------------------------------------- |
 | POST   | `/auth/otp/send`                   | Mobile Number                                |
 | POST   | `/auth/otp/verify`                 | OTP Verification                             |
-| GET    | `/auth/me`                         | (any authenticated screen)                   |
-| POST   | `/drivers/register`                | (driver onboarding, before Dashboard)        |
-| POST   | `/drivers/status`                  | Driver Dashboard (online toggle)             |
-| PATCH  | `/drivers/location`                | Turn-by-Turn Navigation (pings)              |
+| POST   | `/auth/refresh`                    | (silent token rotation)                      |
+| POST   | `/auth/logout`                     | Profile / Admin log out                      |
+| POST   | `/auth/google` / `/auth/apple`      | Sign In (social)                             |
+| GET    | `/auth/me`                         | Boot restore (role, profileComplete, driverStatus) |
+| POST   | `/drivers/apply`                   | Become a driver (multipart + documents)      |
+| GET    | `/drivers/application`             | Profile (application status)                 |
+| POST   | `/drivers/register`                | Legacy JSON registration (pending; prefer `/apply`) |
+| POST   | `/drivers/status`                  | Driver Dashboard (online toggle, approved only) |
+| PATCH  | `/drivers/location`                | Turn-by-Turn Navigation (pings, approved only) |
 | GET    | `/drivers/nearby`                  | Vehicle Selection / Finding Driver           |
 | POST   | `/rides`                           | Ride Details -> Book                         |
 | GET    | `/rides`                           | My Rides                                     |
@@ -112,9 +117,25 @@ src/
 | POST   | `/payments/create-order`           | Payment & Fare Breakdown                     |
 | POST   | `/payments/verify`                 | Payment & Fare Breakdown                     |
 
+| GET    | `/admin/driver-applications`       | Admin Applications list (status filter, paginated) |
+| GET    | `/admin/driver-applications/:id`    | Admin application detail                 |
+| POST   | `/admin/driver-applications/:id/approve` | Admin approve                      |
+| POST   | `/admin/driver-applications/:id/reject`  | Admin reject (reason 5–300 chars)  |
+| POST   | `/admin/drivers/:id/suspend`       | Admin suspend (forces offline)           |
+| GET    | `/admin/files/:applicationId/:kind` | Admin document image (base64 JSON; `?raw=1` for bytes) |
+
 Socket.IO events (namespace `/realtime`, JWT via `auth: { token }`):
-`driver:location`, `ride:request`, `ride:status`, plus client-emitted
-`ride:join` / `ride:leave` to scope location updates to one trip at a time.
+`driver:location`, `ride:request`, `ride:status`, `driver:status` (reject/suspend → app returns to Rider mode), plus client-emitted
+`ride:join` / `ride:leave` (membership-verified) to scope location updates to one trip at a time.
+
+## Environment variables (names only)
+
+New in this change: `ADMIN_PHONES` (comma-separated 10-digit seed list for the first admins — never a public endpoint; promotion runs at server start and again at OTP login so late sign-ups are covered), `UPLOAD_DIR` (document storage root, default `<server-cwd>/uploads/`), `MAX_UPLOAD_MB` (per-file cap, default 5), `DB_SSL_REJECT_UNAUTHORIZED` (TLS verification for Postgres), `CORS_ORIGIN` (now enforced on HTTP and the gateway; `*` is rejected in production).
+Boot refuses to start when `NODE_ENV=production` with `OTP_DEV_MODE=true`, `PAYMENTS_DEV_MODE=true`, or `DB_SYNCHRONIZE=true`.
+
+## Document storage note
+
+Local disk (`backend/uploads/`, git-ignored) is lost on ephemeral hosts (Docker without a volume, many PaaS). Swap `StorageService` for S3/R2-compatible storage before production.
 
 ## Notes on design choices
 

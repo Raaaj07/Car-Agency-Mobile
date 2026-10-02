@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { DriverEntity, VehicleType } from './entities/driver.entity';
 import { GeoService, NearbyDriverHit } from './geo.service';
 import { RideEntity } from '../rides/entities/ride.entity';
@@ -34,20 +34,56 @@ export class DriversService {
     }
 
 
-  // Creates or updates the driver profile (vehicle/plate) for a user who
-  // picked "driver" on RoleSelectionScreen. Idempotent by userId.
-  async registerOrUpdate(
+  /** POST /drivers/apply — multipart application (any authenticated rider). */
+  async applyApplication(
     userId: string,
-    data: { vehicleType: VehicleType; carModel: string; plateNumber: string },
+    data: { vehicleType: VehicleType; carModel: string; plateNumber: string; licenseNumber: string; rcNumber?: string },
+    files: { licenseImagePath?: string | null; rcImagePath?: string | null; vehiclePhotoPath?: string | null },
   ): Promise<DriverEntity> {
     let driver = await this.drivers.findOne({ where: { userId } });
+    const cur = driver ? (((driver as any).status as string | undefined) ?? undefined) : undefined;
+    // Only none (no row) or rejected may (re-)submit.
+    if (cur === 'pending' || cur === 'approved' || cur === 'suspended') {
+      throw new ConflictException(`Application already ${cur}; re-submit is allowed only after rejection`);
+    }
     if (!driver) {
       driver = this.drivers.create({ userId, isOnline: false, isAvailable: false });
     }
     driver.vehicleType = data.vehicleType;
     driver.carModel = data.carModel;
     driver.plateNumber = data.plateNumber;
+    driver.drivingLicenceNumber = data.licenseNumber;
+    if (data.rcNumber !== undefined) driver.rcNumber = data.rcNumber || null;
+    if (files.licenseImagePath !== undefined) (driver as any).licenseImagePath = files.licenseImagePath;
+    if (files.rcImagePath !== undefined) (driver as any).rcImagePath = files.rcImagePath;
+    if (files.vehiclePhotoPath !== undefined) (driver as any).vehiclePhotoPath = files.vehiclePhotoPath;
+    (driver as any).status = 'pending';
+    (driver as any).submittedAt = new Date();
+    (driver as any).rejectionReason = null;
+    (driver as any).reviewedByUserId = null;
+    (driver as any).reviewedAt = null;
     return this.drivers.save(driver);
+  }
+
+  /** GET /drivers/application — own application status (null when never applied). */
+  async getApplication(userId: string) {
+    const driver = await this.drivers.findOne({ where: { userId }, relations: ['user'] });
+    if (!driver) return null;
+    const d = driver as any;
+    return {
+      status: d.status ?? 'pending',
+      rejectionReason: d.rejectionReason ?? null,
+      submittedAt: d.submittedAt ?? driver.createdAt,
+      reviewedAt: d.reviewedAt ?? null,
+      vehicleType: driver.vehicleType,
+      carModel: driver.carModel,
+      plateNumber: driver.plateNumber,
+      licenseNumber: driver.drivingLicenceNumber ?? null,
+      rcNumber: driver.rcNumber ?? null,
+      hasLicenseImage: !!(d.licenseImagePath || driver.drivingLicenceImageUrl),
+      hasRcImage: !!(d.rcImagePath || driver.rcImageUrl),
+      hasVehiclePhoto: !!(d.vehiclePhotoPath || driver.carImageUrl),
+    };
   }
 
   async findByUserId(userId: string): Promise<DriverEntity> {
@@ -71,6 +107,17 @@ export class DriversService {
     const driver = await this.findByUserId(userId);
 
     if (isOnline) {
+      const status = ((driver as any).status as string | undefined) ?? 'pending';
+      if (status === 'pending') {
+        throw new ConflictException('Driver verification pending. You can go online once approved.');
+      }
+      if (status === 'rejected') {
+        const note = (driver as any).rejectionReason as string | null;
+        throw new ConflictException(note ?? 'Driver application was rejected. Please re-submit your documents.');
+      }
+      if (status === 'suspended') {
+        throw new ConflictException('Driver access suspended — contact support.');
+      }
       const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
       if (!driver.location || !driver.locationUpdatedAt || driver.locationUpdatedAt < twoMinutesAgo) {
         throw new ConflictException('Location required to go online. Please ensure GPS is active.');
@@ -97,13 +144,20 @@ export class DriversService {
   }
 
   // Called by RidesService after ReviewRideScreen submits a star rating —
-  // rolls the new rating into the driver's running average.
+  // rolls the new rating into the driver's running average (atomic, no lost writes).
   async applyRating(driverId: string, newRating: number): Promise<void> {
-    const driver = await this.findById(driverId);
-    const currentAvg = Number(driver.rating);
-    const n = driver.totalTrips;
-    const updatedAvg = n === 0 ? newRating : (currentAvg * n + newRating) / (n + 1);
-    await this.drivers.update({ id: driverId }, { rating: updatedAvg.toFixed(2), totalTrips: n + 1 });
+    if (!Number.isFinite(newRating) || newRating < 1 || newRating > 5) return;
+    // Atomic: rating = (rating*totalTrips + new)/(totalTrips+1), totalTrips+1.
+    await this.drivers
+      .createQueryBuilder()
+      .update(DriverEntity)
+      .set({
+        rating: () => `LEAST(9.99, (rating::numeric * "totalTrips" + :newRating) / ("totalTrips" + 1))`,
+        totalTrips: () => `"totalTrips" + 1`,
+      })
+      .where('id = :driverId', { driverId })
+      .setParameters({ newRating })
+      .execute();
   }
 
   // PATCH /drivers/location — periodic pings from the driver app.
@@ -120,11 +174,12 @@ export class DriversService {
   }
   
   // New method — matches GET /drivers/me:
-async getMyProfile(userId: string) {
-  const driver = await this.findByUserId(userId); // already loads relations: ['user']
+  async getMyProfile(userId: string) {
+    const driver = await this.findByUserId(userId); // already loads relations: ['user']
 
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+    // UTC day boundary (server TZ-independent).
+    const now = new Date();
+    const startOfTodayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
   const { sum, count } = await this.rides
     .createQueryBuilder('ride')
@@ -132,7 +187,7 @@ async getMyProfile(userId: string) {
     .addSelect('COUNT(*)', 'count')
     .where('ride.driverId = :driverId', { driverId: driver.id })
     .andWhere('ride.status = :status', { status: 'completed' })
-    .andWhere('ride.completedAt >= :start', { start: startOfToday })
+    .andWhere('ride.completedAt >= :start', { start: startOfTodayUtc })
     .getRawOne();
 
   return {
@@ -147,8 +202,25 @@ async getMyProfile(userId: string) {
     todayEarnings: Number(sum ?? 0),
     todayTrips: Number(count ?? 0),
     isOnline: driver.isOnline,
+    isAvailable: driver.isAvailable,
+    status: ((driver as any).status as string | undefined) ?? 'approved',
+    rejectionReason: ((driver as any).rejectionReason as string | null) ?? null,
+    submittedAt: ((driver as any).submittedAt as Date | null) ?? driver.createdAt,
+    profilePhotoUrl: driver.profilePhotoUrl ?? null,
+    carImageUrl: driver.carImageUrl ?? null,
+    drivingLicenceNumber: driver.drivingLicenceNumber ?? null,
+    drivingLicenceImageUrl: driver.drivingLicenceImageUrl ?? null,
+    rcNumber: driver.rcNumber ?? null,
+    rcImageUrl: driver.rcImageUrl ?? null,
   };
-}
+  }
+
+  /** Null (not 404) when the user has never registered as a driver. */
+  async tryGetMyProfile(userId: string) {
+    const driver = await this.drivers.findOne({ where: { userId }, relations: ['user'] });
+    if (!driver) return null;
+    return this.getMyProfile(userId);
+  }
 
   // GET /drivers/nearby — Redis GEOSEARCH first, PostGIS ST_DWithin fallback.
   async findNearby(
@@ -161,7 +233,11 @@ async getMyProfile(userId: string) {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       throw new BadRequestException('lat/lng required');
     }
-    const radius = radiusMeters ?? this.defaultRadiusMeters;
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      throw new BadRequestException('lat/lng out of range');
+    }
+    // Cap radius to prevent full-table GEOSEARCH/PostGIS scans.
+    const radius = Math.min(radiusMeters ?? this.defaultRadiusMeters, 20000);
     const ninetySecAgo = new Date(Date.now() - 90 * 1000);
 
     let results: NearbyDriverResult[] = [];
@@ -197,9 +273,10 @@ async getMyProfile(userId: string) {
   }
   
   private async hydrateFromRedis(hits: NearbyDriverHit[], minUpdatedAt: Date): Promise<NearbyDriverResult[]> {
-    const ids = hits.map((h) => h.driverId);
+    const ids = [...new Set(hits.map((h) => h.driverId))].slice(0, 20);
+    if (ids.length === 0) return [];
     const rows = await this.drivers.find({
-      where: ids.map((id) => ({ id })),
+      where: { id: In(ids) },
       relations: ['user'],
     });
     const byId = new Map(rows.map((r) => [r.id, r]));

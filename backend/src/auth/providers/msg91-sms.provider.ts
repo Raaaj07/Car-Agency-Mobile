@@ -18,25 +18,31 @@ export class Msg91SmsProvider implements SmsProvider {
   ) {}
 
   async sendOtp(phone: string, otp: string): Promise<SmsSendResult> {
-  const authKey = this.config.get<string>('MSG91_AUTH_KEY');
-  const templateId = this.config.get<string>('MSG91_OTP_TEMPLATE_ID');
-  const senderId = this.config.get<string>('MSG91_SENDER_ID');
+    const authKey = this.config.get<string>('MSG91_AUTH_KEY');
+    const templateId = this.config.get<string>('MSG91_OTP_TEMPLATE_ID');
+    const senderId = this.config.get<string>('MSG91_SENDER_ID');
 
-  if (!authKey || !templateId) {
-    this.logger.warn('MSG91 credentials not configured; skipping real SMS send.');
-    return { sent: false };
-  }
+    if (!authKey || !templateId) {
+      this.logger.warn('MSG91 credentials not configured; skipping real SMS send.');
+      return { sent: false };
+    }
 
-  try {
-    await firstValueFrom(
-      this.http.post('https://control.msg91.com/api/v5/otp', null, {
-        params: { mobile: `91${phone}`, otp, template_id: templateId, sender: senderId, authkey: authKey },
-      }),
-    );
-    return { sent: true };
-  } catch (err) {
-    this.logger.error(`MSG91 send failed for ${phone}`, err as Error);
-    throw err;
+    // Accept "+91...", "91...", "0..." — normalize to 10-digit national number.
+    const digits = phone.replace(/\D/g, '').replace(/^(91|0)/, '').slice(-10);
+
+    try {
+      await firstValueFrom(
+        this.http.post('https://control.msg91.com/api/v5/otp', null, {
+          params: { mobile: `91${digits}`, otp, template_id: templateId, sender: senderId, authkey: authKey },
+          timeout: 8000,
+        }),
+      );
+      return { sent: true };
+    } catch (err) {
+      this.logger.error(`MSG91 send failed for ${phone}`, err as Error);
+      // Return sent:false so callers can fall back — but auth.service must NOT
+      // leak devOtp on sent:false in production (fixed there).
+      return { sent: false };
+    }
   }
-}
 }

@@ -102,31 +102,32 @@ const defaultVehicle: VehicleOption = {
   icon: '🚘',
 };
 
+// No demo driver — real driver comes from activeRide / socket only.
 const defaultDriver: DriverInfo = {
-  name: 'Rajesh Kumar',
-  rating: 4.9,
-  carModel: 'White Maruti Dzire',
-  plateNumber: 'KA 05 MN 4821',
-  otp: '4892',
-  eta: '3 min',
-  phone: '+91 98765 12345',
+  name: '',
+  rating: 0,
+  carModel: '',
+  plateNumber: '',
+  otp: '',
+  eta: '',
+  phone: '',
 };
 
 export const useRideStore = create<RideState>((set, get) => ({
-  pickup: 'MG Road Metro Station',
-  pickupAddress: 'MG Road Metro Station, Entrance Gate 2',
-  dropoff: 'Indiranagar 100 Feet Rd',
-  dropoffAddress: 'Indiranagar 100 Feet Road, Hub 4',
+  pickup: '',
+  pickupAddress: '',
+  dropoff: '',
+  dropoffAddress: '',
   pickupCoords: undefined,
   dropoffCoords: undefined,
   selectedVehicle: defaultVehicle,
   driver: defaultDriver,
-  promoCode: 'VAZHI20',
-  discountAmount: 40,
-  cancellationReason: 'Driver is taking too long to arrive',
+  promoCode: null,
+  discountAmount: 0,
+  cancellationReason: '',
   rating: 5,
-  compliments: ['Safe Driver 🛡️'],
-  tipAmount: 20,
+  compliments: [],
+  tipAmount: 0,
   activeRide: null,
 
   setPickup: (location, address, coords) =>
@@ -149,10 +150,14 @@ export const useRideStore = create<RideState>((set, get) => ({
     }),
 
   applyPromoCode: (code) => {
-    if (code.toUpperCase() === 'VAZHI20') {
+    const normalized = code.trim().toUpperCase();
+    // Only known codes apply; unknown codes are rejected (no silent discount).
+    if (normalized === 'VAZHI20') {
       set({ promoCode: 'VAZHI20', discountAmount: 40 });
+    } else if (!normalized) {
+      set({ promoCode: null, discountAmount: 0 });
     } else {
-      set({ promoCode: code, discountAmount: 20 });
+      set({ promoCode: null, discountAmount: 0 });
     }
   },
 
@@ -169,18 +174,8 @@ export const useRideStore = create<RideState>((set, get) => ({
 
   setTipAmount: (amount) => set({ tipAmount: amount }),
   setActiveRide: (ride) =>
-    set((state) => ({
-      activeRide: ride
-        ? {
-            ...state.activeRide,
-            ...ride,
-            pickupOtp: ride.pickupOtp !== undefined ? ride.pickupOtp : state.activeRide?.pickupOtp ?? null,
-            riderName: ride.riderName ?? state.activeRide?.riderName,
-            pickup: ride.pickup ?? state.activeRide?.pickup,
-            dropoff: ride.dropoff ?? state.activeRide?.dropoff,
-          }
-        : null,
-    })),
+    // Replace (don't merge) so stale pickupOtp/status fields can't survive transitions.
+    set(() => ({ activeRide: ride })),
 
   getFareBreakdown: () => {
     const { selectedVehicle, discountAmount, activeRide } = get();
@@ -190,7 +185,8 @@ export const useRideStore = create<RideState>((set, get) => ({
     const time = Math.round(selectedVehicle.numericPrice * 0.1);
     const toll = 40;
     const taxes = 28;
-    const total = Math.max(selectedVehicle.numericPrice - discountAmount, 0);
+    // Total must equal the sum of parts minus discount (matches backend).
+    const total = Math.max(base + dist + time + toll + taxes - discountAmount, 0);
 
     return {
       baseFare: base,
@@ -205,18 +201,18 @@ export const useRideStore = create<RideState>((set, get) => ({
 
   resetRide: () =>
     set({
-      pickup: 'MG Road Metro Station',
-      pickupAddress: 'MG Road Metro Station, Entrance Gate 2',
-      dropoff: 'Indiranagar 100 Feet Rd',
-      dropoffAddress: 'Indiranagar 100 Feet Road, Hub 4',
+      pickup: '',
+      pickupAddress: '',
+      dropoff: '',
+      dropoffAddress: '',
       pickupCoords: undefined,
       dropoffCoords: undefined,
-      promoCode: 'VAZHI20',
-      discountAmount: 40,
-      cancellationReason: 'Driver is taking too long to arrive',
+      promoCode: null,
+      discountAmount: 0,
+      cancellationReason: '',
       rating: 5,
-      compliments: ['Safe Driver 🛡️'],
-      tipAmount: 20,
+      compliments: [],
+      tipAmount: 0,
       activeRide: null,
     }),
 }));

@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { DriversModule } from './drivers/drivers.module';
 import { RidesModule } from './rides/rides.module';
 import { PaymentsModule } from './payments/payments.module';
+import { AdminModule } from './admin/admin.module';
 
 // console.log('DB CONFIG:', {
 //   host: process.env.DB_HOST,
@@ -29,14 +30,20 @@ import { PaymentsModule } from './payments/payments.module';
       useFactory: (config: ConfigService) => ({
         type: 'postgres',
         host: config.get<string>('DB_HOST'),
-        port: config.get<number>('DB_PORT'),
+        port: Number(config.get<string>('DB_PORT') ?? 5432),
         username: config.get<string>('DB_USERNAME'),
         password: config.get<string>('DB_PASSWORD'),
         database: config.get<string>('DB_DATABASE'),
         autoLoadEntities: true,
-        synchronize: config.get<boolean>('DB_SYNCHRONIZE'),
-        logging: config.get<boolean>('DB_LOGGING'),
-        ssl: config.get<string>('DB_SSL') === 'false' ? false : { rejectUnauthorized: false }, // ADD
+        synchronize: (config.get<string>('DB_SYNCHRONIZE') ?? 'false') === 'true',
+        logging: (config.get<string>('DB_LOGGING') ?? 'false') === 'true',
+        // Only disable cert verification for managed dev DBs; in prod use proper CA.
+        ssl:
+          (config.get<string>('DB_SSL') ?? 'true') === 'false'
+            ? false
+            : (config.get<string>('NODE_ENV') ?? 'development') === 'production'
+              ? { rejectUnauthorized: true }
+              : { rejectUnauthorized: false },
       }),
     }),
     RedisModule,
@@ -44,6 +51,7 @@ import { PaymentsModule } from './payments/payments.module';
     DriversModule,
     RidesModule,
     PaymentsModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

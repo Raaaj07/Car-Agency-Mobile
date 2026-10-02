@@ -3,16 +3,16 @@ import { Reflector } from '@nestjs/core';
 import { AuthenticatedUser } from '../../auth/strategies/jwt.strategy';
 
 export const ROLES_KEY = 'roles';
-export const Roles = (...roles: Array<'rider' | 'driver'>) => SetMetadata(ROLES_KEY, roles);
+export const Roles = (...roles: Array<'rider' | 'driver' | 'admin'>) => SetMetadata(ROLES_KEY, roles);
 
-// Use after JwtAuthGuard. Matches RoleSelectionScreen's rider/driver split —
-// a rider token can't hit driver-only routes and vice versa.
+// Use after JwtAuthGuard. Server is the source of truth for role (see
+// JwtStrategy DB lookup); driver permission itself moves to ApprovedDriverGuard.
 @Injectable()
 export class RolesGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const required = this.reflector.getAllAndOverride<Array<'rider' | 'driver'>>(ROLES_KEY, [
+    const required = this.reflector.getAllAndOverride<Array<'rider' | 'driver' | 'admin'>>(ROLES_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);

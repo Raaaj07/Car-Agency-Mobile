@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { CreateOrderResult, PaymentProvider, VerifyPaymentInput } from './payment-provider.interface';
 
 /**
@@ -34,12 +34,13 @@ export class RazorpayPaymentProvider implements PaymentProvider {
         currency: 'INR',
         receipt: receiptId,
       }),
+      signal: AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {
       const body = await response.text();
-      this.logger.error(`Razorpay order creation failed: ${body}`);
-      throw new Error('Failed to create payment order');
+      this.logger.error(`Razorpay order creation failed: ${response.status}`);
+      throw new ServiceUnavailableException('Failed to create payment order');
     }
 
     const order = (await response.json()) as { id: string; amount: number };
@@ -48,9 +49,11 @@ export class RazorpayPaymentProvider implements PaymentProvider {
 
   async verifyPayment({ orderId, paymentId, signature }: VerifyPaymentInput): Promise<boolean> {
     const keySecret = this.config.get<string>('RAZORPAY_KEY_SECRET');
-    if (!keySecret) return false;
+    if (!keySecret || !orderId || !paymentId || !signature) return false;
 
     const expected = createHmac('sha256', keySecret).update(`${orderId}|${paymentId}`).digest('hex');
-    return expected === signature;
+    const a = Buffer.from(expected);
+    const b = Buffer.from(signature);
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 }

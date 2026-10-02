@@ -20,7 +20,7 @@ export const DriverEarningsScreen: React.FC = () => {
   const load = useCallback(async () => {
     try {
       setError(undefined);
-      const { items } = await ridesApi.list(1, 50);
+      const { items } = await ridesApi.list(1, 50, 'driver');
       setRides(items);
     } catch (err) {
       setError(getApiError(err));

@@ -3,28 +3,24 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { OnboardingStackParamList } from './types';
 
 import { LanguageSelectionScreen } from '../screens/onboarding/LanguageSelectionScreen';
-import { RoleSelectionScreen } from '../screens/onboarding/RoleSelectionScreen';
 import { SignInScreen } from '../screens/onboarding/SignInScreen';
 import { MobileNumberScreen } from '../screens/onboarding/MobileNumberScreen';
 import { OTPVerificationScreen } from '../screens/onboarding/OTPVerificationScreen';
 import { useAuthStore } from '../store/authStore';
 import { authApi } from '../api/auth';
-import { driversApi } from '../api/drivers';
 import { getApiError } from '../api/client';
-import { CompleteProfileScreen } from '../screens/onboarding/CompleteProfileScreen';
 
 const Stack = createNativeStackNavigator<OnboardingStackParamList>();
 
+// Sign-in only. Profile completion is gated by the server flag in
+// AppNavigator (authenticated && !profileComplete → CompleteProfile screen),
+// never by navigating inside this stack (that screen unmounted instantly).
 export const OnboardingNavigator: React.FC = () => {
   const setLanguage = useAuthStore((state) => state.setLanguage);
-  const setRole = useAuthStore((state) => state.setRole);
   const setPhone = useAuthStore((state) => state.setPhone);
   const login = useAuthStore((state) => state.login);
   const developmentOtp = useAuthStore((s) => s.developmentOtp);
-  const role = useAuthStore((s) => s.role);
   const [socialAuthError, setSocialAuthError] = useState<string | undefined>();
-  const [isCompletingProfile, setIsCompletingProfile] = useState(false);
-  const [profileError, setProfileError] = useState<string | undefined>();
 
   return (
     <Stack.Navigator
@@ -36,17 +32,6 @@ export const OnboardingNavigator: React.FC = () => {
           <LanguageSelectionScreen
             onNext={() => {
               setLanguage('en');
-              navigation.navigate('RoleSelection');
-            }}
-          />
-        )}
-      </Stack.Screen>
-
-      <Stack.Screen name="RoleSelection">
-        {({ navigation }) => (
-          <RoleSelectionScreen
-            onNext={(selectedRole) => {
-              setRole(selectedRole);
               navigation.navigate('SignIn');
             }}
           />
@@ -60,33 +45,19 @@ export const OnboardingNavigator: React.FC = () => {
             authError={socialAuthError}
             onGoogleToken={async (idToken) => {
               setSocialAuthError(undefined);
-              const currentRole = useAuthStore.getState().role;
-              if (!currentRole) {
-                setSocialAuthError('Please choose a role first');
-                return;
-              }
               try {
-                const result = await authApi.googleSignIn(idToken, currentRole);
-                // login() flips isAuthenticated — AppNavigator's conditional
-                // render swaps to RiderMain/DriverMain by itself from there.
+                const result = await authApi.googleSignIn(idToken);
                 login(result.user, result);
               } catch (error) {
-                console.log('Google sign-in failed:', error);
                 setSocialAuthError(getApiError(error));
               }
             }}
             onAppleToken={async (identityToken, fullName) => {
               setSocialAuthError(undefined);
-              const currentRole = useAuthStore.getState().role;
-              if (!currentRole) {
-                setSocialAuthError('Please choose a role first');
-                return;
-              }
               try {
-                const result = await authApi.appleSignIn(identityToken, fullName, currentRole);
+                const result = await authApi.appleSignIn(identityToken, fullName);
                 login(result.user, result);
               } catch (error) {
-                console.log('Apple sign-in failed:', error);
                 setSocialAuthError(getApiError(error));
               }
             }}
@@ -129,53 +100,12 @@ export const OnboardingNavigator: React.FC = () => {
             onVerify={async (otp) => {
               try {
                 const state = useAuthStore.getState();
-                if (!state.role) throw new Error('Please choose a role first');
-                const result = await authApi.verifyOtp({ phone: state.phone, otp, role: state.role });
+                const result = await authApi.verifyOtp({ phone: state.phone, otp });
+                // No navigation here: AppNavigator re-renders from
+                // isAuthenticated/profileComplete automatically.
                 login(result.user, result);
-
-                // Every new signup — rider or driver — always goes through
-                // CompleteProfile first, so we know their real name (and,
-                // for drivers, their vehicle) before they ever reach the app.
-                if (result.isNewUser) {
-                  navigation.navigate('CompleteProfile');
-                }
-                // Existing user: login() alone is enough — AppNavigator
-                // switches to RiderMain/DriverMain on its own.
               } catch (error) {
                 throw new Error(getApiError(error));
-              }
-            }}
-          />
-        )}
-      </Stack.Screen>
-
-      <Stack.Screen name="CompleteProfile">
-        {() => (
-          <CompleteProfileScreen
-            role={role}
-            isSubmitting={isCompletingProfile}
-            serverError={profileError}
-            onSubmit={async (name, vehicle) => {
-              setIsCompletingProfile(true);
-              setProfileError(undefined);
-              try {
-                const updatedUser = await authApi.updateMe({ name });
-                useAuthStore.getState().updateUser(updatedUser);
-
-                const currentRole = useAuthStore.getState().role;
-                if (currentRole === 'driver') {
-                  if (!vehicle) {
-                    throw new Error('Vehicle details are required to continue as a driver');
-                  }
-                  await driversApi.register(vehicle);
-                }
-                // Nothing else to do — isAuthenticated has been true since
-                // login() in OTPVerification; AppNavigator already swapped
-                // to RiderMain/DriverMain underneath this screen.
-              } catch (error) {
-                setProfileError(getApiError(error));
-              } finally {
-                setIsCompletingProfile(false);
               }
             }}
           />

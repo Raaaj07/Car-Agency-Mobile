@@ -15,7 +15,7 @@ interface Props {
 }
 
 export const OTPVerificationScreen: React.FC<Props> = ({
-  phone = '+91 98765 43210',
+  phone = '',
   onBack,
   onVerify,
   onResend,
@@ -68,7 +68,7 @@ export const OTPVerificationScreen: React.FC<Props> = ({
         </Text>
 
         <OTPInput code={code} setCode={setCode} length={4} />
-        {!!developmentOtp && (
+        {__DEV__ && !!developmentOtp && (
           <View style={styles.devCodeBox}>
             <Text style={styles.devCodeLabel}>DEVELOPMENT OTP</Text>
             <Text style={styles.devCodeValue}>{developmentOtp}</Text>

@@ -25,9 +25,9 @@ Run lint and typecheck before declaring any task done.
 
 ## Navigation & Routing
 
-- Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
-- Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
-- Docs: https://docs.expo.dev/router/introduction.md
+- This repo uses **React Navigation** (NOT Expo Router): `native-stack` + `bottom-tabs` in `src/navigation/*` (`AppNavigator`, `OnboardingNavigator`, `MainTabNavigator`, `RiderHomeStackNavigator`, `DriverDashboardStackNavigator`, `types.ts`). There is no `src/app/` directory. Do not add Expo Router or migrate anything to it.
+- Root gating lives in `AppNavigator`: not authenticated → `Onboarding`; authenticated but `user.profileComplete === false` → `CompleteProfile`; otherwise → `Main` (unified Home/Drive/Trips/Profile tabs). Auth state + session restore live in `src/store/authStore.ts` (secure-store tokens, `hydrated` splash).
+- Docs: https://reactnavigation.org/docs/getting-started/
 
 ## Building with EAS
 

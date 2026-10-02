@@ -73,6 +73,7 @@ export function computeNumericPrice(vehicleType: VehicleType, distanceKm: number
 /**
  * Same 50/30/10 + fixed toll/tax split `getFareBreakdown()` uses in
  * rideStore.ts, applied to the real numericPrice for this trip.
+ * Total includes all components minus discount so the parts always sum up.
  */
 export function computeFareBreakdown(numericPrice: number, discountAmount: number) {
   const baseFare = Math.round(numericPrice * 0.5);
@@ -80,7 +81,7 @@ export function computeFareBreakdown(numericPrice: number, discountAmount: numbe
   const timeCharge = Math.round(numericPrice * 0.1);
   const tollFee = 40;
   const taxes = 28;
-  const total = Math.max(numericPrice - discountAmount, 0);
+  const total = Math.max(baseFare + distanceFare + timeCharge + tollFee + taxes - discountAmount, 0);
 
   return {
     baseFare,

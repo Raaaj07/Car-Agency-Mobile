@@ -4,7 +4,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { DriverEntity } from '../drivers/entities/driver.entity';
+import { StorageService } from '../drivers/storage.service';
 import { AuthController } from './auth.controller';
+import { UsersController } from './users.controller';
 import { AuthService } from './auth.service';
 import { UserEntity } from './entities/user.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -17,7 +20,7 @@ import { TokensService } from './tokens.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UserEntity]),
+    TypeOrmModule.forFeature([UserEntity, DriverEntity]),
     PassportModule,
     HttpModule,
     JwtModule.registerAsync({
@@ -29,18 +32,19 @@ import { TokensService } from './tokens.service';
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, UsersController],
   providers: [
     AuthService,
     OtpService,
     TokensService,
     JwtStrategy,
     JwtAuthGuard,
+    StorageService,
     {
       provide: SMS_PROVIDER,
       inject: [ConfigService, DevSmsProvider, Msg91SmsProvider],
       useFactory: (config: ConfigService, dev: DevSmsProvider, msg91: Msg91SmsProvider) =>
-        (config.get<string>('OTP_DEV_MODE') ?? 'true') === 'true' ? dev : msg91,
+        (config.get<string>('OTP_DEV_MODE') ?? 'false') === 'true' ? dev : msg91,
     },
     DevSmsProvider,
     Msg91SmsProvider,

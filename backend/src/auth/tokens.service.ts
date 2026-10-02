@@ -21,7 +21,7 @@ export class TokensService {
     const payload: JwtPayload = {
       sub: user.id,
       phone: user.phone ?? '',
-      role: (user.role ?? null) as 'rider' | 'driver' | null,
+      role: (user.role ?? 'rider') as 'rider' | 'driver' | 'admin',
     };
 
     const accessToken = this.jwt.sign(payload, {

@@ -1,8 +1,10 @@
 import { io, Socket } from 'socket.io-client';
 import { API_URL } from '../api/client';
-import { useRideStore } from '../store/rideStore';
-import { useAuthStore } from '../store/authStore';
-import { ridesApi } from '../api/rides';
+import { tokenManager } from './tokenManager';
+
+// NOTE: no static imports of stores or api modules here — authStore imports
+// this file, so importing them back creates a require cycle. Anything needed
+// from stores/api is loaded via dynamic import() inside handlers.
 
 let socketInstance: Socket | null = null;
 const listeners = new Set<(socket: Socket | null) => void>();
@@ -17,17 +19,19 @@ export function getSocket(): Socket | null {
   return socketInstance;
 }
 
-export function connectSocket(token: string): Socket {
+export function connectSocket(token: string, role?: 'rider' | 'driver' | null): Socket {
   if (socketInstance && socketInstance.connected) {
     return socketInstance;
   }
 
   if (socketInstance) {
+    socketInstance.removeAllListeners();
     socketInstance.disconnect();
     socketInstance = null;
   }
 
-  const baseUrl = API_URL.replace(/\/api\/v1$/, '');
+  // API_URL is .../api/v1 — strip only that suffix; fall back to raw URL.
+  const baseUrl = API_URL.endsWith('/api/v1') ? API_URL.slice(0, -'/api/v1'.length) : API_URL;
   const socket = io(`${baseUrl}/realtime`, {
     auth: { token },
     transports: ['websocket', 'polling'],
@@ -37,37 +41,58 @@ export function connectSocket(token: string): Socket {
     reconnectionDelayMax: 5000,
   });
 
+  // Expired/revoked JWT: stop infinite reconnect loop and force re-login.
+  // Uses tokenManager (not authStore) to avoid a require cycle.
+  socket.on('connect_error', (err: any) => {
+    const msg = String(err?.message ?? '');
+    if (/jwt|unauthorized|401|token/i.test(msg)) {
+      socket.disconnect();
+      tokenManager.handleUnauthorized();
+    }
+  });
+
   socket.on('connect', async () => {
     socketInstance = socket;
     notifyListeners();
 
-    // Re-join active ride room on reconnect
-    const activeRide = useRideStore.getState().activeRide;
-    if (activeRide?.id) {
-      socket.emit('ride:join', { rideId: activeRide.id });
-      // Refresh ride state
-      try {
-        const refreshed = await ridesApi.get(activeRide.id);
-        useRideStore.getState().setActiveRide(refreshed);
-      } catch {
-        // Ignored
-      }
-    }
-
-    // If driver, check for pending offers on reconnect
-    const role = useAuthStore.getState().role;
-    if (role === 'driver') {
-      try {
-        const pending = await ridesApi.getPendingOffer();
-        if (pending?.ride) {
-          useRideStore.getState().setActiveRide({
-            ...pending.ride,
-            expiresInSeconds: pending.remainingSeconds,
-          });
+    try {
+      const [{ useRideStore }, { ridesApi }, { useAuthStore }] = await Promise.all([
+        import('../store/rideStore'),
+        import('../api/rides'),
+        import('../store/authStore'),
+      ]);
+      // Read role fresh (not the captured login-time value) — user may have
+      // become a driver after connecting.
+      const freshRole = role ?? useAuthStore.getState().role;
+      // Re-join active ride room on reconnect
+      const activeRide = useRideStore.getState().activeRide;
+      if (activeRide?.id) {
+        socket.emit('ride:join', { rideId: activeRide.id });
+        // Refresh ride state
+        try {
+          const refreshed = await ridesApi.get(activeRide.id);
+          useRideStore.getState().setActiveRide(refreshed);
+        } catch {
+          // Ignored
         }
-      } catch {
-        // Ignored
       }
+
+      // If driver, check for pending offers on reconnect
+      if (freshRole === 'driver') {
+        try {
+          const pending = await ridesApi.getPendingOffer();
+          if (pending?.ride) {
+            useRideStore.getState().setActiveRide({
+              ...pending.ride,
+              expiresInSeconds: pending.remainingSeconds,
+            });
+          }
+        } catch {
+          // Ignored
+        }
+      }
+    } catch {
+      // Dynamic imports failed — socket stays connected, state refresh skipped.
     }
   });
 
@@ -82,6 +107,7 @@ export function connectSocket(token: string): Socket {
 
 export function disconnectSocket(): void {
   if (socketInstance) {
+    socketInstance.removeAllListeners();
     socketInstance.disconnect();
     socketInstance = null;
     notifyListeners();

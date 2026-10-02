@@ -22,6 +22,10 @@ function formatDate(iso?: string): string {
   return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
 }
 
+// Rider-mode Trips: bookings only. Driven trips live in the driver-mode
+// Trips tab (DriverTripsScreen), so no driver toggle appears here.
+const TAB = 'rider' as const;
+
 export const RideHistoryScreen: React.FC = () => {
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,7 +35,7 @@ export const RideHistoryScreen: React.FC = () => {
   const load = useCallback(async () => {
     try {
       setError(undefined);
-      const { items } = await ridesApi.list(1, 30);
+      const { items } = await ridesApi.list(1, 30, TAB);
       setRides(items);
     } catch (err) {
       setError(getApiError(err));
@@ -42,6 +46,7 @@ export const RideHistoryScreen: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    setLoading(true);
     load();
   }, [load]);
 
@@ -55,7 +60,7 @@ export const RideHistoryScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>My Rides</Text>
+      <Text style={styles.header}>My Trips</Text>
       <FlatList
         data={rides}
         keyExtractor={(item) => item.id}
@@ -72,8 +77,8 @@ export const RideHistoryScreen: React.FC = () => {
         }
         ListEmptyComponent={
           <View style={styles.centered}>
-            <Text style={styles.emptyTitle}>{error ?? 'No rides yet'}</Text>
-            <Text style={styles.emptySub}>Your completed and past trips will show up here.</Text>
+            <Text style={styles.emptyTitle}>{error ?? 'No bookings yet'}</Text>
+            <Text style={styles.emptySub}>Rides you book will show up here.</Text>
           </View>
         }
         renderItem={({ item }) => (
@@ -111,7 +116,7 @@ export const RideHistoryScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
-  header: { ...typography.heading, fontSize: 22, paddingHorizontal: 20, paddingTop: 56, paddingBottom: 12 },
+  header: { ...typography.heading, fontSize: 22, paddingHorizontal: 20, paddingTop: 56, paddingBottom: 8 },
   listContent: { paddingHorizontal: 20, paddingBottom: 100, gap: 12 },
   emptyTitle: { ...typography.bodyBold, marginBottom: 6, textAlign: 'center' },
   emptySub: { ...typography.meta, textAlign: 'center' },
