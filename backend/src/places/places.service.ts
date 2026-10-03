@@ -1,6 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { SavedPlaceEntity } from './entities/saved-place.entity';
 import { UpsertSavedPlaceDto } from './dto/upsert-saved-place.dto';
@@ -9,6 +8,7 @@ import { RideEntity } from '../rides/entities/ride.entity';
 import { haversineKm } from '../common/geo-utils';
 import { PLACES_CONFIG, PlaceConfigItem } from './places.config';
 import { GooglePlacesService } from './google-places.service';
+import { WikimediaService } from './wikimedia.service';
 
 function makeGeoKey(lat: number, lng: number): string {
   return `${lat.toFixed(4)},${lng.toFixed(4)}`;
@@ -28,25 +28,29 @@ export class PlacesService {
     private readonly savedPlaces: Repository<SavedPlaceEntity>,
     @InjectRepository(RideEntity)
     private readonly rides: Repository<RideEntity>,
-    private readonly config: ConfigService,
     private readonly googlePhotos: GooglePlacesService,
+    private readonly wikiPhotos: WikimediaService,
   ) {}
 
   /**
-   * Photo URL for a curated place, served by our own backend so the Google
-   * key never reaches the app. Absolute (PUBLIC_API_URL, the public API
-   * base including /api/v1) so <Image> can fetch it without a token, or a
-   * relative path when PUBLIC_API_URL is unset. Null when no photo exists.
+   * Photo URL for a curated place. ALWAYS the backend proxy path — the proxy
+   * (PlaceImageService) tries Google, then the curated Wikimedia URL, then a
+   * Wikimedia search, and downloads the bytes server-side. The phone never
+   * talks to Google/Wikimedia directly, so User-Agent blocks, bad hotlinks and
+   * key restrictions can no longer leave the card blank.
    */
-  private async buildImageUrl(item: PlaceConfigItem): Promise<string | null> {
-    const resolved = await this.googlePhotos.resolvePhoto(item);
-    if (!resolved) return item.imageUrl ?? null;
+  private buildImageUrl(item: PlaceConfigItem): string {
     return this.photoUrl(`/places/photo/${encodeURIComponent(item.id)}`);
   }
 
+  /**
+   * Returns a path RELATIVE to the API base (e.g. /places/photo/pop-kottai).
+   * The app prefixes it with its own EXPO_PUBLIC_API_URL (which already
+   * contains /api/v1). Do NOT prefix PUBLIC_API_URL here: it usually lacks the
+   * global /api/v1 prefix, which made every proxied photo URL a 404.
+   */
   private photoUrl(path: string): string {
-    const base = (this.config.get<string>('PUBLIC_API_URL') ?? '').replace(/\/$/, '');
-    return base ? `${base}${path}` : path;
+    return path;
   }
 
   /**
@@ -58,14 +62,32 @@ export class PlacesService {
   async getNearby(lat: number, lng: number, radiusM?: number): Promise<PlaceItemDto[]> {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
     const hits = await this.googlePhotos.searchNearby(lat, lng, radiusM);
-    return hits.map((h) => ({
-      id: `nearby-${h.googlePlaceId}`,
-      title: h.title,
-      subtitle: h.subtitle,
-      lat: h.lat,
-      lng: h.lng,
-      imageUrl: h.photoName ? this.photoUrl(`/places/photo/g/${h.googlePlaceId}`) : null,
-    }));
+    return Promise.all(
+      hits.map(async (h) => {
+        let imageUrl: string | null = null;
+        if (h.photoName) {
+          imageUrl = this.photoUrl(`/places/photo/g/${h.googlePlaceId}`);
+        } else {
+          // Keyless fallback so live suggestions still show real photos.
+          const wiki = await this.wikiPhotos.findPhoto(
+            `nearby:${h.googlePlaceId}`,
+            h.title,
+            h.subtitle,
+            h.lat,
+            h.lng,
+          );
+          imageUrl = wiki?.url ?? null;
+        }
+        return {
+          id: `nearby-${h.googlePlaceId}`,
+          title: h.title,
+          subtitle: h.subtitle,
+          lat: h.lat,
+          lng: h.lng,
+          imageUrl,
+        };
+      }),
+    );
   }
 
   async getSaved(userId: string): Promise<SavedPlaceDto[]> {
@@ -171,7 +193,7 @@ export class PlacesService {
           subtitle: r.addr,
           lat: coords.lat,
           lng: coords.lng,
-          imageUrl: near ? await this.buildImageUrl(near) : null,
+          imageUrl: near ? this.buildImageUrl(near) : null,
           saved: !!sp,
           savedId: sp?.id ?? null,
         };
@@ -192,7 +214,7 @@ export class PlacesService {
           subtitle: item.subtitle,
           lat: item.lat,
           lng: item.lng,
-          imageUrl: await this.buildImageUrl(item),
+          imageUrl: this.buildImageUrl(item),
         })),
       );
       if (lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)) {

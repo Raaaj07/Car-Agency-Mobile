@@ -1,7 +1,15 @@
-import { Controller, Get, NotFoundException, Param, Res } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  NotFoundException,
+  Param,
+  Res,
+  StreamableFile,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { PLACES_CONFIG } from './places.config';
 import { GooglePlacesService } from './google-places.service';
+import { PlaceImageService } from './place-image.service';
 
 // Deliberately NOT guarded: React Native <Image> cannot send the bearer
 // token. Security comes from the fixed allow-list — only curated config IDs
@@ -14,13 +22,21 @@ const CURATED_BY_ID = new Map(
 
 @Controller('places/photo')
 export class PlacesPhotoController {
-  constructor(private readonly photos: GooglePlacesService) {}
+  constructor(
+    private readonly google: GooglePlacesService,
+    private readonly images: PlaceImageService,
+  ) {}
 
+  // Curated places: Google photo -> curated URL -> Wikimedia search, all
+  // downloaded server-side and streamed to the app.
   @Get(':configId')
-  async servePhoto(@Param('configId') configId: string, @Res({ passthrough: true }) res: Response) {
+  async servePhoto(
+    @Param('configId') configId: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
     const item = CURATED_BY_ID.get(configId);
     if (!item) throw new NotFoundException('Unknown place photo');
-    const photo = await this.photos.fetchPlacePhoto(item);
+    const photo = await this.images.getCuratedImage(item);
     if (!photo) throw new NotFoundException('No photo available');
     return this.sendPhoto(res, photo);
   }
@@ -32,16 +48,20 @@ export class PlacesPhotoController {
   async serveGooglePhoto(
     @Param('googlePlaceId') googlePlaceId: string,
     @Res({ passthrough: true }) res: Response,
-  ) {
-    const photo = await this.photos.fetchPlacePhotoById(googlePlaceId);
+  ): Promise<StreamableFile> {
+    const photo = await this.google.fetchPlacePhotoById(googlePlaceId);
     if (!photo) throw new NotFoundException('No photo available');
     return this.sendPhoto(res, photo);
   }
 
-  private sendPhoto(res: Response, photo: { body: Buffer; contentType: string }) {
-    res.setHeader('Content-Type', photo.contentType);
+  // IMPORTANT: a raw Buffer returned from a Nest handler is serialised with
+  // res.json() ({"type":"Buffer","data":[...]}), which the phone cannot decode
+  // ("unknown image format"). StreamableFile sends the real binary bytes.
+  private sendPhoto(res: Response, photo: { body: Buffer; contentType: string }): StreamableFile {
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.setHeader('Content-Length', String(photo.body.length));
-    return photo.body;
+    return new StreamableFile(photo.body, {
+      type: photo.contentType,
+      length: photo.body.length,
+    });
   }
 }

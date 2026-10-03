@@ -1,6 +1,7 @@
 /**
  * PlaceImage — RN Image with loading skeleton + graceful MapPin fallback.
- * Never crashes on a missing or broken URL.
+ * Never crashes on a missing or broken URL. Retries once on failure (the
+ * backend photo proxy may still be warming its cache on the first request).
  */
 import React, { memo, useEffect, useState } from 'react';
 import { Image, View, StyleSheet } from 'react-native';
@@ -14,17 +15,37 @@ interface Props {
   borderRadius?: number;
 }
 
+const MAX_RETRIES = 1;
+const RETRY_DELAY_MS = 1500;
+
 export const PlaceImage: React.FC<Props> = memo(({ uri, width, height, borderRadius = 0 }) => {
   const [loadError, setLoadError] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   // Recycled cards (FlatList) must not keep a previous image's state.
   useEffect(() => {
     setLoadError(false);
     setLoaded(false);
+    setAttempt(0);
   }, [uri]);
 
   const showFallback = !uri || loadError;
+
+  // Cache-bust only on retry so a cached failure is not reused.
+  const finalUri =
+    uri && attempt > 0 ? `${uri}${uri.includes('?') ? '&' : '?'}r=${attempt}` : uri;
+
+  const handleError = (e: { nativeEvent?: { error?: string } }) => {
+    if (__DEV__) {
+      console.warn('[PlaceImage] failed to load', finalUri, e?.nativeEvent?.error ?? '');
+    }
+    if (attempt < MAX_RETRIES) {
+      setTimeout(() => setAttempt((a) => a + 1), RETRY_DELAY_MS);
+    } else {
+      setLoadError(true);
+    }
+  };
 
   return (
     <View
@@ -35,18 +56,17 @@ export const PlaceImage: React.FC<Props> = memo(({ uri, width, height, borderRad
         showFallback && styles.fallback,
       ]}
     >
-      {!showFallback && (
+      {!showFallback && finalUri && (
         <Image
-          source={{ uri }}
+          key={finalUri}
+          source={{ uri: finalUri }}
           style={[StyleSheet.absoluteFill, { borderRadius }]}
           resizeMode="cover"
           onLoad={() => setLoaded(true)}
-          onError={() => setLoadError(true)}
+          onError={handleError}
         />
       )}
-      {showFallback && (
-        <MapPin size={22} color={colors.textMuted} />
-      )}
+      {showFallback && <MapPin size={22} color={colors.textMuted} />}
     </View>
   );
 });

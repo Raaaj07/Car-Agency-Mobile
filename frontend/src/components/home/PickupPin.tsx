@@ -19,7 +19,10 @@ export const PickupPin: React.FC<Props> = memo(({
   labelOpacity = 1,
   addressText,
   bottomInset = 0,
-  showCrosshair = __DEV__,
+  // Alignment crosshair from development — defaults off so no line ever
+  // crosses the map/pin in any build. Pass showCrosshair explicitly to
+  // re-enable it while debugging pin alignment.
+  showCrosshair = false,
 }) => {
   const [pinHeight, setPinHeight] = useState<number>(0);
 
