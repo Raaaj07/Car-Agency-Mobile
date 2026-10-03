@@ -13,7 +13,7 @@ export type OnboardingStackParamList = {
 // Rider Home Stack Types
 export type RiderHomeStackParamList = {
   HomeDashboard: undefined;
-  DestinationSearch: undefined;
+  DestinationSearch: { focus?: 'pickup' | 'dropoff' } | undefined;
   VehicleSelection: undefined;
   RideDetails: undefined;
   FindingDriver: undefined;

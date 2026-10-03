@@ -1,7 +1,15 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Animated, Easing } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, Compass, Clock, User, Navigation } from 'lucide-react-native';
 import { colors, shadows, typography } from '../../theme/theme';
+
+export const TAB_BAR_HEIGHT = 64 + 12; // 76px
+
+export function useTabBarSpace(): number {
+  const insets = useSafeAreaInsets();
+  return TAB_BAR_HEIGHT + insets.bottom;
+}
 
 export interface TabItem {
   id: string;
@@ -13,7 +21,7 @@ interface BottomTabBarProps {
   activeTab: string;
   onTabPress: (id: string) => void;
   mode?: 'rider' | 'driver';
-  visible?: boolean; // ADD — driven by the current route, not a timer
+  visible?: boolean;
 }
 
 export const BottomTabBar: React.FC<BottomTabBarProps> = ({
@@ -22,6 +30,7 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
   mode = 'rider',
   visible = true,
 }) => {
+  const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(visible ? 0 : 120)).current;
   const opacity = useRef(new Animated.Value(visible ? 1 : 0)).current;
 
@@ -70,12 +79,15 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
     }
   };
 
+  const dynamicPaddingBottom = Math.max(insets.bottom, 12);
+
   return (
     <Animated.View
-      // box-none: fixes taps being swallowed by this floating overlay's
-      // transparent padding on screens where the bar IS shown.
       pointerEvents={visible ? 'box-none' : 'none'}
-      style={[styles.container, { transform: [{ translateY }], opacity }]}
+      style={[
+        styles.container,
+        { paddingBottom: dynamicPaddingBottom, transform: [{ translateY }], opacity },
+      ]}
     >
       <View style={styles.bar}>
         {tabs.map((tab) => {
@@ -94,7 +106,7 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
 };
 
 const styles = StyleSheet.create({
-  container: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'transparent', paddingHorizontal: 16, paddingBottom: 12 },
+  container: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'transparent', paddingHorizontal: 16 },
   bar: { flexDirection: 'row', height: 64, backgroundColor: '#FFFFFF', borderRadius: 32, borderWidth: 1, borderColor: '#EEECF2', alignItems: 'center', justifyContent: 'space-around', ...shadows.cardHover },
   tab: { alignItems: 'center', justifyContent: 'center', flex: 1, height: '100%' },
   label: { ...typography.meta, fontSize: 11, marginTop: 3, color: colors.textMuted },

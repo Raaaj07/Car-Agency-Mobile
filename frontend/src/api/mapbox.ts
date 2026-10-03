@@ -35,21 +35,39 @@ export async function searchAddress(query: string): Promise<GeocodeResult[]> {
   }
 }
 
-export async function reverseGeocode(lat: number, lng: number): Promise<string> {
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return 'Unknown location';
-  const token = requireToken();
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${token}&limit=1`;
+export async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (!MAPBOX_TOKEN) {
+    console.warn('[mapbox] EXPO_PUBLIC_MAPBOX_TOKEN missing, reverseGeocode returning null');
+    return null;
+  }
+  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${MAPBOX_TOKEN}&limit=1`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`Reverse geocode failed (${res.status})`);
+    if (!res.ok) {
+      console.warn(`[mapbox] Reverse geocode HTTP error ${res.status}`);
+      return null;
+    }
     const data = await res.json();
-    return data.features?.[0]?.place_name ?? `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    return data.features?.[0]?.place_name ?? null;
+  } catch (err) {
+    console.warn('[mapbox] Reverse geocode error:', err);
+    return null;
   } finally {
     clearTimeout(timer);
   }
 }
+
+/** Mapbox Static Image thumbnail URL (client-side fallback for place photos) */
+export function placeThumbUrl(lat: number, lng: number, w: number, h: number): string | null {
+  if (!MAPBOX_TOKEN) return null;
+  const W = Math.round(w * 2);
+  const H = Math.round(h * 2);
+  return `https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/pin-s+211B4E(${lng},${lat})/${lng},${lat},13/${W}x${H}@2x?access_token=${MAPBOX_TOKEN}`;
+}
+
 
 export interface RouteResult {
   // [lng, lat] pairs, already in the order Mapbox's own map layers expect.

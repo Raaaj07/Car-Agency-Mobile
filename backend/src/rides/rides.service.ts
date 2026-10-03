@@ -25,23 +25,9 @@ import { VerifyPickupOtpDto } from './dto/verify-pickup-otp.dto';
 import { RideEntity } from './entities/ride.entity';
 import { computeFareBreakdown, computeNumericPrice } from './fare-catalog';
 import { RidesGateway } from './gateway/rides.gateway';
+import { PromosService } from '../promos/promos.service';
 
-// Promo codes are configurable via PROMO_CODES_JSON env, e.g.
-// '{"VAZHI20":40}'. Falls back to the legacy single code.
-function loadPromoCodes(config: ConfigService): Record<string, number> {
-  const raw = config.get<string>('PROMO_CODES_JSON');
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as Record<string, number>;
-      return Object.fromEntries(
-        Object.entries(parsed).map(([k, v]) => [k.toUpperCase(), Number(v)]),
-      );
-    } catch {
-      // fall through to default
-    }
-  }
-  return { VAZHI20: 40 };
-}
+
 
 function generateOtp(length = 4): string {
   // crypto-secure OTP: Math.random is predictable.
@@ -61,6 +47,7 @@ export class RidesService implements OnApplicationBootstrap {
     private readonly geo: GeoService,
     private readonly gateway: RidesGateway,
     private readonly config: ConfigService,
+    private readonly promosService: PromosService,
   ) {
     this.requestTimeoutSeconds = this.config.get<number>('RIDE_REQUEST_TIMEOUT_SECONDS') ?? 15;
   }
@@ -163,7 +150,7 @@ export class RidesService implements OnApplicationBootstrap {
     }
     const distanceKm = haversineKm(dto.pickup, dto.dropoff);
     const numericPrice = computeNumericPrice(dto.vehicleType, distanceKm);
-    const discount = this.resolveDiscount(dto.promoCode);
+    const discount = dto.promoCode ? await this.promosService.resolveDiscount(dto.promoCode, riderId) : 0;
     const fareBreakdown = computeFareBreakdown(numericPrice, discount);
     const pickupOtp = generateOtp();
 
@@ -200,13 +187,6 @@ export class RidesService implements OnApplicationBootstrap {
       ...this.toRiderView(reloaded),
       match: matchResult,
     };
-  }
-
-  private resolveDiscount(promoCode?: string): number {
-    if (!promoCode) return 0;
-    const codes = loadPromoCodes(this.config);
-    // Unknown codes give no discount (never auto-apply a default).
-    return codes[promoCode.toUpperCase()] ?? 0;
   }
 
   private async matchNearestDriver(
@@ -493,7 +473,7 @@ export class RidesService implements OnApplicationBootstrap {
     }
     finalDistanceKm = Math.min(finalDistanceKm, Math.max(estimateKm * 3, 5), 500);
     const numericPrice = computeNumericPrice(ride.vehicleType, finalDistanceKm);
-    const discount = this.resolveDiscount(ride.promoCode ?? undefined);
+    const discount = ride.promoCode ? this.promosService.discountFor(ride.promoCode) : 0;
     ride.fareBreakdown = computeFareBreakdown(numericPrice, discount);
     ride.distanceKm = finalDistanceKm.toFixed(2);
     ride.status = 'completed';

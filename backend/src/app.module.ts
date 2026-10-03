@@ -8,6 +8,8 @@ import { DriversModule } from './drivers/drivers.module';
 import { RidesModule } from './rides/rides.module';
 import { PaymentsModule } from './payments/payments.module';
 import { AdminModule } from './admin/admin.module';
+import { PlacesModule } from './places/places.module';
+import { PromosModule } from './promos/promos.module';
 
 // console.log('DB CONFIG:', {
 //   host: process.env.DB_HOST,
@@ -52,6 +54,8 @@ import { AdminModule } from './admin/admin.module';
     RidesModule,
     PaymentsModule,
     AdminModule,
+    PlacesModule,
+    PromosModule,
   ],
 })
 export class AppModule {}

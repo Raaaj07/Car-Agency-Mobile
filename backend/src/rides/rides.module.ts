@@ -9,11 +9,13 @@ import { RideEntity } from './entities/ride.entity';
 import { RidesGateway } from './gateway/rides.gateway';
 import { RidesController } from './rides.controller';
 import { RidesService } from './rides.service';
+import { PromosModule } from '../promos/promos.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([RideEntity, DriverEntity, UserEntity]),
     DriversModule,
+    PromosModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

@@ -77,6 +77,17 @@ Frontend (optional): `EXPO_PUBLIC_GOOGLE_PLACE` (alias `EXPO_PUBLIC_GOOGLE_PLACE
 - `users.role` still admits legacy `driver` values in DB; new code treats approval status as truth, but a future migration should normalize to `rider|admin`.
 - Lint errors predate this work and were intentionally left untouched (out of scope).
 
+## Review round — OTP display, mode switching, interactive pickup map
+
+Changed (frontend only, 4 files):
+
+- `src/screens/onboarding/OTPVerificationScreen.tsx` — dev OTP box gated on the server-provided `developmentOtp` presence instead of `__DEV__` (release bundles have `__DEV__===false`, so the box never showed in release builds); tap the box to auto-fill. Backend chain unchanged and already correct (`OTP_DEV_MODE=true`, non-prod boot, `DevSmsProvider` logs `[DEV OTP]`).
+- `src/screens/rider/ProfileScreen.tsx` — driver account mode switch: the Profile tab (same screen in both modes) previously showed "Switch to Driver mode" even while already in driver mode; pressing it no-op'd the mode but bounced the socket and wiped ride state. Now shows "Switch to Rider mode" in driver mode, takes an online driver offline first (blocks on failure so no ghost-online driver remains), and both switch directions block while a trip is active (`matched|driver_en_route|in_progress`).
+- `src/components/primitives/RealMapView.tsx` — interactive pickup pointing: `onRegionDidChange` + `properties.isUserInteraction` (gesture settles only; Android verified, iOS best-effort) calls new `onPickupPointed` with the map centre (`visibleBounds` midpoint fallback), debounced 150 ms. Camera centre frozen after mount (native `stop` re-applies on every prop-identity change — the old inline array snapped back to zoom 14 on each re-render); pickup re-centring now arrival-only with a last-target key so pointing/focus never re-runs an identical fly; `mapReady` gate via `onDidFinishLoadingMap`.
+- `src/screens/rider/HomeDashboardScreen.tsx` — map is now interactive (removed `interactive={false}`): pan/pinch/tap sets the pickup (reverse-geocoded, newest gesture wins via sequence counter, initial GPS fix no longer overwrites a pointed pickup). Gesture routing: ScrollView `box-none`, map-area spacer `none`, header `box-none` so map drags and sheet scroll no longer fight. Morph/annotation rows `box-none` (taps no longer fall through to the map and teleport the pickup); white address bar is tappable → search. Morph bar now lands at `insets.top + 8` (same spot as the pinned sticky pill — seamless crossfade, keeps the bar clear of the green location dot at map centre when focused).
+
+Checks: `cd backend && npm run build` PASS; `cd frontend && npx tsc --noEmit` PASS; eslint on the 4 changed files = Home/OTP clean, RealMapView + ProfileScreen exactly at the pre-existing HEAD baseline (2 exhaustive-deps warnings; 1 `loadApp()` set-state-in-effect error + `radii` warning that exist at HEAD too). NOT RUN on device: map pointing, focus fly, sheet scroll feel, mode switching, OTP box in a fresh release build (rebuild `npx expo run:android --variant release` required — release embeds JS at build time).
+
 ## B15 secrets warning
 
 `backend/.env`, `frontend/.env`, and three `.jks` keystores exist in the working folder (gitignored, contents never printed or modified here). If this folder was ever shared, rotate DB, Redis, JWT, MSG91, and Razorpay secrets, and revoke/reissue the upload keystores.

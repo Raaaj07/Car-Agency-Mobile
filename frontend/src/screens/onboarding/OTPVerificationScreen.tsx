@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { KeyRound, CheckCircle, RefreshCw } from 'lucide-react-native';
+import { KeyRound, RefreshCw } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { OTPInput } from '../../components/primitives/Input';
@@ -68,11 +68,19 @@ export const OTPVerificationScreen: React.FC<Props> = ({
         </Text>
 
         <OTPInput code={code} setCode={setCode} length={4} />
-        {__DEV__ && !!developmentOtp && (
-          <View style={styles.devCodeBox}>
+        {/* Shown whenever the server returns a dev OTP (OTP_DEV_MODE=true,
+            non-prod). NOT gated on __DEV__: release dev builds never set
+            __DEV__, but the server still only sends this in dev mode. */}
+        {!!developmentOtp && (
+          <TouchableOpacity
+            style={styles.devCodeBox}
+            activeOpacity={0.7}
+            onPress={() => setCode(developmentOtp.split('').slice(0, 4))}
+          >
             <Text style={styles.devCodeLabel}>DEVELOPMENT OTP</Text>
             <Text style={styles.devCodeValue}>{developmentOtp}</Text>
-          </View>
+            <Text style={styles.devCodeHint}>Tap to fill</Text>
+          </TouchableOpacity>
         )}
         {!!error && <Text style={styles.errorText}>{error}</Text>}
 
@@ -176,5 +184,6 @@ const styles = StyleSheet.create({
   devCodeBox: { marginTop: 18, alignItems: 'center', backgroundColor: colors.accentLight, padding: 12, borderRadius: radii.md },
   devCodeLabel: { ...typography.metaBold, color: colors.accent, fontSize: 10, letterSpacing: 1 },
   devCodeValue: { color: colors.textPrimary, fontWeight: '800', fontSize: 24, letterSpacing: 4, marginTop: 2 },
+  devCodeHint: { ...typography.meta, fontSize: 11, color: colors.accent, marginTop: 4 },
   errorText: { color: colors.danger, fontSize: 13, marginTop: 12, textAlign: 'center' },
 });

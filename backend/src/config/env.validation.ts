@@ -116,6 +116,14 @@ class EnvironmentVariables {
   DB_SSL_REJECT_UNAUTHORIZED?: string;
 
   @IsOptional()
+  @IsString()
+  GOOGLE_PLACES_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  PUBLIC_API_URL?: string;
+
+  @IsOptional()
   @IsNumberString()
   DRIVER_SEARCH_RADIUS_METERS?: string;
 
@@ -152,7 +160,7 @@ export function validateEnv(config: Record<string, unknown>) {
     }
   }
 
-  // Dev-mode providers must never run in production (OTP leak / auto-pay).
+  // Dev-mode providers & CORS rules must be enforced in production
   if ((validated as unknown as Record<string, unknown>).NODE_ENV === 'production') {
     for (const key of ['OTP_DEV_MODE', 'PAYMENTS_DEV_MODE'] as const) {
       if ((validated as unknown as Record<string, unknown>)[key] === 'true') {
@@ -161,6 +169,14 @@ export function validateEnv(config: Record<string, unknown>) {
     }
     if ((validated as unknown as Record<string, unknown>).DB_SYNCHRONIZE === 'true') {
       throw new Error('Invalid environment configuration:\nDB_SYNCHRONIZE must never be "true" in production');
+    }
+    const cors = (validated as unknown as Record<string, unknown>).CORS_ORIGIN;
+    if (cors === '*' || !cors) {
+      throw new Error('Invalid environment configuration:\nCORS_ORIGIN must not be "*" or empty in production');
+    }
+    const publicUrl = (validated as unknown as Record<string, unknown>).PUBLIC_API_URL;
+    if (!publicUrl || typeof publicUrl !== 'string' || !publicUrl.startsWith('https://')) {
+      throw new Error('Invalid environment configuration:\nPUBLIC_API_URL must be a valid https:// URL in production');
     }
   }
 

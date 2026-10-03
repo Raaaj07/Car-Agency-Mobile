@@ -76,6 +76,8 @@ interface RideState {
   compliments: string[];
   tipAmount: number;
   activeRide: ActiveRide | null;
+  /** Vehicle type to pre-select on VehicleSelection; cleared after first use. */
+  preferredVehicleId: string | null;
 
   setPickup: (location: string, address?: string, coords?: LatLng) => void;
   setDropoff: (location: string, address?: string, coords?: LatLng) => void;
@@ -88,6 +90,7 @@ interface RideState {
   setActiveRide: (ride: ActiveRide | null) => void;
   getFareBreakdown: () => FareBreakdown;
   resetRide: () => void;
+  setPreferredVehicle: (id: string | null) => void;
 }
 
 const defaultVehicle: VehicleOption = {
@@ -129,6 +132,7 @@ export const useRideStore = create<RideState>((set, get) => ({
   compliments: [],
   tipAmount: 0,
   activeRide: null,
+  preferredVehicleId: null,
 
   setPickup: (location, address, coords) =>
     set((state) => ({
@@ -199,13 +203,13 @@ export const useRideStore = create<RideState>((set, get) => ({
     };
   },
 
+  // Preserve pickup/pickupAddress/pickupCoords so the home map keeps the
+  // rider's location after a completed or cancelled ride. Only clear dropoff,
+  // activeRide and ride-specific fields.
   resetRide: () =>
-    set({
-      pickup: '',
-      pickupAddress: '',
+    set((state) => ({
       dropoff: '',
       dropoffAddress: '',
-      pickupCoords: undefined,
       dropoffCoords: undefined,
       promoCode: null,
       discountAmount: 0,
@@ -214,5 +218,11 @@ export const useRideStore = create<RideState>((set, get) => ({
       compliments: [],
       tipAmount: 0,
       activeRide: null,
-    }),
+      // Preserve pickup so the home screen stays centred on the last known position.
+      pickup: state.pickup,
+      pickupAddress: state.pickupAddress,
+      pickupCoords: state.pickupCoords,
+    })),
+
+  setPreferredVehicle: (id) => set({ preferredVehicleId: id }),
 }));

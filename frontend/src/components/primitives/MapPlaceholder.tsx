@@ -18,8 +18,8 @@ interface MapPlaceholderProps {
 export const MapPlaceholder: React.FC<MapPlaceholderProps> = ({
   style,
   children,
-  pickupText = 'Current Location - MG Road',
-  dropText = 'Indiranagar Metro Station',
+  pickupText = 'Pickup Location',
+  dropText = 'Dropoff Destination',
   showRoute = true,
   showRadar = false,
   showDriverPin = false,

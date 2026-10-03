@@ -37,11 +37,26 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
   const setSelectedVehicleStore = useRideStore((state) => state.setSelectedVehicle);
   const pickupCoords = useRideStore((state) => state.pickupCoords);
   const dropoffCoords = useRideStore((state) => state.dropoffCoords);
+  const preferredVehicleId = useRideStore((state) => state.preferredVehicleId);
+  const setPreferredVehicle = useRideStore((state) => state.setPreferredVehicle);
 
-  const [selectedId, setSelectedId] = useState<string>(storeSelectedVehicle?.id || 'sedan');
+  // Pre-select preferred vehicle on mount (set by Home screen Explore tiles), then clear it.
+  const initialId = preferredVehicleId ?? storeSelectedVehicle?.id ?? 'sedan';
+  const [selectedId, setSelectedId] = useState<string>(initialId);
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [routeError, setRouteError] = useState(false);
+
+  useEffect(() => {
+    if (preferredVehicleId) {
+      setSelectedId(preferredVehicleId);
+      // Find and pre-apply in store so RideDetails shows the right price.
+      const preferred = vehicles.find((v) => v.id === preferredVehicleId);
+      if (preferred) setSelectedVehicleStore(preferred);
+      setPreferredVehicle(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const selectedVehicle = vehicles.find((v) => v.id === selectedId) || vehicles[2];
 

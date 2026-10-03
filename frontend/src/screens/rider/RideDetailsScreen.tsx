@@ -76,17 +76,19 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
         </Card>
 
         {/* Promo Code Card */}
-        <Card style={styles.cardSection}>
-          <Text style={styles.sectionTitle}>PROMO CODE</Text>
-          <View style={styles.promoInputRow}>
-            <Tag size={20} color={colors.accent} style={{ marginRight: 8 }} />
-            <Text style={styles.promoCodeText}>{promoCode || 'VAZHI20'}</Text>
-            <View style={styles.appliedBadge}>
-              <Check size={14} color={colors.success} />
-              <Text style={styles.appliedText}>₹{discountAmount} Saved</Text>
+        {promoCode ? (
+          <Card style={styles.cardSection}>
+            <Text style={styles.sectionTitle}>PROMO CODE</Text>
+            <View style={styles.promoInputRow}>
+              <Tag size={20} color={colors.accent} style={{ marginRight: 8 }} />
+              <Text style={styles.promoCodeText}>{promoCode}</Text>
+              <View style={styles.appliedBadge}>
+                <Check size={14} color={colors.success} />
+                <Text style={styles.appliedText}>₹{discountAmount} Saved</Text>
+              </View>
             </View>
-          </View>
-        </Card>
+          </Card>
+        ) : null}
 
         {/* Safety Banner */}
         <View style={styles.safetyBox}>

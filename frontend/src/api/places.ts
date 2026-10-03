@@ -1,17 +1,76 @@
 /**
- * Place imagery for the home dashboard.
+ * places.ts — typed wrappers over the Vazhi backend /places routes.
  *
- * - Place cards use Google Places API (New) Text Search → Place Photos
- *   (`placePhotoUrl`) for a real photo of the searched place. Key:
- *   `EXPO_PUBLIC_GOOGLE_PLACE` (or `EXPO_PUBLIC_GOOGLE_PLACES_API_KEY`) —
- *   enable *Places API (New)* for it in Google Cloud Console.
- * - `placeThumbUrl` is the layered fallback / loading placeholder:
- *   Google Static Maps (`EXPO_PUBLIC_GOOGLE_MAPS_KEY`) → Mapbox Static
- *   Images (`EXPO_PUBLIC_MAPBOX_TOKEN`).
+ * Also re-exports placeThumbUrl / placePhotoUrl (legacy image helpers used
+ * by the old home screen; kept so existing call sites compile unchanged).
  */
+import { api } from './client';
 
-const PLACES_KEY =
-  process.env.EXPO_PUBLIC_GOOGLE_PLACE;
+// ── Shared types ────────────────────────────────────────────────────────────
+
+export interface PlaceItem {
+  id: string;
+  title: string;
+  subtitle: string;
+  lat: number;
+  lng: number;
+  imageUrl: string | null;
+  saved?: boolean;
+  savedId?: string | null;
+}
+
+export interface SavedPlace {
+  id: string;
+  label?: string | null;
+  title: string;
+  address: string;
+  lat: number;
+  lng: number;
+}
+
+export interface PopularPlacesResponse {
+  quickPicks: PlaceItem[];
+  popular: PlaceItem[];
+  cityHighlights: PlaceItem[];
+}
+
+// ── API wrappers ─────────────────────────────────────────────────────────────
+
+export const placesApi = {
+  /** GET /places/saved */
+  getSaved: async (): Promise<SavedPlace[]> =>
+    (await api.get<SavedPlace[]>('/places/saved')).data,
+
+  /** POST /places/saved – upsert by (userId, geoKey) */
+  upsertSaved: async (body: {
+    title: string;
+    address: string;
+    lat: number;
+    lng: number;
+    label?: 'home' | 'work';
+  }): Promise<SavedPlace> => (await api.post<SavedPlace>('/places/saved', body)).data,
+
+  /** DELETE /places/saved/:id */
+  deleteSaved: async (id: string): Promise<void> => {
+    await api.delete(`/places/saved/${id}`);
+  },
+
+  /** GET /places/recent?limit=5 */
+  getRecent: async (limit = 5): Promise<PlaceItem[]> =>
+    (await api.get<PlaceItem[]>('/places/recent', { params: { limit } })).data,
+
+  /** GET /places/popular?lat=&lng= */
+  getPopular: async (coords?: { lat: number; lng: number }): Promise<PopularPlacesResponse> =>
+    (
+      await api.get<PopularPlacesResponse>('/places/popular', {
+        params: coords ? { lat: coords.lat, lng: coords.lng } : {},
+      })
+    ).data,
+};
+
+// ── Legacy image helpers (kept for backward compat) ──────────────────────────
+
+const PLACES_KEY = process.env.EXPO_PUBLIC_GOOGLE_PLACE;
 const GOOGLE_MAPS_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY;
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN;
 
@@ -36,14 +95,9 @@ export function placeThumbUrl(lat: number, lng: number, w: number, h: number): s
   );
 }
 
-// ── Google Places photos ─────────────────────────────────────────────
-// Real photographs of the places the user searched (Places API New:
-// Text Search → photo resource → media URL). Results are memoized for the
-// app session; failures are NOT cached so a later mount can retry.
-
 const photoCache = new Map<string, string | null>();
 
-/** Photo URL for a place address, or null when unconfigured/unknown (caller falls back to placeThumbUrl). */
+/** Photo URL for a place address, or null when unconfigured/unknown. */
 export async function placePhotoUrl(address: string): Promise<string | null> {
   const query = address.trim();
   if (!PLACES_KEY || !query) return null;

@@ -1,8 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Animated, StyleSheet, View } from 'react-native';
-import Mapbox, { Camera, MapView, PointAnnotation, ShapeSource, LineLayer } from '@rnmapbox/maps';
+import { Animated, StyleSheet, Text, View } from 'react-native';
+import Mapbox, { Camera, MapView, PointAnnotation, ShapeSource, LineLayer, CircleLayer } from '@rnmapbox/maps';
+import { colors } from '../../theme/theme';
 
-Mapbox.setAccessToken(process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '');
+const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '';
+if (MAPBOX_TOKEN) {
+  Mapbox.setAccessToken(MAPBOX_TOKEN);
+}
 
 export interface LatLng {
   lat: number;
@@ -13,22 +17,24 @@ interface Props {
   mode: 'picker' | 'tracking' | 'navigation';
   pickup?: LatLng;
   dropoff?: LatLng;
-  driverPosition?: LatLng; // live position for tracking/navigation modes
-  route?: [number, number][]; // [lng, lat] pairs from getRoute(), drawn as a road-following line
-  nearbyDrivers?: LatLng[]; // other online/available drivers around pickup — shown as small dots
-  onMapPress?: (coords: LatLng) => void; // picker mode: tap to set a point
+  driverPosition?: LatLng;
+  route?: [number, number][];
+  nearbyDrivers?: LatLng[];
+  onMapPress?: (coords: LatLng) => void;
   darkTheme?: boolean;
-  // false = static, non-interactive map (home screen renders it behind the
-  // scrolling sheet, where map pan/pinch would fight the scroll gesture).
   interactive?: boolean;
-  // picker mode: fades the pickup pin out (home hides it while the sheet
-  // takes over the "current location" label).
   pickupVisible?: boolean;
-  // picker mode: smooth fly-to target. The home sheet sets this when it is
-  // half-scrolled so the current location lands centred in the strip of map
-  // still visible above the sheet (bottomPadding = hidden area). Null/absent
-  // falls back to centring the pickup.
   flyTo?: { lat: number; lng: number; zoom?: number; bottomPadding?: number } | null;
+  onPickupPointed?: (coords: LatLng, meta?: { isUserInteraction: boolean }) => void;
+  pickerPin?: boolean;
+  onCenterIdle?: (coords: LatLng, meta?: { isUserInteraction: boolean }) => void;
+  // Fires once when a user gesture (pan/zoom) starts moving the camera —
+  // lets the screen show "locating" feedback immediately instead of
+  // waiting for the idle + reverse-geocode round trip.
+  onCenterGestureStart?: () => void;
+  bottomPadding?: number;
+  showUserLocation?: boolean;
+  recenterTo?: { lat: number; lng: number; nonce: number };
 }
 
 export const RealMapView: React.FC<Props> = ({
@@ -43,10 +49,55 @@ export const RealMapView: React.FC<Props> = ({
   interactive = true,
   pickupVisible = true,
   flyTo = null,
+  onPickupPointed,
+  pickerPin = false,
+  onCenterIdle,
+  onCenterGestureStart,
+  bottomPadding = 0,
+  showUserLocation = false,
+  recenterTo,
 }) => {
   const cameraRef = useRef<Camera>(null);
   const isMountedRef = useRef(true);
   const [pickupOpacity] = useState(() => new Animated.Value(1));
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const prevRecenterNonceRef = useRef<number | undefined>(undefined);
+
+  const paddingRef = useRef({
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingTop: 0,
+    paddingBottom: bottomPadding,
+  });
+
+  // Sync paddingRef and update camera when bottomPadding prop changes
+  useEffect(() => {
+    paddingRef.current.paddingBottom = bottomPadding;
+    if (cameraRef.current && mapReady) {
+      try {
+        cameraRef.current.setCamera({
+          padding: paddingRef.current,
+          animationDuration: 0,
+        });
+      } catch {
+        // safe ignore
+      }
+    }
+  }, [bottomPadding, mapReady]);
+
+  const [initialCenter] = useState<[number, number]>(
+    pickup ? [pickup.lng, pickup.lat] : [78.146, 11.6643],
+  );
+
+  const prevPickupKeyRef = useRef<string | null>(null);
+  const prevFlyRef = useRef<{ lat: number; lng: number } | null>(null);
+  const lastCameraKeyRef = useRef<string | null>(null);
+  // Latched by onCameraChanged while a user gesture is active. The
+  // idle-time gesture flag is unreliable (false once the gesture ends),
+  // so without this latch user pans would never count as interaction and
+  // the pickup would never follow the map.
+  const userGestureRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -54,7 +105,6 @@ export const RealMapView: React.FC<Props> = ({
     };
   }, []);
 
-  // Smooth pin fade for the home sheet's hand-off to the pickup-point pill.
   useEffect(() => {
     Animated.timing(pickupOpacity, {
       toValue: pickupVisible ? 1 : 0,
@@ -63,20 +113,23 @@ export const RealMapView: React.FC<Props> = ({
     }).start();
   }, [pickupVisible, pickupOpacity]);
 
+  // Tracking / navigation mode camera
   useEffect(() => {
     if ((mode === 'tracking' || mode === 'navigation') && driverPosition && cameraRef.current && isMountedRef.current) {
       try {
         cameraRef.current.setCamera({
           centerCoordinate: [driverPosition.lng, driverPosition.lat],
           zoomLevel: 15,
+          padding: paddingRef.current,
           animationDuration: 800,
         });
       } catch {
-        // Native view was already torn down mid-transition — safe to ignore.
+        // safe ignore
       }
     }
   }, [driverPosition, mode]);
 
+  // Fit bounds when both pickup & dropoff exist
   useEffect(() => {
     if (mode === 'picker' && pickup && dropoff && cameraRef.current && isMountedRef.current) {
       try {
@@ -85,44 +138,91 @@ export const RealMapView: React.FC<Props> = ({
         cameraRef.current.fitBounds(
           [Math.max(...lngs), Math.max(...lats)],
           [Math.min(...lngs), Math.min(...lats)],
-          [80, 60, 80, 60],
+          [80, 60, 80, 60 + paddingRef.current.paddingBottom],
           800,
         );
       } catch {
-        // Same as above.
+        // safe ignore
       }
     }
   }, [mode, pickup?.lat, pickup?.lng, dropoff?.lat, dropoff?.lng]);
 
-  // Smooth camera focus (picker, pickup only — never fights fitBounds):
-  // `flyTo` takes priority (home sheet at half-scroll — centers the current
-  // location inside the still-visible map strip via bottom padding), and
-  // otherwise the pickup is centered with a gentle fly as coords arrive
-  // (the initial Camera mount may have happened before coords were known).
+  // Picker mode smooth camera focus
   useEffect(() => {
-    if (mode !== 'picker' || !cameraRef.current || !isMountedRef.current) return;
+    if (mode !== 'picker' || !mapReady || !cameraRef.current || !isMountedRef.current) return;
+    const pickupKey = pickup ? `${pickup.lat},${pickup.lng}` : null;
+    const isArrival = pickupKey !== null && prevPickupKeyRef.current === null;
+    prevPickupKeyRef.current = pickupKey;
+    const hadFly = prevFlyRef.current != null;
+    prevFlyRef.current = flyTo;
+
+    const isUnfocusReset = !flyTo && hadFly;
     const target =
-      flyTo ?? (pickup && !dropoff ? { lat: pickup.lat, lng: pickup.lng, zoom: 14, bottomPadding: 0 } : null);
+      flyTo ??
+      ((isArrival || isUnfocusReset) && pickup && !dropoff
+        ? { lat: pickup.lat, lng: pickup.lng, zoom: 14 }
+        : null);
     if (!target) return;
+
+    const key = `${target.lat},${target.lng}|${target.zoom ?? 14}|${paddingRef.current.paddingBottom}`;
+    if (lastCameraKeyRef.current === key) return;
+    lastCameraKeyRef.current = key;
     try {
       cameraRef.current.setCamera({
         centerCoordinate: [target.lng, target.lat],
         zoomLevel: target.zoom ?? 14,
-        padding: {
-          paddingLeft: 0,
-          paddingRight: 0,
-          paddingTop: 0,
-          paddingBottom: target.bottomPadding ?? 0,
-        },
+        padding: paddingRef.current,
         animationDuration: 600,
       });
     } catch {
-      // Native view was already torn down mid-transition — safe to ignore.
+      // safe ignore
     }
-  }, [mode, flyTo, pickup?.lat, pickup?.lng, dropoff]);
+  }, [mode, mapReady, flyTo, pickup?.lat, pickup?.lng, dropoff]);
+
+  // Imperative camera recenter when recenterTo.nonce changes
+  useEffect(() => {
+    if (!recenterTo || !cameraRef.current || !isMountedRef.current) return;
+    if (prevRecenterNonceRef.current === recenterTo.nonce) return;
+    prevRecenterNonceRef.current = recenterTo.nonce;
+    try {
+      cameraRef.current.setCamera({
+        centerCoordinate: [recenterTo.lng, recenterTo.lat],
+        zoomLevel: 15.5,
+        padding: paddingRef.current,
+        animationDuration: 600,
+      });
+    } catch {
+      // safe ignore
+    }
+  }, [recenterTo]);
+
+  const tokenMissing = !MAPBOX_TOKEN;
+
+  // Prepare capped nearby driver GeoJSON feature collection for ShapeSource (Part C7)
+  const cappedDrivers = (nearbyDrivers || []).slice(0, 15);
+  const driversGeoJson: GeoJSON.FeatureCollection = {
+    type: 'FeatureCollection',
+    features: cappedDrivers.map((d, index) => ({
+      type: 'Feature',
+      id: `driver-${index}`,
+      properties: {},
+      geometry: { type: 'Point', coordinates: [d.lng, d.lat] },
+    })),
+  };
 
   return (
     <View style={styles.container}>
+      {tokenMissing && (
+        <View style={styles.bannerMissing}>
+          <Text style={styles.bannerText}>Map token missing in this build</Text>
+        </View>
+      )}
+      {!!mapError && !tokenMissing && (
+        <View style={styles.bannerError}>
+          <Text style={styles.bannerText}>Map failed to load: {mapError}</Text>
+        </View>
+      )}
+
       <MapView
         style={styles.map}
         styleURL={darkTheme ? Mapbox.StyleURL.Dark : Mapbox.StyleURL.Street}
@@ -130,6 +230,28 @@ export const RealMapView: React.FC<Props> = ({
         zoomEnabled={interactive}
         pitchEnabled={interactive}
         rotateEnabled={interactive}
+        onDidFinishLoadingMap={() => setMapReady(true)}
+        onMapLoadingError={() => setMapError('Style load error')}
+        onMapIdle={(state) => {
+          const centre = state?.properties?.center;
+          if (Array.isArray(centre) && Number.isFinite(centre[0]) && Number.isFinite(centre[1])) {
+            const coords: LatLng = { lng: centre[0], lat: centre[1] };
+            const isUserInteraction =
+              userGestureRef.current || state?.gestures?.isGestureActive === true;
+            userGestureRef.current = false;
+            if (onCenterIdle) onCenterIdle(coords, { isUserInteraction });
+            if (onPickupPointed) onPickupPointed(coords, { isUserInteraction });
+          }
+        }}
+        onCameraChanged={(state) => {
+          // Fires continuously while the camera moves with an accurate
+          // gesture flag — latch it for onMapIdle above. Ref-only, no
+          // re-render per frame.
+          if (state?.gestures?.isGestureActive === true && !userGestureRef.current) {
+            userGestureRef.current = true;
+            onCenterGestureStart?.();
+          }
+        }}
         onPress={(e) => {
           if (mode === 'picker' && onMapPress && e.geometry?.coordinates) {
             const [lng, lat] = e.geometry.coordinates;
@@ -139,9 +261,14 @@ export const RealMapView: React.FC<Props> = ({
       >
         <Camera
           ref={cameraRef}
-          zoomLevel={14}
-          centerCoordinate={pickup ? [pickup.lng, pickup.lat] : [78.146, 11.6643]}
+          defaultSettings={{
+            centerCoordinate: initialCenter,
+            zoomLevel: 14,
+            padding: paddingRef.current,
+          }}
         />
+
+        {showUserLocation && <Mapbox.UserLocation visible={true} />}
 
         {route && route.length > 1 && (
           <ShapeSource
@@ -155,13 +282,22 @@ export const RealMapView: React.FC<Props> = ({
           </ShapeSource>
         )}
 
-        {nearbyDrivers?.map((d, index) => (
-          <PointAnnotation key={`nearby-${index}`} id={`nearby-${index}`} coordinate={[d.lng, d.lat]}>
-            <View style={[styles.pin, styles.nearbyPin]} />
-          </PointAnnotation>
-        ))}
+        {/* Nearby drivers as ShapeSource + CircleLayer for performance (Part C7) */}
+        {cappedDrivers.length > 0 && (
+          <ShapeSource id="nearbyDriversSource" shape={driversGeoJson}>
+            <CircleLayer
+              id="nearbyDriversCircle"
+              style={{
+                circleRadius: 6,
+                circleColor: '#3B82F6',
+                circleStrokeWidth: 2,
+                circleStrokeColor: '#FFFFFF',
+              }}
+            />
+          </ShapeSource>
+        )}
 
-        {pickup && (
+        {pickup && !pickerPin && (
           <PointAnnotation id="pickup" coordinate={[pickup.lng, pickup.lat]}>
             <Animated.View style={[styles.pin, styles.pickupPin, { opacity: pickupOpacity }]} />
           </PointAnnotation>
@@ -182,9 +318,37 @@ export const RealMapView: React.FC<Props> = ({
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: { flex: 1, position: 'relative' },
   map: { flex: 1 },
   pin: { width: 16, height: 16, borderRadius: 8, borderWidth: 2, borderColor: '#FFF' },
   pickupPin: { backgroundColor: '#22C55E' },
-  nearbyPin: { width: 12, height: 12, backgroundColor: '#3B82F6' },
+  bannerMissing: {
+    position: 'absolute',
+    top: 40,
+    left: 16,
+    right: 16,
+    zIndex: 999,
+    backgroundColor: colors.danger,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  bannerError: {
+    position: 'absolute',
+    top: 40,
+    left: 16,
+    right: 16,
+    zIndex: 999,
+    backgroundColor: colors.warning,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  bannerText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
 });

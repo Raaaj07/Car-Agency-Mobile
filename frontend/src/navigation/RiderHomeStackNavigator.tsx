@@ -40,17 +40,19 @@ export const RiderHomeStackNavigator: React.FC = () => {
       <Stack.Screen name="HomeDashboard">
         {({ navigation }) => (
           <HomeDashboardScreen
-            onSearchPress={() => navigation.navigate('DestinationSearch')}
+            onSearchPress={(focus) => navigation.navigate('DestinationSearch', { focus })}
             onSelectVehicle={() => navigation.navigate('VehicleSelection')}
             onBellPress={() => rootNavigation.navigate('RideAnnouncementsSettings')}
+            onExploreServices={() => (navigation.getParent() as any)?.navigate('ServicesTab')}
           />
         )}
       </Stack.Screen>
 
         <Stack.Screen name="DestinationSearch">
-        {({ navigation }) => (
+        {({ navigation, route }) => (
               <DestinationSearchScreen
                 onBack={() => navigation.goBack()}
+                focus={route.params?.focus}
                 onSelectDestination={() => {
                   // setPickup/setDropoff already happened inside DestinationSearchScreen
                   // (it needs the store to know which field — pickup or dropoff —

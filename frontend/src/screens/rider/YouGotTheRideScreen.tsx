@@ -14,14 +14,17 @@ interface Props {
 
 export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver }) => {
   const pickupOtp = useRideStore((state) => state.activeRide?.pickupOtp);
+  const pickupAddress = useRideStore((state) => state.pickupAddress || 'Pickup Point');
+  const dropoffAddress = useRideStore((state) => state.dropoffAddress || 'Dropoff Point');
+
   return (
     <View style={styles.container}>
       {/* Map Background with Driver Pin */}
       <MapPlaceholder
         showDriverPin
         driverEta="3 MIN"
-        pickupText="MG Road Metro Entrance Gate 2"
-        dropText="Indiranagar 100 Feet Rd"
+        pickupText={pickupAddress}
+        dropText={dropoffAddress}
       />
 
       {/* Driver Matched Sheet */}

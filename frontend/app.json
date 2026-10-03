@@ -66,6 +66,7 @@
       [
         "expo-location",
         {
+          "locationWhenInUsePermission": "Vazhi uses your location to set your pickup point and show nearby cabs.",
           "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to find rides and track trips."
         }
       ],

@@ -15,16 +15,18 @@ import { Input } from '../../components/primitives/Input';
 import { connectSocket, disconnectSocket } from '../../lib/socket';
 import { tokenManager } from '../../lib/tokenManager';
 
-// Single Profile for everyone. The "Driver" section reflects server
-// driverStatus: none → Become a driver; pending → under review (no driver
-// buttons); rejected → reason + re-apply; approved → switch to Driver mode;
-// suspended → contact support.
+// Single Profile for everyone (Profile tab in BOTH rider and driver
+// mode). The "Driver" section reflects server driverStatus: none →
+// Become a driver; pending → under review (no driver buttons); rejected →
+// reason + re-apply; approved → switch mode (Rider ⇄ Driver); suspended →
+// contact support.
 export const ProfileScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const updateUser = useAuthStore((s) => s.updateUser);
   const setActiveMode = useAuthStore((s) => s.setActiveMode);
+  const activeMode = useAuthStore((s) => s.activeMode);
   const resetRide = useRideStore((s) => s.resetRide);
 
   const [isEditing, setIsEditing] = useState(false);
@@ -33,12 +35,21 @@ export const ProfileScreen: React.FC = () => {
   const [error, setError] = useState<string | undefined>();
   const [app, setApp] = useState<DriverApplication | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // Server-truth online flag (fetched with the application) so switching
+  // back to Rider can take an online driver offline first.
+  const [isDriverOnline, setIsDriverOnline] = useState(false);
 
   const loadApp = useCallback(async () => {
     try {
       setApp(await driversApi.application());
     } catch {
       setApp(null);
+    }
+    try {
+      const p = await driversApi.getMyProfile();
+      setIsDriverOnline(!!p?.isOnline);
+    } catch {
+      // No driver profile / offline — keep last known value.
     }
   }, []);
 
@@ -117,7 +128,22 @@ export const ProfileScreen: React.FC = () => {
     logout();
   };
 
+  // Active trip blocks any mode switch (both directions) — the trip has to
+  // be completed or cancelled first.
+  const tripInProgress = () => {
+    const current = useRideStore.getState().activeRide;
+    if (current && ['matched', 'driver_en_route', 'in_progress'].includes(current.status)) {
+      Alert.alert(
+        'Trip in progress',
+        'You cannot switch modes while a trip is active. Complete or cancel it first.',
+      );
+      return true;
+    }
+    return false;
+  };
+
   const switchToDriver = () => {
+    if (tripInProgress()) return;
     setActiveMode('driver');
     resetRide();
     disconnectSocket();
@@ -125,6 +151,27 @@ export const ProfileScreen: React.FC = () => {
     if (token) connectSocket(token, 'driver');
     // No explicit navigation: MainTabNavigator mounts the driver tree
     // (initial route DashboardTab) as soon as activeMode flips.
+  };
+
+  // Driver mode → Rider mode (this same screen is the Profile tab in both
+  // modes). Mirrors DriverDashboardScreen.switchToRider: go offline first
+  // so no "ghost" online driver is left server-side; block on failure.
+  const switchToRider = async () => {
+    if (tripInProgress()) return;
+    if (isDriverOnline) {
+      try {
+        await driversApi.setStatus(false);
+      } catch (err) {
+        Alert.alert('Unable to go offline', getApiError(err));
+        return;
+      }
+    }
+    setActiveMode('rider');
+    resetRide();
+    disconnectSocket();
+    const token = tokenManager.getAccessToken();
+    if (token) connectSocket(token, 'rider');
+    // MainTabNavigator swaps to the rider tree (initial route HomeTab).
   };
 
   return (
@@ -224,7 +271,15 @@ export const ProfileScreen: React.FC = () => {
             <BadgeCheck size={18} color={colors.success} />
             <Text style={styles.cardTitle}>Driver verified</Text>
           </View>
-          <Button title="Switch to Driver mode" onPress={switchToDriver} style={styles.editTrigger} />
+          {/* Same screen is Profile in both modes — the button must flip:
+              in rider mode offer the switch TO driver, in driver mode the
+              switch BACK to rider (was stuck showing "Switch to Driver
+              mode" while already in driver mode). */}
+          <Button
+            title={activeMode === 'driver' ? 'Switch to Rider mode' : 'Switch to Driver mode'}
+            onPress={activeMode === 'driver' ? switchToRider : switchToDriver}
+            style={styles.editTrigger}
+          />
         </Card>
       )}
 

@@ -56,7 +56,7 @@ export const RideAvailableAgainScreen: React.FC<Props> = ({ onBackToDashboard })
         <Card style={styles.surgeCard}>
           <Zap size={22} color={colors.accent} style={{ marginRight: 10 }} />
           <View style={styles.surgeTextWrap}>
-            <Text style={styles.surgeTitle}>Stay in Indiranagar Area</Text>
+            <Text style={styles.surgeTitle}>Stay in Salem Junction Area</Text>
             <Text style={styles.surgeSub}>High demand area with 1.4x surge bonus</Text>
           </View>
         </Card>
