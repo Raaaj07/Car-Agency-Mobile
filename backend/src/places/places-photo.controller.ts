@@ -22,6 +22,23 @@ export class PlacesPhotoController {
     if (!item) throw new NotFoundException('Unknown place photo');
     const photo = await this.photos.fetchPlacePhoto(item);
     if (!photo) throw new NotFoundException('No photo available');
+    return this.sendPhoto(res, photo);
+  }
+
+  // Guard-free photo proxy for live nearby results. The client supplies
+  // only a Google place ID (strictly validated); photo bytes are resolved
+  // and downloaded server-side, so the key never reaches the app.
+  @Get('g/:googlePlaceId')
+  async serveGooglePhoto(
+    @Param('googlePlaceId') googlePlaceId: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const photo = await this.photos.fetchPlacePhotoById(googlePlaceId);
+    if (!photo) throw new NotFoundException('No photo available');
+    return this.sendPhoto(res, photo);
+  }
+
+  private sendPhoto(res: Response, photo: { body: Buffer; contentType: string }) {
     res.setHeader('Content-Type', photo.contentType);
     res.setHeader('Cache-Control', 'public, max-age=86400');
     res.setHeader('Content-Length', String(photo.body.length));

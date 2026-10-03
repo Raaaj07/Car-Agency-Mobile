@@ -37,6 +37,18 @@ export class PlacesController {
     return this.service.getRecent(user.userId, limit ? parseInt(limit, 10) : 5);
   }
 
+  @Get('nearby')
+  getNearby(
+    @Query('lat') lat?: string,
+    @Query('lng') lng?: string,
+    @Query('radius') radius?: string,
+  ): Promise<PlaceItemDto[]> {
+    const plat = lat ? parseFloat(lat) : NaN;
+    const plng = lng ? parseFloat(lng) : NaN;
+    const r = radius ? parseInt(radius, 10) : NaN;
+    return this.service.getNearby(plat, plng, Number.isFinite(r) ? r : undefined);
+  }
+
   @Get('popular')
   async getPopular(
     @Query('lat') lat?: string,

@@ -59,7 +59,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   const setDropoff = useRideStore((state) => state.setDropoff);
   const setPreferredVehicle = useRideStore((state) => state.setPreferredVehicle);
 
-  const { recent, saved, quickPicks, popular, cityHighlights, promos, error, fetchAll } =
+  const { recent, saved, nearby, quickPicks, popular, cityHighlights, promos, error, fetchAll } =
     usePlacesStore();
   const toggleSaved = usePlacesStore((state) => state.toggleSaved);
 
@@ -563,6 +563,25 @@ export const HomeDashboardScreen: React.FC<Props> = ({
               />
             </View>
           </View>
+
+          {/* Section: Near You (live, location-based) */}
+          {nearby.length > 0 && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Near You</Text>
+              </View>
+              <FlatList
+                data={nearby}
+                keyExtractor={(item) => item.id}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 12 }}
+                renderItem={({ item }) => (
+                  <PopularPlaceCard place={item} onPress={handleSelectPlace} />
+                )}
+              />
+            </View>
+          )}
 
           {/* Section: Popular Places */}
           {popular.length > 0 && (

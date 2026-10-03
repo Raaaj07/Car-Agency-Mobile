@@ -41,9 +41,31 @@ export class PlacesService {
   private async buildImageUrl(item: PlaceConfigItem): Promise<string | null> {
     const resolved = await this.googlePhotos.resolvePhoto(item);
     if (!resolved) return item.imageUrl ?? null;
+    return this.photoUrl(`/places/photo/${encodeURIComponent(item.id)}`);
+  }
+
+  private photoUrl(path: string): string {
     const base = (this.config.get<string>('PUBLIC_API_URL') ?? '').replace(/\/$/, '');
-    const path = `/places/photo/${encodeURIComponent(item.id)}`;
     return base ? `${base}${path}` : path;
+  }
+
+  /**
+   * Live nearby suggestions: famous / frequently-visited places around the
+   * rider (tourist spots, colleges, hospitals, transit, malls, food),
+   * ranked by Google popularity. Empty when the key is missing or Google
+   * has nothing — the home screen simply hides the section.
+   */
+  async getNearby(lat: number, lng: number, radiusM?: number): Promise<PlaceItemDto[]> {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    const hits = await this.googlePhotos.searchNearby(lat, lng, radiusM);
+    return hits.map((h) => ({
+      id: `nearby-${h.googlePlaceId}`,
+      title: h.title,
+      subtitle: h.subtitle,
+      lat: h.lat,
+      lng: h.lng,
+      imageUrl: h.photoName ? this.photoUrl(`/places/photo/g/${h.googlePlaceId}`) : null,
+    }));
   }
 
   async getSaved(userId: string): Promise<SavedPlaceDto[]> {

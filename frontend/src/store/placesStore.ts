@@ -1,7 +1,7 @@
 /**
  * placesStore – Zustand store for home-screen place data.
  *
- * fetchAll() runs 4 requests with Promise.allSettled so one failure does not
+ * fetchAll() runs 5 requests with Promise.allSettled so one failure does not
  * blank all sections. Results are cached for 60 s (skip re-fetch unless forced).
  *
  * toggleSaved() does an optimistic update and rolls back on API failure.
@@ -15,6 +15,7 @@ import { promosApi, Promo } from '../api/promos';
 interface PlacesState {
   recent: PlaceItem[];
   saved: SavedPlace[];
+  nearby: PlaceItem[];
   quickPicks: PlaceItem[];
   popular: PlaceItem[];
   cityHighlights: PlaceItem[];
@@ -35,6 +36,7 @@ const CACHE_TTL_MS = 60_000; // 60 seconds
 export const usePlacesStore = create<PlacesState>((set, get) => ({
   recent: [],
   saved: [],
+  nearby: [],
   quickPicks: [],
   popular: [],
   cityHighlights: [],
@@ -56,11 +58,12 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
 
     set({ loading: true, error: null });
 
-    const [recentRes, savedRes, popularRes, promosRes] = await Promise.allSettled([
+    const [recentRes, savedRes, popularRes, promosRes, nearbyRes] = await Promise.allSettled([
       placesApi.getRecent(5),
       placesApi.getSaved(),
       placesApi.getPopular(coords),
       promosApi.getActive(),
+      coords ? placesApi.getNearby(coords) : Promise.resolve([] as PlaceItem[]),
     ]);
 
     const next: Partial<PlacesState> = {
@@ -76,9 +79,10 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
       next.cityHighlights = popularRes.value.cityHighlights;
     }
     if (promosRes.status === 'fulfilled') next.promos = promosRes.value;
+    if (nearbyRes.status === 'fulfilled') next.nearby = nearbyRes.value;
 
-    // If all 4 failed, show a generic error.
-    const allFailed = [recentRes, savedRes, popularRes, promosRes].every(
+    // If all 5 failed, show a generic error.
+    const allFailed = [recentRes, savedRes, popularRes, promosRes, nearbyRes].every(
       (r) => r.status === 'rejected',
     );
     if (allFailed) {

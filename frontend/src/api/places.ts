@@ -72,6 +72,14 @@ export const placesApi = {
       cityHighlights: res.cityHighlights.map(absolutizeImageUrl),
     };
   },
+
+  /** GET /places/nearby?lat=&lng=[&radius=] — live location-based suggestions */
+  getNearby: async (coords: { lat: number; lng: number }): Promise<PlaceItem[]> =>
+    (
+      await api.get<PlaceItem[]>('/places/nearby', {
+        params: { lat: coords.lat, lng: coords.lng },
+      })
+    ).data.map(absolutizeImageUrl),
 };
 
 /**
