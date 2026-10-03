@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -10,8 +10,6 @@ import {
   ShieldAlert,
   Share2,
   MapPin,
-  Gauge,
-  CheckCircle,
 } from 'lucide-react-native';
 
 import {
@@ -25,21 +23,31 @@ import { Button } from '../../components/primitives/Button';
 import { RealMapView } from '../../components/primitives/RealMapView';
 import { useRideSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
+import { getRoute } from '../../api/mapbox';
+import { ridesApi } from '../../api/rides';
 
 interface Props {
   onCompleteTrip: () => void;
+  onCancelRide?: () => void;
+  onRideCancelled?: (reason?: string) => void;
   onEmergencyPress?: () => void;
 }
 
 export const TripProgressScreen: React.FC<Props> = ({
   onCompleteTrip,
+  onCancelRide,
+  onRideCancelled,
   onEmergencyPress,
 }) => {
   const [driverPosition, setDriverPosition] = useState<
     { lat: number; lng: number } | undefined
   >();
+  const [route, setRoute] = useState<[number, number][] | undefined>(undefined);
+  // Measured bottom-sheet height so the map can pad the fit above it.
+  const [sheetHeight, setSheetHeight] = useState(0);
 
   const activeRide = useRideStore((state) => state.activeRide);
+  const setActiveRide = useRideStore((state) => state.setActiveRide);
 
   const pickupCoords = useRideStore(
     (state) => state.pickupCoords
@@ -49,6 +57,39 @@ export const TripProgressScreen: React.FC<Props> = ({
     (state) => state.dropoffCoords
   );
 
+  const storeDropoffAddress = useRideStore((state) => state.dropoffAddress);
+
+  const dropoffAddress = activeRide?.dropoff?.address || storeDropoffAddress || 'Drop-off';
+
+  // Terminal transition (completed/cancelled) must fire exactly once, no
+  // matter how many sources (socket + 3s poll) detect it.
+  const terminalRef = useRef(false);
+  const onCompleteRef = useRef(onCompleteTrip);
+  onCompleteRef.current = onCompleteTrip;
+  const onRideCancelledRef = useRef(onRideCancelled);
+  onRideCancelledRef.current = onRideCancelled;
+
+  const checkTerminalStatus = useCallback(async () => {
+    if (terminalRef.current) return;
+    const rideId = useRideStore.getState().activeRide?.id;
+    if (!rideId) return;
+    try {
+      const ride = await ridesApi.get(rideId);
+      if (terminalRef.current) return;
+      if (ride.status === 'completed') {
+        terminalRef.current = true;
+        setActiveRide(ride);
+        onCompleteRef.current();
+      } else if (ride.status === 'cancelled') {
+        terminalRef.current = true;
+        setActiveRide(ride);
+        onRideCancelledRef.current?.(ride.cancellationReason ?? undefined);
+      }
+    } catch {
+      // Polling failure ignored — the socket path retries next tick.
+    }
+  }, [setActiveRide]);
+
   useRideSocket(activeRide?.id, {
   onDriverLocation: (event) => {
     setDriverPosition({
@@ -56,7 +97,45 @@ export const TripProgressScreen: React.FC<Props> = ({
       lng: event.lng,
     });
   },
-}); 
+  onStatus: (event) => {
+    if (event.status === 'completed' || event.status === 'cancelled') {
+      void checkTerminalStatus();
+    }
+  },
+});
+
+  // 3s polling fallback for terminal states (socket may be reconnecting).
+  // Stops itself after the first terminal state.
+  useEffect(() => {
+    if (!activeRide?.id) return;
+    void checkTerminalStatus();
+    const timer = setInterval(() => {
+      if (terminalRef.current) {
+        clearInterval(timer);
+        return;
+      }
+      void checkTerminalStatus();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [activeRide?.id, checkTerminalStatus]);
+
+  // Fetch the road-following route once so the map fits pickup, drop and
+  // the road line. Failures leave the map to fit just the endpoints.
+  useEffect(() => {
+    let mounted = true;
+    if (!pickupCoords || !dropoffCoords) {
+      setRoute(undefined);
+      return;
+    }
+    getRoute(pickupCoords, dropoffCoords)
+      .then((result) => {
+        if (mounted && result) setRoute(result.coordinates);
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [pickupCoords?.lat, pickupCoords?.lng, dropoffCoords?.lat, dropoffCoords?.lng]);
 
   return (
     <View style={styles.container}>
@@ -66,31 +145,9 @@ export const TripProgressScreen: React.FC<Props> = ({
         pickup={pickupCoords}
         dropoff={dropoffCoords}
         driverPosition={driverPosition}
+        route={route}
+        bottomPadding={sheetHeight}
       />
-
-      {/* Top Floating Speed & ETA Bar */}
-      <View style={styles.topInfoBar}>
-        <View style={styles.etaCol}>
-          <Text style={styles.etaTitle}>
-            12 MINS
-          </Text>
-
-          <Text style={styles.etaSub}>
-            Estimated Arrival: 5:45 PM
-          </Text>
-        </View>
-
-        <View style={styles.speedPill}>
-          <Gauge
-            size={16}
-            color={colors.accent}
-          />
-
-          <Text style={styles.speedText}>
-            42 km/h
-          </Text>
-        </View>
-      </View>
 
       {/* Safety SOS Quick Button */}
       <TouchableOpacity
@@ -108,7 +165,10 @@ export const TripProgressScreen: React.FC<Props> = ({
       </TouchableOpacity>
 
       {/* Bottom Sheet Navigation Card */}
-      <View style={styles.bottomSheet}>
+      <View
+        style={styles.bottomSheet}
+        onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
+      >
         <View style={styles.dragHandle} />
 
         <View style={styles.destHeader}>
@@ -123,7 +183,7 @@ export const TripProgressScreen: React.FC<Props> = ({
             </Text>
 
             <Text style={styles.destName}>
-              Indiranagar 100 Feet Road, Hub 4
+              {dropoffAddress}
             </Text>
           </View>
         </View>
@@ -156,18 +216,22 @@ export const TripProgressScreen: React.FC<Props> = ({
           </TouchableOpacity>
         </View>
 
-        <Button
-          title="Complete Trip (Simulate)"
-          onPress={onCompleteTrip}
-          variant="success"
-          size="large"
-          leftIcon={
-            <CheckCircle
-              size={20}
-              color="#FFFFFF"
-            />
-          }
-        />
+        {__DEV__ && (
+          <Button
+            title="Complete Trip (Simulate)"
+            onPress={onCompleteTrip}
+            variant="success"
+            size="large"
+          />
+        )}
+        {onCancelRide && (
+          <Button
+            title="Cancel Ride"
+            onPress={onCancelRide}
+            variant="outline"
+            size="large"
+          />
+        )}
       </View>
     </View>
   );

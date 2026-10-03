@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { DriverDashboardStackParamList } from './types';
 
@@ -11,7 +11,7 @@ import { ridesApi } from '../api/rides';
 import { useRideStore } from '../store/rideStore';
 import { getApiError } from '../api/client';
 import { DriverOtpEntryScreen } from '../screens/driver/DriverOtpEntryScreen';
-import { useState } from 'react';
+import { DriverPaymentScreen } from '../screens/driver/DriverPaymentScreen';
 
 const Stack = createNativeStackNavigator<DriverDashboardStackParamList>();
 
@@ -74,7 +74,9 @@ const [otpError, setOtpError] = useState<string | undefined>();
           } else {
             const completed = await ridesApi.complete(ride.id);
             useRideStore.getState().setActiveRide(completed);
-            navigation.navigate('RideAvailableAgain');
+            // Payment is the next step: show the UPI QR + "Amount Received"
+            // before the driver returns to the dashboard.
+            navigation.navigate('DriverPayment');
           }
         } catch (error) {
           Alert.alert(
@@ -112,6 +114,12 @@ const [otpError, setOtpError] = useState<string | undefined>();
         }
       }}
     />
+  )}
+</Stack.Screen>
+
+<Stack.Screen name="DriverPayment">
+  {({ navigation }) => (
+    <DriverPaymentScreen onDone={() => navigation.navigate('RideAvailableAgain')} />
   )}
 </Stack.Screen>
 

@@ -26,6 +26,22 @@ export interface ApplicationDetail extends ApplicationSummary {
   hasVehiclePhoto: boolean;
 }
 
+export interface AdminRideSummary {
+  id: string;
+  status: string;
+  vehicleType: string;
+  riderName: string;
+  driverName: string;
+  pickupAddress: string;
+  dropoffAddress: string;
+  fareTotal: number;
+  tipAmount: number;
+  paymentStatus: 'pending' | 'paid' | 'failed';
+  paymentMethod: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
 export const adminApi = {
   list: async (status?: ApplicationStatus, page = 1, limit = 20) =>
     (
@@ -35,6 +51,13 @@ export const adminApi = {
       )
     ).data,
   get: async (id: string) => (await api.get<ApplicationDetail>(`/admin/driver-applications/${id}`)).data,
+  // Ride list for the admin console (statuses + fare + payment collection).
+  listRides: async (page = 1, limit = 20) =>
+    (
+      await api.get<{ items: AdminRideSummary[]; total: number; page: number; limit: number }>('/admin/rides', {
+        params: { page, limit },
+      })
+    ).data,
   approve: async (id: string) => (await api.post<ApplicationDetail>(`/admin/driver-applications/${id}/approve`)).data,
   reject: async (id: string, reason: string) =>
     (await api.post<ApplicationDetail>(`/admin/driver-applications/${id}/reject`, { reason })).data,

@@ -8,11 +8,12 @@ import {
   Logger,
   NotFoundException,
   OnApplicationBootstrap,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as crypto from 'crypto';
-import { In, Repository } from 'typeorm';
+import { In, LessThan, Repository } from 'typeorm';
 import { haversineKm } from '../common/geo-utils';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
@@ -35,11 +36,16 @@ function generateOtp(length = 4): string {
   return crypto.randomInt(0, max).toString().padStart(length, '0');
 }
 
+// Single source of truth for "rider is locked out of booking" statuses.
+// Used by create() and findActiveForRider() so they can never drift apart.
+export const ACTIVE_RIDE_STATUSES = ['requested', 'matched', 'driver_en_route', 'in_progress'] as const;
+
 @Injectable()
-export class RidesService implements OnApplicationBootstrap {
+export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly requestTimeoutSeconds: number;
   private readonly logger = new Logger(RidesService.name);
   private readonly offerTimeouts = new Map<string, NodeJS.Timeout>();
+  private staleSweepTimer: NodeJS.Timeout | null = null;
 
   constructor(
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
@@ -90,6 +96,99 @@ export class RidesService implements OnApplicationBootstrap {
     } catch (err) {
       this.logger.error('Startup sweep failed', err as Error);
     }
+
+    // Release rides that were already stuck before this deploy so nobody is
+    // locked out waiting for the first 5-minute tick.
+    try {
+      const released = await this.sweepStaleRides();
+      if (released > 0) {
+        this.logger.log(`Startup stale-ride sweep released ${released} ride(s)`);
+      }
+    } catch (err) {
+      this.logger.error('Startup stale-ride sweep failed', err as Error);
+    }
+
+    // Stale-ride safety net: rides stuck in matched / driver_en_route /
+    // in_progress (e.g. driver app closed) must never lock the rider out
+    // forever. Runs every 5 minutes via setInterval (no new dependency).
+    this.staleSweepTimer = setInterval(() => {
+      this.sweepStaleRides().catch((err) => {
+        this.logger.error('Stale ride sweep failed', err as Error);
+      });
+    }, 5 * 60 * 1000);
+    // Don't keep the process alive just for this timer in tests/scripts.
+    if (typeof this.staleSweepTimer.unref === 'function') {
+      this.staleSweepTimer.unref();
+    }
+  }
+
+  onModuleDestroy(): void {
+    if (this.staleSweepTimer) {
+      clearInterval(this.staleSweepTimer);
+      this.staleSweepTimer = null;
+    }
+    for (const timer of this.offerTimeouts.values()) {
+      clearTimeout(timer);
+    }
+    this.offerTimeouts.clear();
+  }
+
+  // Auto-cancels rides abandoned mid-flow: matched/driver_en_route untouched
+  // for 60 minutes, in_progress untouched for 6 hours. Frees the driver and
+  // pushes the status so the rider can book again.
+  async sweepStaleRides(now = new Date()): Promise<number> {
+    const assignedCutoff = new Date(now.getTime() - 60 * 60 * 1000);
+    const tripCutoff = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+    const staleAssigned = await this.rides.find({
+      where: { status: In(['matched', 'driver_en_route']), updatedAt: LessThan(assignedCutoff) },
+    });
+    const staleTrips = await this.rides.find({
+      where: { status: In(['in_progress']), updatedAt: LessThan(tripCutoff) },
+    });
+    const stale = [...staleAssigned, ...staleTrips];
+    let cancelled = 0;
+    for (const ride of stale) {
+      try {
+        // Captured before mutation so the log shows the real previous status.
+        const previousStatus = ride.status;
+        // Conditional update: only cancel if the status is still the exact
+        // one we judged stale, so a ride that progressed between find() and
+        // now (e.g. matched -> driver_en_route) is never touched.
+        const result = await this.rides.update(
+          { id: ride.id, status: previousStatus },
+          {
+            status: 'cancelled',
+            cancelledBy: 'system',
+            cancellationReason: 'stale_ride_timeout',
+            cancelledAt: new Date(),
+          },
+        );
+        if (!result.affected) continue;
+        ride.status = 'cancelled';
+        ride.cancelledBy = 'system';
+        ride.cancellationReason = 'stale_ride_timeout';
+        ride.cancelledAt = new Date();
+        if (ride.driverId) {
+          await this.drivers.setAvailability(ride.driverId, true).catch(() => {});
+        }
+        this.pushStatus(ride);
+        cancelled += 1;
+        this.logger.warn(`Stale ride ${ride.id} (${previousStatus}) auto-cancelled`);
+      } catch (err) {
+        this.logger.error(`Failed to auto-cancel stale ride ${ride.id}`, err as Error);
+      }
+    }
+    return cancelled;
+  }
+
+  // GET /rides/active — the rider's single most recent active ride, or null.
+  async findActiveForRider(userId: string): Promise<any | null> {
+    const ride = await this.rides.findOne({
+      where: { riderId: userId, status: In([...ACTIVE_RIDE_STATUSES]) },
+      order: { createdAt: 'DESC' },
+      relations: ['rider', 'driver', 'driver.user'],
+    });
+    return ride ? this.toRiderView(ride) : null;
   }
 
   private clearOfferTimeout(rideId: string): void {
@@ -139,7 +238,7 @@ export class RidesService implements OnApplicationBootstrap {
   // first (they cannot book while advertising availability).
   async create(riderId: string, dto: CreateRideDto): Promise<any> {
     const active = await this.rides.count({
-      where: { riderId, status: In(['requested', 'matched', 'driver_en_route', 'in_progress']) },
+      where: { riderId, status: In([...ACTIVE_RIDE_STATUSES]) },
     });
     if (active > 0) {
       throw new BadRequestException('You already have an active ride. Cancel or complete it first.');
@@ -345,8 +444,10 @@ export class RidesService implements OnApplicationBootstrap {
       await queryRunner.commitTransaction();
       this.clearOfferTimeout(rideId);
 
-      this.pushStatus(ride);
-      return this.toDriverView(ride);
+      // Reload with relations so the driver view carries riderName.
+      const updated = await this.getOrThrow(rideId);
+      this.pushStatus(updated);
+      return this.toDriverView(updated);
     } catch (err) {
       await queryRunner.rollbackTransaction().catch(() => {});
       throw err;
@@ -493,6 +594,23 @@ export class RidesService implements OnApplicationBootstrap {
     return this.toDriverView(ride);
   }
 
+  // PATCH /rides/:id/payment-received — DriverPaymentScreen's "Amount
+  // Received". The rider pays via the UPI QR shown on the driver's phone
+  // (outside the app), so the driver confirms collection here; that flag is
+  // what the admin console reports. Driver-owned and completed-only.
+  async markPaymentReceived(rideId: string, driverUserId: string): Promise<any> {
+    const ride = await this.getOrThrow(rideId);
+    await this.assertOwningDriver(ride, driverUserId);
+    if (ride.status !== 'completed') {
+      throw new BadRequestException(`Ride is ${ride.status}, payment can only be collected after completion`);
+    }
+    if (ride.paymentStatus !== 'paid') {
+      ride.paymentStatus = 'paid';
+      await this.rides.save(ride);
+    }
+    return this.toDriverView(ride);
+  }
+
   // PATCH /rides/:id/cancel — CancelRideConfirmationScreen.
   // Unified accounts: ownership is inferred from the ride itself, not the
   // (possibly stale) JWT role claim. Rider-side cancel works when
@@ -595,6 +713,7 @@ export class RidesService implements OnApplicationBootstrap {
         order: { createdAt: 'DESC' },
         skip: (page - 1) * limit,
         take: limit,
+        relations: ['rider', 'driver', 'driver.user'],
       });
       return { items: items.map((r) => this.toDriverView(r)), total };
     }
@@ -604,12 +723,16 @@ export class RidesService implements OnApplicationBootstrap {
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
+      relations: ['rider', 'driver', 'driver.user'],
     });
     return { items: items.map((r) => this.toRiderView(r)), total };
   }
 
   private async getOrThrow(rideId: string): Promise<RideEntity> {
-    const ride = await this.rides.findOne({ where: { id: rideId }, relations: ['rider', 'driver'] });
+    const ride = await this.rides.findOne({
+      where: { id: rideId },
+      relations: ['rider', 'driver', 'driver.user'],
+    });
     if (!ride) {
       throw new NotFoundException('Ride not found');
     }
@@ -643,12 +766,68 @@ export class RidesService implements OnApplicationBootstrap {
     };
   }
 
+  // Explicit whitelist of ride fields safe to return to either party.
+  // Never spread the entity: it (and its loaded relations) contain phone
+  // numbers, refreshTokenHash and driver document paths.
+  private rideWhitelist(ride: RideEntity): Record<string, any> {
+    return {
+      id: ride.id,
+      status: ride.status,
+      vehicleType: ride.vehicleType,
+      pickup: ride.pickup,
+      dropoff: ride.dropoff,
+      fareBreakdown: ride.fareBreakdown,
+      distanceKm: ride.distanceKm ?? null,
+      paymentMethod: ride.paymentMethod,
+      paymentStatus: ride.paymentStatus,
+      driverId: ride.driverId ?? null,
+      riderId: ride.riderId,
+      rating: ride.rating ?? null,
+      tipAmount: ride.tipAmount ?? 0,
+      compliments: ride.compliments ?? null,
+      cancellationReason: ride.cancellationReason ?? null,
+      cancelledBy: ride.cancelledBy ?? null,
+      cancelledAt: ride.cancelledAt ?? null,
+      completedAt: ride.completedAt ?? null,
+      createdAt: ride.createdAt,
+      updatedAt: (ride as RideEntity).updatedAt ?? null,
+    };
+  }
+
+  // Safe subset of the driver for the rider's screens (name/vehicle only —
+  // no phone, no document paths). Tolerates both the loaded DriverEntity and
+  // an already-whitelisted object (create() converts views twice).
+  private buildRiderDriverView(ride: RideEntity): Record<string, any> | null {
+    const driver: any = (ride as any).driver;
+    if (!driver) return null;
+    const name: string | undefined = driver.user?.name ?? driver.name ?? undefined;
+    const ratingNum = Number(driver.rating);
+    return {
+      name: name && name.trim() ? name : 'Driver',
+      rating: Number.isFinite(ratingNum) ? ratingNum : null,
+      vehicleModel: driver.carModel ?? driver.vehicleModel ?? null,
+      plateNumber: driver.plateNumber ?? null,
+      vehicleType: driver.vehicleType ?? ride.vehicleType ?? null,
+    };
+  }
+
   toDriverView(ride: RideEntity): any {
-    const { pickupOtp: _omit, ...rest } = ride;
-    return rest;
+    const base = this.rideWhitelist(ride);
+    // Only the rider's first name — nothing else about the user.
+    const riderName: unknown = (ride as any).rider?.name;
+    if (typeof riderName === 'string' && riderName.trim()) {
+      base.riderName = riderName.trim().split(/\s+/)[0];
+    }
+    return base;
   }
 
   toRiderView(ride: RideEntity): any {
-    return ride;
+    const base = this.rideWhitelist(ride);
+    // The OTP is only meaningful while the rider still has to share it.
+    if (['requested', 'matched', 'driver_en_route'].includes(ride.status)) {
+      base.pickupOtp = ride.pickupOtp ?? null;
+    }
+    base.driver = this.buildRiderDriverView(ride);
+    return base;
   }
 }

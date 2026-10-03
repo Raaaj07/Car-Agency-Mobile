@@ -1,11 +1,12 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { CheckCircle, Download } from 'lucide-react-native';
+import { CheckCircle, Clock, Download } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Header } from '../../components/primitives/Header';
 import { useRideStore } from '../../store/rideStore';
+import { ridesApi } from '../../api/rides';
 
 interface Props {
   onBack?: () => void;
@@ -14,7 +15,33 @@ interface Props {
 
 export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) => {
   const selectedVehicle = useRideStore((state) => state.selectedVehicle);
-  const breakdown = useRideStore((state) => state.getFareBreakdown)();
+  const activeRide = useRideStore((state) => state.activeRide);
+  const setActiveRide = useRideStore((state) => state.setActiveRide);
+  const promoCode = useRideStore((state) => state.promoCode);
+  const estimateBreakdown = useRideStore((state) => state.getFareBreakdown)();
+  // Server-computed fare (final, post-completion) wins over the booking estimate.
+  const breakdown = activeRide?.fareBreakdown ?? estimateBreakdown;
+  const tip = Number(activeRide?.tipAmount ?? 0);
+  const isPaid = activeRide?.paymentStatus === 'paid';
+  const amount = Number(breakdown?.total ?? 0) + tip;
+  const vehicleName = selectedVehicle?.name ?? activeRide?.vehicleType ?? 'your ride';
+
+  // The rider pays the UPI QR shown on the driver's phone; the driver then
+  // taps "Amount Received". Poll until that flag flips so this screen shows
+  // the real state instead of an assumed "successful".
+  useEffect(() => {
+    if (!activeRide?.id || activeRide.paymentStatus === 'paid') return;
+    const rideId = activeRide.id;
+    const timer = setInterval(() => {
+      ridesApi
+        .get(rideId)
+        .then((fresh) => {
+          if (fresh?.paymentStatus) setActiveRide(fresh);
+        })
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [activeRide?.id, activeRide?.paymentStatus, setActiveRide]);
 
   return (
     <View style={styles.container}>
@@ -23,57 +50,74 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Total Amount Header Card */}
         <Card style={styles.totalHeaderCard}>
-          <View style={styles.statusBadge}>
-            <CheckCircle size={16} color={colors.success} />
-            <Text style={styles.statusText}>PAYMENT SUCCESSFUL</Text>
+          <View style={[styles.statusBadge, !isPaid && styles.statusBadgePending]}>
+            {isPaid ? (
+              <CheckCircle size={16} color={colors.success} />
+            ) : (
+              <Clock size={16} color={colors.warning} />
+            )}
+            <Text style={[styles.statusText, !isPaid && styles.statusTextPending]}>
+              {isPaid ? 'PAYMENT RECEIVED' : 'AWAITING PAYMENT'}
+            </Text>
           </View>
-          <Text style={styles.totalAmount}>₹{breakdown.total}.00</Text>
+          <Text style={styles.totalAmount}>₹{amount.toFixed(2)}</Text>
           <Text style={styles.paymentMethodText}>
-            Paid for {selectedVehicle.name} • UPI ID: #VZ-9821-482
+            {isPaid
+              ? `Paid via UPI • ${vehicleName}`
+              : "Pay by scanning the UPI QR on your driver's app — GPay, PhonePe or Paytm"}
           </Text>
         </Card>
 
         {/* Itemized Line Items */}
         <Card style={styles.breakdownCard}>
-          <Text style={styles.cardSectionTitle}>ITEMIZED RECEIPT ({selectedVehicle.name})</Text>
+          <Text style={styles.cardSectionTitle}>ITEMIZED RECEIPT ({vehicleName})</Text>
 
           <View style={styles.lineRow}>
             <Text style={styles.lineLabel}>Base Fare (Includes 5 km)</Text>
-            <Text style={styles.lineValue}>₹{breakdown.baseFare}.00</Text>
+            <Text style={styles.lineValue}>₹{Number(breakdown?.baseFare ?? 0).toFixed(2)}</Text>
           </View>
 
           <View style={styles.lineRow}>
             <Text style={styles.lineLabel}>Distance Charge</Text>
-            <Text style={styles.lineValue}>₹{breakdown.distanceFare}.00</Text>
+            <Text style={styles.lineValue}>₹{Number(breakdown?.distanceFare ?? 0).toFixed(2)}</Text>
           </View>
 
           <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>Time Charge (18 mins)</Text>
-            <Text style={styles.lineValue}>₹{breakdown.timeCharge}.00</Text>
+            <Text style={styles.lineLabel}>Time Charge</Text>
+            <Text style={styles.lineValue}>₹{Number(breakdown?.timeCharge ?? 0).toFixed(2)}</Text>
           </View>
 
           <View style={styles.lineRow}>
             <Text style={styles.lineLabel}>Toll & Airport Parking</Text>
-            <Text style={styles.lineValue}>₹{breakdown.tollFee}.00</Text>
+            <Text style={styles.lineValue}>₹{Number(breakdown?.tollFee ?? 0).toFixed(2)}</Text>
           </View>
 
           <View style={styles.lineRow}>
             <Text style={styles.lineLabel}>GST & Govt Taxes (5%)</Text>
-            <Text style={styles.lineValue}>₹{breakdown.taxes}.00</Text>
+            <Text style={styles.lineValue}>₹{Number(breakdown?.taxes ?? 0).toFixed(2)}</Text>
           </View>
 
-          {breakdown.discount > 0 && (
+          {Number(breakdown?.discount ?? 0) > 0 && (
             <View style={[styles.lineRow, styles.discountRow]}>
-              <Text style={styles.discountLabel}>Promo Discount (VAZHI20)</Text>
-              <Text style={styles.discountValue}>-₹{breakdown.discount}.00</Text>
+              <Text style={styles.discountLabel}>
+                Promo Discount{promoCode ? ` (${promoCode})` : ''}
+              </Text>
+              <Text style={styles.discountValue}>-₹{Number(breakdown?.discount).toFixed(2)}</Text>
+            </View>
+          )}
+
+          {tip > 0 && (
+            <View style={styles.lineRow}>
+              <Text style={styles.lineLabel}>Driver Tip</Text>
+              <Text style={styles.lineValue}>₹{tip.toFixed(2)}</Text>
             </View>
           )}
 
           <View style={styles.divider} />
 
           <View style={styles.lineRowTotal}>
-            <Text style={styles.totalLabel}>Final Amount Paid</Text>
-            <Text style={styles.totalVal}>₹{breakdown.total}.00</Text>
+            <Text style={styles.totalLabel}>{isPaid ? 'Final Amount Paid' : 'Amount to Pay'}</Text>
+            <Text style={styles.totalVal}>₹{amount.toFixed(2)}</Text>
           </View>
         </Card>
 
@@ -122,6 +166,12 @@ const styles = StyleSheet.create({
     ...typography.metaBold,
     fontSize: 10,
     color: colors.success,
+  },
+  statusBadgePending: {
+    backgroundColor: colors.warningLight,
+  },
+  statusTextPending: {
+    color: colors.warning,
   },
   totalAmount: {
     ...typography.heading,

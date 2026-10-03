@@ -43,6 +43,15 @@ export interface DriverInfo {
   phone: string;
 }
 
+/** Safe driver subset returned by GET /rides* (rider view). No phone/docs. */
+export interface RideDriverInfo {
+  name: string;
+  rating?: number | null;
+  vehicleModel?: string | null;
+  plateNumber?: string | null;
+  vehicleType?: string | null;
+}
+
 export interface ActiveRide {
   id: string;
   status: string;
@@ -58,6 +67,14 @@ export interface ActiveRide {
   // Needed so FindingDriverScreen can hand the real cancellation reason to
   // RideCancelledScreen when the poll (not the modal) detects the cancel.
   cancellationReason?: string | null;
+  // Safe driver info (name/vehicle) when a driver is assigned.
+  driver?: RideDriverInfo | null;
+  // Tip submitted with the rider's review (part of the collectable amount).
+  tipAmount?: number;
+  // Origin marker: rides written by restoreActiveRide() are rider-flow state
+  // and must never be treated as a driver-mode job offer.
+  source?: 'rider-restore';
+  createdAt?: string;
 }
 
 interface RideState {

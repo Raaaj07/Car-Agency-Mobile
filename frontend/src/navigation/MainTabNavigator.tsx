@@ -14,6 +14,7 @@ import { BottomTabBar } from '../components/primitives/BottomTabBar';
 import { useAuthStore } from '../store/authStore';
 import { authApi } from '../api/auth';
 import { subscribeSocket } from '../lib/socket';
+import { restoreActiveRide, clearRestoredRiderRide } from '../hooks/useActiveRide';
 
 const RiderTab = createBottomTabNavigator<MainTabParamList>();
 const DriverTab = createBottomTabNavigator<DriverMainTabParamList>();
@@ -23,7 +24,7 @@ const BOOKING_FLOW_ROUTES = [
   'YouGotTheRide', 'DriverEnRoute', 'TripProgress', 'ReviewRide',
   'PaymentFareBreakdown', 'RideCompleted',
 ];
-const DRIVER_FLOW_ROUTES = ['RideRequestNearby', 'TurnByTurnNavigation', 'DriverOtpEntry'];
+const DRIVER_FLOW_ROUTES = ['RideRequestNearby', 'TurnByTurnNavigation', 'DriverOtpEntry', 'DriverPayment'];
 
 // Mode-split shell. Rider mode (default): Home, Trips, Profile — no driver UI
 // is registered in the tree. Driver mode (approved + activeMode): Dashboard,
@@ -87,6 +88,20 @@ export const MainTabNavigator: React.FC = () => {
       sub.remove();
     };
   }, []);
+
+  // Restore the rider's active ride only while in rider mode (once per mode
+  // change, so switching back to rider restores again). Entering driver mode
+  // clears any restored rider booking so DriverDashboard's pendingRequest can
+  // never show the user's own rider booking as a job offer. This is a
+  // separate effect from the socket/AppState listeners above (they keep
+  // their [] deps and never re-subscribe).
+  useEffect(() => {
+    if (isDriverMode) {
+      clearRestoredRiderRide();
+      return;
+    }
+    restoreActiveRide().catch(() => {});
+  }, [isDriverMode]);
 
   if (isDriverMode) {
     return (

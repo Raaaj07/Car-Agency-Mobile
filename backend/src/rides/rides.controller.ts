@@ -36,6 +36,13 @@ export class RidesController {
     return this.rides.getPendingOffer(user.userId);
   }
 
+  // Rider's current active ride (for app-restart restore). Declared BEFORE
+  // ':id' so 'active' is not treated as an id.
+  @Get('active')
+  getActive(@CurrentUser() user: AuthenticatedUser) {
+    return this.rides.findActiveForRider(user.userId);
+  }
+
   @Get(':id')
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.rides.findById(id, user.userId);
@@ -85,6 +92,14 @@ export class RidesController {
   @Patch(':id/complete')
   complete(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: CompleteRideDto) {
     return this.rides.complete(id, user.userId, dto);
+  }
+
+  // DriverPaymentScreen's "Amount Received" after the rider pays the UPI QR
+  // (approved driver who owns the ride; ride must be completed).
+  @UseGuards(ApprovedDriverGuard)
+  @Patch(':id/payment-received')
+  paymentReceived(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.rides.markPaymentReceived(id, user.userId);
   }
 
   // CancelRideConfirmationScreen (either party can cancel).

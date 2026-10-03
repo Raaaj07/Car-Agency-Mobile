@@ -129,23 +129,65 @@ export const RealMapView: React.FC<Props> = ({
     }
   }, [driverPosition, mode]);
 
-  // Fit bounds when both pickup & dropoff exist
+  // Fit bounds when both pickup & dropoff exist (booking + tracking before
+  // live driver position). Includes the full route geometry so curved roads
+  // stay on screen. Re-runs when the map becomes ready, when the route
+  // arrives, or when the sheet size changes.
+  const fitKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (mode === 'picker' && pickup && dropoff && cameraRef.current && isMountedRef.current) {
-      try {
-        const lats = [pickup.lat, dropoff.lat];
-        const lngs = [pickup.lng, dropoff.lng];
-        cameraRef.current.fitBounds(
-          [Math.max(...lngs), Math.max(...lats)],
-          [Math.min(...lngs), Math.min(...lats)],
-          [80, 60, 80, 60 + paddingRef.current.paddingBottom],
-          800,
-        );
-      } catch {
-        // safe ignore
+    if (!mapReady || !cameraRef.current || !isMountedRef.current) return;
+    if (!pickup || !dropoff) return;
+    // In live tracking modes the camera follows the driver once a live
+    // position exists; only fit endpoints while there is none.
+    if ((mode === 'tracking' || mode === 'navigation') && driverPosition) return;
+
+    const lats: number[] = [pickup.lat, dropoff.lat];
+    const lngs: number[] = [pickup.lng, dropoff.lng];
+    if (route && route.length > 0) {
+      for (const pt of route) {
+        const lng = pt[0];
+        const lat = pt[1];
+        if (Number.isFinite(lng) && Number.isFinite(lat)) {
+          lngs.push(lng);
+          lats.push(lat);
+        }
       }
     }
-  }, [mode, pickup?.lat, pickup?.lng, dropoff?.lat, dropoff?.lng]);
+    if (mode === 'picker' && driverPosition) {
+      lngs.push(driverPosition.lng);
+      lats.push(driverPosition.lat);
+    }
+
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+
+    const top = 90;
+    const right = 50;
+    const left = 50;
+    const bottom = 70 + bottomPadding;
+    const key = `${mode}|${minLat.toFixed(5)},${minLng.toFixed(5)}|${maxLat.toFixed(5)},${maxLng.toFixed(5)}|${top},${right},${bottom},${left}|${route?.length ?? 0}`;
+    if (fitKeyRef.current === key) return;
+    fitKeyRef.current = key;
+
+    try {
+      // Degenerate case: pickup and dropoff (nearly) identical — fitBounds
+      // would zoom to max level, so centre on the point instead.
+      const span = Math.max(Math.abs(maxLat - minLat), Math.abs(maxLng - minLng));
+      if (span < 0.0005) {
+        cameraRef.current.setCamera({
+          centerCoordinate: [pickup.lng, pickup.lat],
+          zoomLevel: 15,
+          animationDuration: 700,
+        });
+      } else {
+        cameraRef.current.fitBounds([maxLng, maxLat], [minLng, minLat], [top, right, bottom, left], 700);
+      }
+    } catch {
+      // safe ignore
+    }
+  }, [mode, mapReady, pickup?.lat, pickup?.lng, dropoff?.lat, dropoff?.lng, route?.length, bottomPadding, driverPosition?.lat, driverPosition?.lng]);
 
   // Picker mode smooth camera focus
   useEffect(() => {
@@ -264,7 +306,6 @@ export const RealMapView: React.FC<Props> = ({
           defaultSettings={{
             centerCoordinate: initialCenter,
             zoomLevel: 14,
-            padding: paddingRef.current,
           }}
         />
 

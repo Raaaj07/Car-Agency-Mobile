@@ -7,6 +7,7 @@ import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
 import { StorageService } from '../drivers/storage.service';
 import { RidesGateway } from '../rides/gateway/rides.gateway';
+import { RideEntity } from '../rides/entities/ride.entity';
 
 type AppStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 
@@ -17,6 +18,7 @@ export class AdminService implements OnApplicationBootstrap {
   constructor(
     @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
     @InjectRepository(DriverEntity) private readonly drivers: Repository<DriverEntity>,
+    @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
     private readonly geo: GeoService,
     private readonly storage: StorageService,
     private readonly gateway: RidesGateway,
@@ -164,6 +166,37 @@ export class AdminService implements OnApplicationBootstrap {
     await this.drivers.save(d);
     this.gateway.emitDriverStatus(d.userId, { status: 'approved' });
     return this.getApplication(id);
+  }
+
+  // GET /admin/rides — newest-first ride list for the admin console. Exposes
+  // only names/addresses/fare/payment flags (never phone or document paths).
+  async listRides(page = 1, limit = 20) {
+    const [items, total] = await this.rides.findAndCount({
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: Math.min(limit, 100),
+      relations: ['rider', 'driver', 'driver.user'],
+    });
+    return {
+      items: items.map((r: any) => ({
+        id: r.id,
+        status: r.status,
+        vehicleType: r.vehicleType,
+        riderName: r.rider?.name ?? 'Rider',
+        driverName: r.driver?.user?.name ?? r.driver?.name ?? 'Unassigned',
+        pickupAddress: r.pickup?.address ?? '',
+        dropoffAddress: r.dropoff?.address ?? '',
+        fareTotal: Number(r.fareBreakdown?.total ?? 0),
+        tipAmount: Number(r.tipAmount ?? 0),
+        paymentStatus: r.paymentStatus ?? 'pending',
+        paymentMethod: r.paymentMethod ?? 'upi',
+        createdAt: r.createdAt,
+        completedAt: r.completedAt ?? null,
+      })),
+      total,
+      page,
+      limit,
+    };
   }
 
   async readDocument(applicationId: string, kind: string) {

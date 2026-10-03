@@ -7,6 +7,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminService } from './admin.service';
 import { ReviewApplicationDto } from './dto/review-application.dto';
 import { ListApplicationsQueryDto } from './dto/list-applications-query.dto';
+import { ListRidesQueryDto } from './dto/list-rides-query.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
@@ -22,6 +23,12 @@ export class AdminController {
   @Get('driver-applications/:id')
   getOne(@Param('id') id: string) {
     return this.admin.getApplication(id);
+  }
+
+  // Admin console "Rides" tab: statuses + fare + payment collection flags.
+  @Get('rides')
+  listRides(@Query() query: ListRidesQueryDto) {
+    return this.admin.listRides(query.page, query.limit);
   }
 
   @Post('driver-applications/:id/approve')

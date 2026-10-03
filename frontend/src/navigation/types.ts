@@ -77,6 +77,7 @@ export type DriverDashboardStackParamList = {
   RideRequestNearby: undefined;
   TurnByTurnNavigation: { phase: 'to_pickup' | 'in_progress' };
   DriverOtpEntry: undefined;
+  DriverPayment: undefined;
   RideAvailableAgain: undefined;
 };
 
@@ -84,5 +85,6 @@ export type DriverDashboardStackParamList = {
 export type AdminTabParamList = {
   ApplicationsTab: undefined;
   DriversTab: undefined;
+  RidesTab: undefined;
   AdminAccountTab: undefined;
 };

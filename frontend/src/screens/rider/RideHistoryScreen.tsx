@@ -1,11 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { MapPin, Star } from 'lucide-react-native';
 import { colors, typography } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
 import { Pill } from '../../components/primitives/Pill';
+import { Button } from '../../components/primitives/Button';
 import { ridesApi, Ride } from '../../api/rides';
 import { getApiError } from '../../api/client';
+import { applyRideToStore, isActiveStatus, restoreActiveRide, screenForStatus } from '../../hooks/useActiveRide';
 
 const STATUS_VARIANT: Record<string, 'success' | 'danger' | 'warning' | 'primary' | 'muted'> = {
   completed: 'success',
@@ -27,6 +30,7 @@ function formatDate(iso?: string): string {
 const TAB = 'rider' as const;
 
 export const RideHistoryScreen: React.FC = () => {
+  const navigation = useNavigation<any>();
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -45,10 +49,30 @@ export const RideHistoryScreen: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => {
-    setLoading(true);
-    load();
-  }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      // Silently re-sync the in-memory active ride so Resume works even
+      // after an app restart, then reload the list.
+      restoreActiveRide()
+        .catch(() => null)
+        .finally(() => load());
+    }, [load]),
+  );
+
+  const handleResume = (ride: Ride) => {
+    applyRideToStore(ride);
+    navigation.navigate('HomeTab', { screen: screenForStatus(ride.status) });
+  };
+
+  const handleCancel = (ride: Ride) => {
+    applyRideToStore(ride);
+    navigation.getParent()?.navigate('CancelRideConfirmation' as never);
+  };
+
+  const activeRides = rides.filter((r) => isActiveStatus(r.status));
+  // Pinned in the header — never duplicated in the FlatList below.
+  const pastRides = rides.filter((r) => !isActiveStatus(r.status));
+  const nothingToShow = activeRides.length === 0 && pastRides.length === 0;
 
   if (loading) {
     return (
@@ -62,7 +86,7 @@ export const RideHistoryScreen: React.FC = () => {
     <View style={styles.container}>
       <Text style={styles.header}>My Trips</Text>
       <FlatList
-        data={rides}
+        data={pastRides}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -75,11 +99,40 @@ export const RideHistoryScreen: React.FC = () => {
             tintColor={colors.primary}
           />
         }
+        ListHeaderComponent={
+          activeRides.length > 0 ? (
+            <View style={styles.activeSection}>
+              <Text style={styles.activeTitle}>Active ride</Text>
+              {activeRides.map((ride) => (
+                <Card key={ride.id} style={styles.activeCard}>
+                  <View style={styles.rideTop}>
+                    <Text style={styles.rideDate}>{formatDate(ride.createdAt)}</Text>
+                    <Pill label={ride.status.replace(/_/g, ' ')} variant={STATUS_VARIANT[ride.status] ?? 'muted'} />
+                  </View>
+                  <View style={styles.routeRow}>
+                    <MapPin size={16} color={colors.success} />
+                    <Text style={styles.routeText} numberOfLines={1}>{ride.pickup?.address}</Text>
+                  </View>
+                  <View style={styles.routeRow}>
+                    <MapPin size={16} color={colors.danger} />
+                    <Text style={styles.routeText} numberOfLines={1}>{ride.dropoff?.address}</Text>
+                  </View>
+                  <View style={styles.activeBtnRow}>
+                    <Button title="Resume" onPress={() => handleResume(ride)} variant="primary" size="medium" style={styles.resumeBtn} />
+                    <Button title="Cancel ride" onPress={() => handleCancel(ride)} variant="outline" size="medium" style={styles.cancelBtn} />
+                  </View>
+                </Card>
+              ))}
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
-          <View style={styles.centered}>
-            <Text style={styles.emptyTitle}>{error ?? 'No bookings yet'}</Text>
-            <Text style={styles.emptySub}>Rides you book will show up here.</Text>
-          </View>
+          nothingToShow ? (
+            <View style={styles.centered}>
+              <Text style={styles.emptyTitle}>{error ?? 'No bookings yet'}</Text>
+              <Text style={styles.emptySub}>Rides you book will show up here.</Text>
+            </View>
+          ) : null
         }
         renderItem={({ item }) => (
           <Card style={styles.rideCard}>
@@ -120,6 +173,12 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: 20, paddingBottom: 100, gap: 12 },
   emptyTitle: { ...typography.bodyBold, marginBottom: 6, textAlign: 'center' },
   emptySub: { ...typography.meta, textAlign: 'center' },
+  activeSection: { gap: 12, marginBottom: 4 },
+  activeTitle: { ...typography.bodyBold, fontSize: 15, color: colors.primary },
+  activeCard: { gap: 8, borderWidth: 1.5, borderColor: colors.primary },
+  activeBtnRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  resumeBtn: { flex: 1 },
+  cancelBtn: { flex: 1 },
   rideCard: { gap: 8 },
   rideTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rideDate: { ...typography.meta, fontSize: 12 },

@@ -18,8 +18,8 @@ import { PaymentFareBreakdownScreen } from '../screens/rider/PaymentFareBreakdow
 import { RideCompletedScreen } from '../screens/rider/RideCompletedScreen';
 import { useRideStore } from '../store/rideStore';
 import { ridesApi } from '../api/rides';
-import { paymentsApi } from '../api/payments';
 import { getApiError } from '../api/client';
+import { applyRideToStore, beginBooking, endBooking, screenForStatus } from '../hooks/useActiveRide';
 
 const Stack = createNativeStackNavigator<RiderHomeStackParamList>();
 
@@ -84,22 +84,79 @@ export const RiderHomeStackNavigator: React.FC = () => {
                 Alert.alert('Missing location', 'Please pick a pickup and drop-off location first.');
                 return;
               }
+              const bookingInput = {
+                pickup: { address: state.pickupAddress, lat: state.pickupCoords.lat, lng: state.pickupCoords.lng },
+                dropoff: { address: state.dropoffAddress, lat: state.dropoffCoords.lat, lng: state.dropoffCoords.lng },
+                vehicleType: state.selectedVehicle.id,
+                promoCode: state.promoCode,
+                paymentMethod: 'upi' as const,
+                // Allow larger vehicle to accept (auto->mini->sedan->suv) so a
+                // sedan request can still match an SUV driver when no sedan
+                // is nearby. Backend defaults this to false.
+                allowUpgrade: true,
+              };
+              const bookOnce = async () => {
+                beginBooking();
+                try {
+                  const ride = await ridesApi.create(bookingInput);
+                  setActiveRide(ride);
+                  navigation.navigate('FindingDriver');
+                } finally {
+                  // Keep the flag up for the whole booking attempt so a
+                  // concurrent restoreActiveRide() cannot clear the new ride.
+                  endBooking();
+                }
+              };
               try {
-                const ride = await ridesApi.create({
-                  pickup: { address: state.pickupAddress, lat: state.pickupCoords.lat, lng: state.pickupCoords.lng },
-                  dropoff: { address: state.dropoffAddress, lat: state.dropoffCoords.lat, lng: state.dropoffCoords.lng },
-                  vehicleType: state.selectedVehicle.id,
-                  promoCode: state.promoCode,
-                  paymentMethod: 'upi',
-                  // Allow larger vehicle to accept (auto->mini->sedan->suv) so a
-                  // sedan request can still match an SUV driver when no sedan
-                  // is nearby. Backend defaults this to false.
-                  allowUpgrade: true,
-                });
-                setActiveRide(ride);
-                navigation.navigate('FindingDriver');
+                await bookOnce();
               } catch (error) {
-                Alert.alert('Booking failed', getApiError(error));
+                const message = getApiError(error);
+                if (!message.toLowerCase().includes('active ride')) {
+                  Alert.alert('Booking failed', message);
+                  return;
+                }
+                Alert.alert(
+                  'You already have an active ride',
+                  'Resume it or cancel it before booking a new one.',
+                  [
+                    {
+                      text: 'Resume',
+                      onPress: async () => {
+                        try {
+                          const active = await ridesApi.getActive();
+                          if (!active) {
+                            // Race: the old ride just ended — retry once.
+                            await bookOnce();
+                            return;
+                          }
+                          applyRideToStore(active);
+                          navigation.navigate(screenForStatus(active.status));
+                        } catch (err) {
+                          Alert.alert('Booking failed', getApiError(err));
+                        }
+                      },
+                    },
+                    {
+                      text: 'Cancel ride',
+                      style: 'destructive',
+                      onPress: async () => {
+                        try {
+                          const active = await ridesApi.getActive();
+                          if (!active) {
+                            // Race: the old ride just ended — retry once.
+                            await bookOnce();
+                            return;
+                          }
+                          applyRideToStore(active);
+                          rootNavigation.navigate('CancelRideConfirmation');
+                        } catch (err) {
+                          Alert.alert('Booking failed', getApiError(err));
+                        }
+                      },
+                    },
+                    { text: 'Close', style: 'cancel' },
+                  ],
+                );
               }
             }}
           />
@@ -135,6 +192,13 @@ export const RiderHomeStackNavigator: React.FC = () => {
           <DriverEnRouteScreen
             onStartTrip={() => navigation.navigate('TripProgress')}
             onCancelRide={() => rootNavigation.navigate('CancelRideConfirmation')}
+            onRideCancelled={(reason) => {
+              // Cancelled by the driver or the stale sweep while this screen
+              // was open — mirror FindingDriver: land on the outcome screen.
+              resetRide();
+              rootNavigation.navigate('RideCancelled', { reason });
+            }}
+            onRideCompleted={() => navigation.navigate('ReviewRide')}
           />
         )}
       </Stack.Screen>
@@ -143,6 +207,11 @@ export const RiderHomeStackNavigator: React.FC = () => {
         {({ navigation }) => (
           <TripProgressScreen
             onCompleteTrip={() => navigation.navigate('ReviewRide')}
+            onCancelRide={() => rootNavigation.navigate('CancelRideConfirmation')}
+            onRideCancelled={(reason) => {
+              resetRide();
+              rootNavigation.navigate('RideCancelled', { reason });
+            }}
             onEmergencyPress={() => rootNavigation.navigate('RideAnnouncementsSettings')}
           />
         )}
@@ -158,9 +227,9 @@ export const RiderHomeStackNavigator: React.FC = () => {
               try {
                 const updated = await ridesApi.review(ride.id, { rating, compliments, tipAmount });
                 setActiveRide(updated);
-                const order = await paymentsApi.createOrder(updated.id, 'upi');
-                await paymentsApi.verify(updated.id, order.orderId);
-                setActiveRide({ ...updated, paymentStatus: 'paid' });
+                // No silent auto-payment here: the rider pays the UPI QR on
+                // the driver's phone and the driver taps "Amount Received",
+                // which flips paymentStatus — PaymentFareBreakdown polls it.
                 navigation.navigate('PaymentFareBreakdown');
               } catch (error) {
                 Alert.alert('Unable to submit review', getApiError(error));

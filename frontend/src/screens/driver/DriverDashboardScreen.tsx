@@ -247,7 +247,10 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     (navigation.getParent()?.getParent()?.getParent() as any)?.navigate?.('RideAnnouncementsSettings');
   };
 
-  const pendingRequest = activeRide && activeRide.status === 'requested' ? activeRide : null;
+  // Ignore rides restored from the rider flow: they are the user's own
+  // booking, never a job offer (see clearRestoredRiderRide in MainTabNavigator).
+  const pendingRequest =
+    activeRide && activeRide.status === 'requested' && activeRide.source !== 'rider-restore' ? activeRide : null;
   const status = (profile as any)?.status as string | undefined;
 
   return (

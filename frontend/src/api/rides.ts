@@ -1,5 +1,5 @@
 import { api } from './client';
-import { FareBreakdown } from '../store/rideStore';
+import { FareBreakdown, RideDriverInfo } from '../store/rideStore';
 
 export type RideStatus = 'requested' | 'matched' | 'driver_en_route' | 'in_progress' | 'completed' | 'cancelled';
 export type PaymentMethod = 'upi' | 'wallet' | 'card' | 'cash';
@@ -23,6 +23,10 @@ export interface Ride {
   createdAt?: string;
   completedAt?: string | null;
   cancelledAt?: string | null;
+  // Driver-side view only: first name of the rider.
+  riderName?: string;
+  // Rider-side view only: safe driver subset (null when unassigned).
+  driver?: RideDriverInfo | null;
 }
 
 export const ridesApi = {
@@ -34,6 +38,7 @@ export const ridesApi = {
   list: async (page = 1, limit = 20, as?: 'rider' | 'driver') =>
     (await api.get<{ items: Ride[]; total: number }>('/rides', { params: { page, limit, ...(as ? { as } : {}) } })).data,
   get: async (rideId: string) => (await api.get<Ride>(`/rides/${rideId}`)).data,
+  getActive: async () => (await api.get<Ride | null>('/rides/active')).data,
   cancel: async (rideId: string, reason: string) => (await api.patch<Ride>(`/rides/${rideId}/cancel`, { reason })).data,
   review: async (rideId: string, input: { rating: number; compliments: string[]; tipAmount: number }) =>
     (await api.patch<Ride>(`/rides/${rideId}/review`, input)).data,
@@ -44,6 +49,10 @@ export const ridesApi = {
   verifyPickupOtp: async (rideId: string, otp: string) => (await api.patch<Ride>(`/rides/${rideId}/verify-pickup-otp`, { otp })).data,
   complete: async (rideId: string, actualDistanceKm?: number) =>
     (await api.patch<Ride>(`/rides/${rideId}/complete`, actualDistanceKm ? { actualDistanceKm } : {})).data,
+  // Driver confirms the rider paid the UPI QR shown on the driver's phone.
+  // Flips paymentStatus to 'paid', which the admin console reports on.
+  markPaymentReceived: async (rideId: string) =>
+    (await api.patch<Ride>(`/rides/${rideId}/payment-received`)).data,
   getPendingOffer: async () =>
     (await api.get<{ ride: Ride; remainingSeconds: number } | null>('/rides/offers/pending')).data,
 };

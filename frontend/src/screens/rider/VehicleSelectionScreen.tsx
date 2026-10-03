@@ -106,7 +106,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
     <View style={styles.container}>
       {/* Top Map View */}
       <View style={styles.mapWrap}>
-        <RealMapView mode="picker" pickup={pickupCoords} dropoff={dropoffCoords} route={route?.coordinates} />
+        <RealMapView mode="picker" pickup={pickupCoords} dropoff={dropoffCoords} route={route?.coordinates} bottomPadding={40} />
         {onBack && <Header onBack={onBack} transparent style={styles.mapHeader} />}
 
         {/* Distance / ETA strip */}
@@ -200,7 +200,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  mapWrap: { height: '42%', position: 'relative' },
+  mapWrap: { height: '45%', position: 'relative' },
   mapHeader: { position: 'absolute', top: 10, left: 0, right: 0 },
   routeInfoBar: {
     position: 'absolute', bottom: 12, alignSelf: 'center',

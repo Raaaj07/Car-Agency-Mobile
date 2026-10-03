@@ -1,25 +1,56 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Phone, MessageSquare, Clock, MapPin, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Avatar } from '../../components/primitives/Avatar';
-import { MapPlaceholder } from '../../components/primitives/MapPlaceholder';
+import { RealMapView } from '../../components/primitives/RealMapView';
 import { useRideStore } from '../../store/rideStore';
 import { useRideSocket } from '../../hooks/useSocket';
 import { ridesApi } from '../../api/rides';
+import { getRoute } from '../../api/mapbox';
 
 interface Props {
   onStartTrip: () => void;
   onCancelRide: () => void;
+  onRideCancelled?: (reason?: string) => void;
+  onRideCompleted?: () => void;
 }
 
-export const DriverEnRouteScreen: React.FC<Props> = ({ onStartTrip, onCancelRide }) => {
+// Friendly label for the raw vehicleType id (auto -> 'Auto', ...).
+const VEHICLE_LABELS: Record<string, string> = {
+  auto: 'Auto',
+  mini: 'Mini',
+  sedan: 'Sedan',
+  suv: 'SUV',
+};
+
+export const DriverEnRouteScreen: React.FC<Props> = ({
+  onStartTrip,
+  onCancelRide,
+  onRideCancelled,
+  onRideCompleted,
+}) => {
   const activeRide = useRideStore((state) => state.activeRide);
+  const setActiveRide = useRideStore((state) => state.setActiveRide);
+  const pickupCoords = useRideStore((state) => state.pickupCoords);
+  const dropoffCoords = useRideStore((state) => state.dropoffCoords);
   const pickupOtp = activeRide?.pickupOtp;
   const pickupText = activeRide?.pickup?.address || 'Pickup Location';
   const dropText = activeRide?.dropoff?.address || 'Drop-off Location';
-  const driverName = activeRide?.riderName ? 'Assigned Driver' : 'Rajesh Kumar';
+  const driverInfo = activeRide?.driver ?? null;
+  const driverName = driverInfo?.name?.trim() || 'Your driver';
+  const vehicleLabel = (activeRide?.vehicleType && VEHICLE_LABELS[activeRide.vehicleType]) || '';
+  const vehicleText =
+    [vehicleLabel, driverInfo?.vehicleModel, driverInfo?.plateNumber]
+      .filter((part): part is string => !!part && String(part).trim().length > 0)
+      .join(' • ') || 'Vehicle details will be shared on arrival';
+  const [route, setRoute] = useState<[number, number][] | undefined>(undefined);
+  const [driverPosition, setDriverPosition] = useState<
+    { lat: number; lng: number } | undefined
+  >();
+  // Measured bottom-sheet height so the map can pad the fit above it.
+  const [sheetHeight, setSheetHeight] = useState(0);
 
   // Guard: ensure onStartTrip is called exactly once (socket + poll may both fire).
   const startedRef = useRef(false);
@@ -29,39 +60,99 @@ export const DriverEnRouteScreen: React.FC<Props> = ({ onStartTrip, onCancelRide
     onStartTrip();
   };
 
-  // Listen for real-time ride status update: when driver verifies OTP, status becomes in_progress
-  useRideSocket(activeRide?.id, {
-    onStatus: (event) => {
-      if (event.status === 'in_progress') {
+  // Terminal transitions (completed / cancelled) fire exactly once.
+  const terminalRef = useRef(false);
+  const onRideCancelledRef = useRef(onRideCancelled);
+  onRideCancelledRef.current = onRideCancelled;
+  const onRideCompletedRef = useRef(onRideCompleted);
+  onRideCompletedRef.current = onRideCompleted;
+
+  // Shared by the socket handler and the 3s polling fallback.
+  const checkRideStatus = useCallback(async () => {
+    const rideId = useRideStore.getState().activeRide?.id;
+    if (!rideId) return;
+    try {
+      const current = await ridesApi.get(rideId);
+      if (current.status === 'in_progress') {
         safeStartTrip();
+      } else if (!terminalRef.current && current.status === 'cancelled') {
+        terminalRef.current = true;
+        setActiveRide(current);
+        onRideCancelledRef.current?.(current.cancellationReason ?? undefined);
+      } else if (!terminalRef.current && current.status === 'completed') {
+        terminalRef.current = true;
+        setActiveRide(current);
+        onRideCompletedRef.current?.();
+      }
+    } catch {
+      // Polling failure ignored
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setActiveRide]);
+
+  // Listen for real-time ride status update: OTP verified (in_progress),
+  // or the ride ended (completed/cancelled — driver cancel, or stale sweep).
+  useRideSocket(activeRide?.id, {
+    onDriverLocation: (event) => {
+      setDriverPosition({ lat: event.lat, lng: event.lng });
+    },
+    onStatus: (event) => {
+      if (
+        event.status === 'in_progress' ||
+        event.status === 'cancelled' ||
+        event.status === 'completed'
+      ) {
+        void checkRideStatus();
       }
     },
   });
 
-  // Polling fallback to catch OTP verification in case of socket reconnection
+  // Polling fallback to catch status changes in case of socket reconnection.
+  // Keeps polling through in_progress (waiting for completion) and stops
+  // after the first terminal state.
   useEffect(() => {
     if (!activeRide?.id) return;
-    const interval = setInterval(async () => {
-      try {
-        const current = await ridesApi.get(activeRide.id);
-        if (current.status === 'in_progress') {
-          safeStartTrip();
-        }
-      } catch {
-        // Polling failure ignored
+    void checkRideStatus();
+    const timer = setInterval(() => {
+      if (terminalRef.current) {
+        clearInterval(timer);
+        return;
       }
+      void checkRideStatus();
     }, 3000);
-    return () => clearInterval(interval);
+    return () => clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRide?.id]);
+  }, [activeRide?.id, checkRideStatus]);
+
+  // Road-following route for the fit-bounds map. Failures fall back to
+  // fitting just the endpoints.
+  useEffect(() => {
+    let mounted = true;
+    const pickup = pickupCoords ?? (activeRide?.pickup ? { lat: activeRide.pickup.lat, lng: activeRide.pickup.lng } : undefined);
+    const dropoff = dropoffCoords ?? (activeRide?.dropoff ? { lat: activeRide.dropoff.lat, lng: activeRide.dropoff.lng } : undefined);
+    if (!pickup || !dropoff) {
+      setRoute(undefined);
+      return;
+    }
+    getRoute(pickup, dropoff)
+      .then((result) => {
+        if (mounted && result) setRoute(result.coordinates);
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [pickupCoords?.lat, pickupCoords?.lng, dropoffCoords?.lat, dropoffCoords?.lng, activeRide?.pickup?.lat, activeRide?.pickup?.lng, activeRide?.dropoff?.lat, activeRide?.dropoff?.lng]);
 
   return (
     <View style={styles.container}>
-      <MapPlaceholder
-        showDriverPin
-        driverEta="8 MIN"
-        pickupText={pickupText}
-        dropText={dropText}
+      <RealMapView
+        mode="tracking"
+        pickup={pickupCoords ?? (activeRide?.pickup ? { lat: activeRide.pickup.lat, lng: activeRide.pickup.lng } : undefined)}
+        dropoff={dropoffCoords ?? (activeRide?.dropoff ? { lat: activeRide.dropoff.lat, lng: activeRide.dropoff.lng } : undefined)}
+        driverPosition={driverPosition}
+        route={route}
+        bottomPadding={sheetHeight}
       />
 
       {/* Floating Status Pill Header */}
@@ -70,8 +161,17 @@ export const DriverEnRouteScreen: React.FC<Props> = ({ onStartTrip, onCancelRide
         <Text style={styles.statusPillText}>Driver is on the way to your pickup</Text>
       </View>
 
+      {/* Drop-off line under the map header (real address, no invented ETA) */}
+      <View style={styles.dropPill}>
+        <MapPin size={14} color={colors.primary} />
+        <Text style={styles.dropPillText} numberOfLines={1}>{dropText}</Text>
+      </View>
+
       {/* Bottom Sheet Card */}
-      <View style={styles.bottomSheet}>
+      <View
+        style={styles.bottomSheet}
+        onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
+      >
         <View style={styles.dragHandle} />
 
         {/* Start OTP Code Box */}
@@ -87,10 +187,10 @@ export const DriverEnRouteScreen: React.FC<Props> = ({ onStartTrip, onCancelRide
         </View>
 
         <View style={styles.driverRow}>
-          <Avatar name={driverName} rating={4.9} size={50} online />
+          <Avatar name={driverName} rating={driverInfo?.rating ?? undefined} size={50} online />
           <View style={styles.driverMeta}>
             <Text style={styles.driverName}>{driverName}</Text>
-            <Text style={styles.vehicleInfo}>White Maruti Dzire • KA 05 MN 4821</Text>
+            <Text style={styles.vehicleInfo}>{vehicleText}</Text>
           </View>
 
           <View style={styles.contactGroup}>
@@ -154,6 +254,26 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 13,
+  },
+  dropPill: {
+    position: 'absolute',
+    top: 72,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radii.pill,
+    gap: 6,
+    maxWidth: '90%',
+    ...shadows.card,
+  },
+  dropPillText: {
+    fontWeight: '700',
+    fontSize: 12,
+    color: colors.textPrimary,
+    flexShrink: 1,
   },
   bottomSheet: {
     position: 'absolute',

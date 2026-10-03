@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { LogOut, ShieldCheck, Car } from 'lucide-react-native';
+import { LogOut, ShieldCheck, Car, Receipt } from 'lucide-react-native';
 import { AdminTabParamList } from './types';
 import { AdminApplicationsScreen } from '../screens/admin/AdminApplicationsScreen';
 import { AdminApplicationDetailScreen } from '../screens/admin/AdminApplicationDetailScreen';
 import { AdminDriversScreen } from '../screens/admin/AdminDriversScreen';
+import { AdminRidesScreen } from '../screens/admin/AdminRidesScreen';
 import { useAuthStore } from '../store/authStore';
 import { useRideStore } from '../store/rideStore';
 import { colors, typography } from '../theme/theme';
@@ -72,6 +73,14 @@ export const AdminTabNavigator: React.FC = () => {
         options={{
           title: 'Drivers',
           tabBarIcon: ({ color, size }) => <Car size={size} color={color} />,
+        }}
+      />
+      <Tab.Screen
+        name="RidesTab"
+        component={AdminRidesScreen}
+        options={{
+          title: 'Rides',
+          tabBarIcon: ({ color, size }) => <Receipt size={size} color={color} />,
         }}
       />
       <Tab.Screen

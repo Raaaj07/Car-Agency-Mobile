@@ -111,9 +111,28 @@ export const AppNavigator: React.FC = () => {
                     onBack={() => navigation.goBack()}
                     onConfirmCancel={async (reason) => {
                       try {
-                        const ride = useRideStore.getState().activeRide;
-                        if (ride) await ridesApi.cancel(ride.id, reason);
+                        let ride = useRideStore.getState().activeRide;
+                        if (!ride) {
+                          const restored = await ridesApi.getActive().catch(() => null);
+                          if (restored) {
+                            useRideStore.getState().setActiveRide(restored as any);
+                            if (restored.pickup) {
+                              useRideStore.getState().setPickup(restored.pickup.address, restored.pickup.address, { lat: restored.pickup.lat, lng: restored.pickup.lng });
+                            }
+                            if (restored.dropoff) {
+                              useRideStore.getState().setDropoff(restored.dropoff.address, restored.dropoff.address, { lat: restored.dropoff.lat, lng: restored.dropoff.lng });
+                            }
+                            ride = useRideStore.getState().activeRide;
+                          }
+                        }
+                        if (!ride) {
+                          Alert.alert('No active ride found', 'There is no active ride to cancel.');
+                          navigation.goBack();
+                          return;
+                        }
+                        await ridesApi.cancel(ride.id, reason);
                         useRideStore.getState().setCancellationReason(reason);
+                        useRideStore.getState().resetRide();
                         navigation.navigate('RideCancelled', { reason });
                       } catch (error) {
                         Alert.alert('Cancellation failed', getApiError(error));

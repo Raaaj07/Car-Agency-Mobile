@@ -23,6 +23,7 @@ const reasons = [
 export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfirmCancel }) => {
   const storeReason = useRideStore((state) => state.cancellationReason);
   const setCancellationReason = useRideStore((state) => state.setCancellationReason);
+  const activeRide = useRideStore((state) => state.activeRide);
   const [selectedReason, setSelectedReason] = useState<string>(storeReason || reasons[0]);
 
   const handleConfirm = () => {
@@ -31,6 +32,17 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
       onConfirmCancel(selectedReason);
     }
   };
+
+  const status = activeRide?.status;
+  const warningSub =
+    status === 'requested'
+      ? "We'll stop searching for a driver."
+      : status === 'matched' || status === 'driver_en_route'
+        ? 'Your driver is already on the way.'
+        : status === 'in_progress'
+          ? 'Your trip has already started. Cancelling now ends the trip.'
+          : 'Your driver is already en route to your location.';
+  const showPolicy = status !== 'in_progress';
 
   return (
     <View style={styles.container}>
@@ -42,7 +54,7 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
           <AlertTriangle size={24} color={colors.danger} />
           <View style={styles.warningTextWrap}>
             <Text style={styles.warningTitle}>Are you sure you want to cancel?</Text>
-            <Text style={styles.warningSub}>Your driver is already en route to your location.</Text>
+            <Text style={styles.warningSub}>{warningSub}</Text>
           </View>
         </View>
 
@@ -71,12 +83,14 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
         </Card>
 
         {/* Policy Box */}
-        <View style={styles.policyBox}>
-          <ShieldAlert size={16} color={colors.textSecondary} />
-          <Text style={styles.policyText}>
-            No cancellation fee will be charged for this trip (Cancelled within 2 minutes).
-          </Text>
-        </View>
+        {showPolicy && (
+          <View style={styles.policyBox}>
+            <ShieldAlert size={16} color={colors.textSecondary} />
+            <Text style={styles.policyText}>
+              No cancellation fee will be charged for this trip (Cancelled within 2 minutes).
+            </Text>
+          </View>
+        )}
       </ScrollView>
 
       {/* Footer Action Buttons */}

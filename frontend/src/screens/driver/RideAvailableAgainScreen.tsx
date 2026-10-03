@@ -1,15 +1,24 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
-import { DollarSign, CheckCircle2, Navigation, Home, Zap } from 'lucide-react-native';
+import { CheckCircle2, Home, Zap } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
+import { Pill } from '../../components/primitives/Pill';
+import { useRideStore } from '../../store/rideStore';
 
 interface Props {
   onBackToDashboard: () => void;
 }
 
 export const RideAvailableAgainScreen: React.FC<Props> = ({ onBackToDashboard }) => {
+  // Real earnings from the trip just completed (no demo numbers).
+  const activeRide = useRideStore((state) => state.activeRide);
+  const tripFare = Number(activeRide?.fareBreakdown?.total ?? 0);
+  const tip = Number(activeRide?.tipAmount ?? 0);
+  const total = tripFare + tip;
+  const paymentPaid = activeRide?.paymentStatus === 'paid';
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -21,13 +30,17 @@ export const RideAvailableAgainScreen: React.FC<Props> = ({ onBackToDashboard })
             </View>
           </View>
           <Text style={styles.title}>Trip Completed!</Text>
-          <Text style={styles.subtitle}>₹240.00 has been credited to your daily wallet</Text>
+          <Text style={styles.subtitle}>₹{total.toFixed(2)} earned from this trip</Text>
         </View>
 
-        {/* Online Status Pill */}
+        {/* Payment collection status */}
         <View style={styles.onlineStatusCard}>
-          <View style={styles.onlineDot} />
-          <Text style={styles.onlineText}>You are back Online & searching for nearby rides</Text>
+          <View style={[styles.onlineDot, { backgroundColor: paymentPaid ? colors.success : colors.warning }]} />
+          <Text style={styles.onlineText}>
+            {paymentPaid
+              ? 'Payment received — recorded and visible to admin'
+              : 'Payment pending — collect via the UPI QR on the previous screen'}
+          </Text>
         </View>
 
         {/* Finished Trip Breakdown */}
@@ -36,19 +49,23 @@ export const RideAvailableAgainScreen: React.FC<Props> = ({ onBackToDashboard })
 
           <View style={styles.metricRow}>
             <Text style={styles.metricLabel}>Trip Fare</Text>
-            <Text style={styles.metricVal}>₹210.00</Text>
+            <Text style={styles.metricVal}>₹{tripFare.toFixed(2)}</Text>
           </View>
 
           <View style={styles.metricRow}>
             <Text style={styles.metricLabel}>Driver Tip</Text>
-            <Text style={styles.metricVal}>₹30.00</Text>
+            <Text style={styles.metricVal}>₹{tip.toFixed(2)}</Text>
           </View>
 
           <View style={styles.divider} />
 
           <View style={styles.metricRowTotal}>
             <Text style={styles.totalLabel}>Total Earned</Text>
-            <Text style={styles.totalAmount}>₹240.00</Text>
+            <Text style={styles.totalAmount}>₹{total.toFixed(2)}</Text>
+          </View>
+
+          <View style={styles.pillRow}>
+            <Pill label={paymentPaid ? 'PAID' : 'PENDING'} variant={paymentPaid ? 'success' : 'warning'} />
           </View>
         </Card>
 
@@ -170,6 +187,10 @@ const styles = StyleSheet.create({
   metricRowTotal: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  pillRow: {
+    marginTop: 12,
     alignItems: 'center',
   },
   totalLabel: {
