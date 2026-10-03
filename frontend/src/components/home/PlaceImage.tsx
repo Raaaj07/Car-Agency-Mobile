@@ -2,7 +2,7 @@
  * PlaceImage — RN Image with loading skeleton + graceful MapPin fallback.
  * Never crashes on a missing or broken URL.
  */
-import React, { memo, useState } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import { Image, View, StyleSheet } from 'react-native';
 import { MapPin } from 'lucide-react-native';
 import { colors } from '../../theme/theme';
@@ -17,6 +17,12 @@ interface Props {
 export const PlaceImage: React.FC<Props> = memo(({ uri, width, height, borderRadius = 0 }) => {
   const [loadError, setLoadError] = useState(false);
   const [loaded, setLoaded] = useState(false);
+
+  // Recycled cards (FlatList) must not keep a previous image's state.
+  useEffect(() => {
+    setLoadError(false);
+    setLoaded(false);
+  }, [uri]);
 
   const showFallback = !uri || loadError;
 

@@ -4,7 +4,7 @@
  * Also re-exports placeThumbUrl / placePhotoUrl (legacy image helpers used
  * by the old home screen; kept so existing call sites compile unchanged).
  */
-import { api } from './client';
+import { api, API_URL } from './client';
 
 // ── Shared types ────────────────────────────────────────────────────────────
 
@@ -57,16 +57,34 @@ export const placesApi = {
 
   /** GET /places/recent?limit=5 */
   getRecent: async (limit = 5): Promise<PlaceItem[]> =>
-    (await api.get<PlaceItem[]>('/places/recent', { params: { limit } })).data,
+    (await api.get<PlaceItem[]>('/places/recent', { params: { limit } })).data.map(absolutizeImageUrl),
 
   /** GET /places/popular?lat=&lng= */
-  getPopular: async (coords?: { lat: number; lng: number }): Promise<PopularPlacesResponse> =>
-    (
+  getPopular: async (coords?: { lat: number; lng: number }): Promise<PopularPlacesResponse> => {
+    const res = (
       await api.get<PopularPlacesResponse>('/places/popular', {
         params: coords ? { lat: coords.lat, lng: coords.lng } : {},
       })
-    ).data,
+    ).data;
+    return {
+      quickPicks: res.quickPicks.map(absolutizeImageUrl),
+      popular: res.popular.map(absolutizeImageUrl),
+      cityHighlights: res.cityHighlights.map(absolutizeImageUrl),
+    };
+  },
 };
+
+/**
+ * The backend serves place photos as paths relative to the API base
+ * (/places/photo/<id>), or absolute URLs when PUBLIC_API_URL is set.
+ * Prefix relative paths with this app's API base so <Image> can fetch them.
+ */
+export function absolutizeImageUrl(item: PlaceItem): PlaceItem {
+  if (item.imageUrl && item.imageUrl.startsWith('/')) {
+    return { ...item, imageUrl: `${API_URL}${item.imageUrl}` };
+  }
+  return item;
+}
 
 // ── Legacy image helpers (kept for backward compat) ──────────────────────────
 

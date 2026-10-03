@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { SavedPlaceEntity } from './entities/saved-place.entity';
 import { UpsertSavedPlaceDto } from './dto/upsert-saved-place.dto';
@@ -7,10 +8,18 @@ import { PlaceItemDto, SavedPlaceDto } from './dto/place-item.dto';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { haversineKm } from '../common/geo-utils';
 import { PLACES_CONFIG, PlaceConfigItem } from './places.config';
+import { GooglePlacesService } from './google-places.service';
 
 function makeGeoKey(lat: number, lng: number): string {
   return `${lat.toFixed(4)},${lng.toFixed(4)}`;
 }
+
+// Every curated spot (for recent-dropoff photo matching).
+const CURATED_PLACES: PlaceConfigItem[] = [
+  ...PLACES_CONFIG.quickPicks,
+  ...PLACES_CONFIG.popular,
+  ...PLACES_CONFIG.cityHighlights,
+];
 
 @Injectable()
 export class PlacesService {
@@ -19,7 +28,23 @@ export class PlacesService {
     private readonly savedPlaces: Repository<SavedPlaceEntity>,
     @InjectRepository(RideEntity)
     private readonly rides: Repository<RideEntity>,
+    private readonly config: ConfigService,
+    private readonly googlePhotos: GooglePlacesService,
   ) {}
+
+  /**
+   * Photo URL for a curated place, served by our own backend so the Google
+   * key never reaches the app. Absolute (PUBLIC_API_URL, the public API
+   * base including /api/v1) so <Image> can fetch it without a token, or a
+   * relative path when PUBLIC_API_URL is unset. Null when no photo exists.
+   */
+  private async buildImageUrl(item: PlaceConfigItem): Promise<string | null> {
+    const resolved = await this.googlePhotos.resolvePhoto(item);
+    if (!resolved) return item.imageUrl ?? null;
+    const base = (this.config.get<string>('PUBLIC_API_URL') ?? '').replace(/\/$/, '');
+    const path = `/places/photo/${encodeURIComponent(item.id)}`;
+    return base ? `${base}${path}` : path;
+  }
 
   async getSaved(userId: string): Promise<SavedPlaceDto[]> {
     const places = await this.savedPlaces.find({
@@ -110,31 +135,44 @@ export class PlacesService {
       : [];
     const savedMap = new Map(saved.map((s) => [s.geoKey, s]));
 
-    return topRows.map((r) => {
-      const sp = savedMap.get(r.geo_key);
-      return {
-        id: `recent-${r.geo_key}`,
-        title: r.title || r.addr,
-        subtitle: r.addr,
-        lat: Number(r.lat),
-        lng: Number(r.lng),
-        imageUrl: null,
-        saved: !!sp,
-        savedId: sp?.id ?? null,
-      };
-    });
+    return topRows.length === 0 ? [] : await Promise.all(
+      topRows.map(async (r) => {
+        const sp = savedMap.get(r.geo_key);
+        const coords = { lat: Number(r.lat), lng: Number(r.lng) };
+        // A dropoff at a curated spot reuses that spot's photo.
+        const near = CURATED_PLACES.find(
+          (c) => haversineKm(coords, { lat: c.lat, lng: c.lng }) < 0.1,
+        );
+        return {
+          id: `recent-${r.geo_key}`,
+          title: r.title || r.addr,
+          subtitle: r.addr,
+          lat: coords.lat,
+          lng: coords.lng,
+          imageUrl: near ? await this.buildImageUrl(near) : null,
+          saved: !!sp,
+          savedId: sp?.id ?? null,
+        };
+      }),
+    );
   }
 
-  getPopular(lat?: number, lng?: number): { quickPicks: PlaceItemDto[]; popular: PlaceItemDto[]; cityHighlights: PlaceItemDto[] } {
-    const sort = (items: PlaceConfigItem[]): PlaceItemDto[] => {
-      const mapped: PlaceItemDto[] = items.map((item) => ({
-        id: item.id,
-        title: item.title,
-        subtitle: item.subtitle,
-        lat: item.lat,
-        lng: item.lng,
-        imageUrl: item.imageUrl ?? null,
-      }));
+  async getPopular(lat?: number, lng?: number): Promise<{
+    quickPicks: PlaceItemDto[];
+    popular: PlaceItemDto[];
+    cityHighlights: PlaceItemDto[];
+  }> {
+    const build = async (items: PlaceConfigItem[]): Promise<PlaceItemDto[]> => {
+      const mapped: PlaceItemDto[] = await Promise.all(
+        items.map(async (item) => ({
+          id: item.id,
+          title: item.title,
+          subtitle: item.subtitle,
+          lat: item.lat,
+          lng: item.lng,
+          imageUrl: await this.buildImageUrl(item),
+        })),
+      );
       if (lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)) {
         const ref = { lat, lng };
         mapped.sort((a, b) => haversineKm(ref, a) - haversineKm(ref, b));
@@ -142,10 +180,11 @@ export class PlacesService {
       return mapped;
     };
 
-    return {
-      quickPicks: sort(PLACES_CONFIG.quickPicks),
-      popular: sort(PLACES_CONFIG.popular),
-      cityHighlights: sort(PLACES_CONFIG.cityHighlights),
-    };
+    const [quickPicks, popular, cityHighlights] = await Promise.all([
+      build(PLACES_CONFIG.quickPicks),
+      build(PLACES_CONFIG.popular),
+      build(PLACES_CONFIG.cityHighlights),
+    ]);
+    return { quickPicks, popular, cityHighlights };
   }
 }

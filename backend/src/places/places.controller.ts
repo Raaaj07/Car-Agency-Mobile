@@ -38,10 +38,10 @@ export class PlacesController {
   }
 
   @Get('popular')
-  getPopular(
+  async getPopular(
     @Query('lat') lat?: string,
     @Query('lng') lng?: string,
-  ): { quickPicks: PlaceItemDto[]; popular: PlaceItemDto[]; cityHighlights: PlaceItemDto[] } {
+  ): Promise<{ quickPicks: PlaceItemDto[]; popular: PlaceItemDto[]; cityHighlights: PlaceItemDto[] }> {
     return this.service.getPopular(
       lat ? parseFloat(lat) : undefined,
       lng ? parseFloat(lng) : undefined,
