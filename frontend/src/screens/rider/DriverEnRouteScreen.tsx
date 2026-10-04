@@ -187,7 +187,13 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
         </View>
 
         <View style={styles.driverRow}>
-          <Avatar name={driverName} rating={driverInfo?.rating ?? undefined} size={50} online />
+          <Avatar
+            name={driverName}
+            rating={driverInfo?.rating ?? undefined}
+            uri={driverInfo?.avatar ?? undefined}
+            size={50}
+            online
+          />
           <View style={styles.driverMeta}>
             <Text style={styles.driverName}>{driverName}</Text>
             <Text style={styles.vehicleInfo}>{vehicleText}</Text>

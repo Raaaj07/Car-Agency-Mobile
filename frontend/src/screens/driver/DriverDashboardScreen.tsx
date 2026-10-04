@@ -167,6 +167,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         id: request.rideId,
         status: 'requested',
         riderName: request.riderName ?? 'Rider',
+        riderAvatar: request.riderAvatar ?? null,
         fareBreakdown: request.fareBreakdown,
         paymentStatus: 'pending',
         pickup: request.pickup,
@@ -290,7 +291,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         {/* Stat cards */}
         <View style={styles.statsRow}>
           <View style={styles.statCard}>
-            <Text style={styles.statLabel}>Today's earnings</Text>
+            <Text style={styles.statLabel}>Today&apos;s earnings</Text>
             <Text style={styles.earningsValue}>{inr(profile?.todayEarnings ?? 0)}</Text>
           </View>
           <View style={styles.statCard}>

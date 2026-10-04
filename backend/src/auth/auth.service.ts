@@ -13,6 +13,7 @@ import { OtpService } from './otp.service';
 import { SMS_PROVIDER, SmsProvider } from './providers/sms-provider.interface';
 import { TokenPair, TokensService } from './tokens.service';
 import { StorageService } from '../drivers/storage.service';
+import { toAvatarUrl } from '../common/avatar-url';
 import { OAuth2Client } from 'google-auth-library';
 import appleSignin from 'apple-signin-auth';
 import { UpdateMeDto } from './dto/update-me.dto';
@@ -250,14 +251,11 @@ export class AuthService {
     return { ...base, avatar: this.avatarUrl(user), driverStatus };
   }
 
-  // Local uploads store only the file name in users.avatar; expose a full
-  // URL. Cloudinary / social-sign-in avatars are https URLs and pass through untouched.
+  // Local uploads store only the file name in users.avatar; expose the
+  // API-relative endpoint (see toAvatarUrl). Cloudinary / social avatars are
+  // https URLs and pass through untouched.
   private avatarUrl(user: UserEntity): string | undefined {
-    const v = user.avatar;
-    if (!v) return undefined;
-    if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v;
-    const prefix = this.config.get<string>('API_PREFIX') ?? 'api/v1';
-    return `/${prefix}/users/${user.id}/avatar`;
+    return toAvatarUrl(user.id, user.avatar) ?? undefined;
   }
 
   async uploadAvatar(userId: string, file: Express.Multer.File): Promise<FrontendUser> {

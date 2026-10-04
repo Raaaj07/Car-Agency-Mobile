@@ -50,12 +50,16 @@ export interface RideDriverInfo {
   vehicleModel?: string | null;
   plateNumber?: string | null;
   vehicleType?: string | null;
+  /** Profile photo: https Cloudinary URL or API-relative /users/<id>/avatar. */
+  avatar?: string | null;
 }
 
 export interface ActiveRide {
   id: string;
   status: string;
   riderName?: string;
+  /** Rider's profile photo (driver-side offer/trip cards). */
+  riderAvatar?: string | null;
   pickupOtp?: string | null;
   fareBreakdown: FareBreakdown;
   paymentStatus: 'pending' | 'paid' | 'failed';
@@ -71,6 +75,8 @@ export interface ActiveRide {
   driver?: RideDriverInfo | null;
   // Tip submitted with the rider's review (part of the collectable amount).
   tipAmount?: number;
+  // Set once the ride completes (used for duration on RideCompleted).
+  completedAt?: string | null;
   // Origin marker: rides written by restoreActiveRide() are rider-flow state
   // and must never be treated as a driver-mode job offer.
   source?: 'rider-restore';

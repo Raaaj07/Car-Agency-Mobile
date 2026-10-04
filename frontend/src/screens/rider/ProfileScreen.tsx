@@ -7,7 +7,7 @@ import { useAuthStore } from '../../store/authStore';
 import { useRideStore } from '../../store/rideStore';
 import { authApi } from '../../api/auth';
 import { driversApi, DriverApplication } from '../../api/drivers';
-import { API_URL, getApiError } from '../../api/client';
+import { getApiError } from '../../api/client';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { Button } from '../../components/primitives/Button';
@@ -182,11 +182,8 @@ export const ProfileScreen: React.FC = () => {
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={pickAvatar} activeOpacity={0.8}>
-          <Avatar
-            name={user?.name ?? '?'}
-            uri={user?.avatar?.startsWith('/') ? `${API_URL}${user.avatar}` : user?.avatar}
-            size={84}
-          />
+          {/* Avatar resolves API-relative paths and https (Cloudinary) URLs. */}
+          <Avatar name={user?.name ?? '?'} uri={user?.avatar} size={84} />
           <View style={styles.cameraBadge}>
             <Camera size={14} color="#fff" />
           </View>

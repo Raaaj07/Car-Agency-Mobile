@@ -15,6 +15,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as crypto from 'crypto';
 import { In, LessThan, Repository } from 'typeorm';
 import { haversineKm } from '../common/geo-utils';
+import { toAvatarUrl } from '../common/avatar-url';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
 import { VehicleType } from '../drivers/entities/driver.entity';
@@ -376,6 +377,8 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     this.gateway.emitRideRequestToDriver(driver.userId, {
       rideId: ride.id,
       riderName: withRider?.rider?.name ?? 'Rider',
+      // Profile photo shown on the driver's offer card (API-relative path).
+      riderAvatar: toAvatarUrl(withRider?.riderId ?? ride.riderId, (withRider?.rider as any)?.avatar),
       pickup: ride.pickup,
       dropoff: ride.dropoff,
       vehicleType: ride.vehicleType,
@@ -808,6 +811,12 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       vehicleModel: driver.carModel ?? driver.vehicleModel ?? null,
       plateNumber: driver.plateNumber ?? null,
       vehicleType: driver.vehicleType ?? ride.vehicleType ?? null,
+      // Profile photo (Cloudinary https URL, or API-relative local endpoint).
+      // Falls back to an already-whitelisted avatar when the view is built
+      // twice, so a second pass never wipes it.
+      avatar:
+        toAvatarUrl(driver.userId, driver.user?.avatar) ??
+        (typeof driver.avatar === 'string' ? driver.avatar : null),
     };
   }
 
@@ -818,6 +827,12 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (typeof riderName === 'string' && riderName.trim()) {
       base.riderName = riderName.trim().split(/\s+/)[0];
     }
+    // Profile photo shown on the driver's offer / trip cards (idempotent —
+    // keeps an already-converted value if the view is built twice).
+    const riderAvatar =
+      toAvatarUrl(ride.riderId, (ride as any).rider?.avatar) ??
+      (typeof (ride as any).riderAvatar === 'string' ? (ride as any).riderAvatar : null);
+    if (riderAvatar) base.riderAvatar = riderAvatar;
     return base;
   }
 

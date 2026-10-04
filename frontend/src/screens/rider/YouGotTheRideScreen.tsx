@@ -16,6 +16,11 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver }) => {
   const pickupOtp = useRideStore((state) => state.activeRide?.pickupOtp);
   const pickupAddress = useRideStore((state) => state.pickupAddress || 'Pickup Point');
   const dropoffAddress = useRideStore((state) => state.dropoffAddress || 'Dropoff Point');
+  // Real assigned driver (from the ride payload), including profile photo.
+  const driver = useRideStore((state) => state.activeRide?.driver ?? null);
+  const driverName = driver?.name?.trim() || 'Your driver';
+  const vehicleModel = driver?.vehicleModel?.trim() || 'Vehicle assigned for your ride';
+  const plateNumber = driver?.plateNumber?.trim();
 
   return (
     <View style={styles.container}>
@@ -46,14 +51,22 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver }) => {
         {/* Driver Details Card */}
         <Card style={styles.driverCard}>
           <View style={styles.driverRow}>
-            <Avatar name="Rajesh Kumar" rating={4.9} size={54} online />
+            <Avatar
+              name={driverName}
+              rating={driver?.rating ?? undefined}
+              uri={driver?.avatar ?? undefined}
+              size={54}
+              online
+            />
 
             <View style={styles.driverInfo}>
-              <Text style={styles.driverName}>Rajesh Kumar</Text>
-              <Text style={styles.vehicleName}>White Maruti Dzire</Text>
-              <View style={styles.plateBadge}>
-                <Text style={styles.plateText}>KA 05 MN 4821</Text>
-              </View>
+              <Text style={styles.driverName}>{driverName}</Text>
+              <Text style={styles.vehicleName}>{vehicleModel}</Text>
+              {plateNumber ? (
+                <View style={styles.plateBadge}>
+                  <Text style={styles.plateText}>{plateNumber}</Text>
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.actionsCol}>

@@ -67,11 +67,11 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline }
           </View>
         </View>
 
-        {/* The backend's ride:request event doesn't include rider name/rating
-            yet, so this stays generic until that's added server-side. */}
+        {/* The backend's ride:request event carries the rider's first name
+            and profile photo (see toDriverView / offer payload). */}
         <Card style={styles.riderCard}>
           <View style={styles.riderRow}>
-            <Avatar name={activeRide?.riderName ?? 'Rider'} size={48} />
+            <Avatar name={activeRide?.riderName ?? 'Rider'} uri={activeRide?.riderAvatar ?? undefined} size={48} />
             <View style={styles.riderMeta}>
               <Text style={styles.riderName}>{activeRide?.riderName ?? 'Rider'}</Text>
               <Text style={styles.riderSub}>

@@ -1,11 +1,12 @@
-import { Controller, Get, Param, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Res } from '@nestjs/common';
 import { Response } from 'express';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuthService } from './auth.service';
 
-// Authenticated avatar streaming. Any logged-in user may view any avatar;
-// files live under uploads/avatars/ and are never served as public static.
-@UseGuards(JwtAuthGuard)
+// Legacy local-disk avatar streaming (Cloudinary avatars are plain https
+// URLs and never hit this route). Deliberately public: profile pictures are
+// shown cross-user (rider sees the driver's photo, the driver sees the
+// rider's) and React Native <Image> cannot attach an Authorization header.
+// The uuid-keyed path is unguessable, and the payload is only a photo.
 @Controller('users')
 export class UsersController {
   constructor(private readonly auth: AuthService) {}
@@ -14,6 +15,7 @@ export class UsersController {
   async getAvatar(@Param('id') id: string, @Res() res: Response) {
     const doc = await this.auth.readAvatar(id);
     res.setHeader('Content-Type', doc.mime);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
     res.send(doc.buffer);
   }
 }

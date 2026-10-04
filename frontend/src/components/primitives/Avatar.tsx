@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, Image, ViewStyle } from 'react-native';
 import { Star } from 'lucide-react-native';
 import { colors, radii, typography } from '../../theme/theme';
+import { resolveAvatarUrl } from '../../utils/avatar';
 
 interface AvatarProps {
   name: string;
@@ -26,6 +27,14 @@ export const Avatar: React.FC<AvatarProps> = ({
     return n.slice(0, 2).toUpperCase();
   };
 
+  // Accepts a raw API value (https Cloudinary URL or /users/<id>/avatar)
+  // and normalizes it to a loadable URI in one place. A failed load falls
+  // back to initials instead of an empty gray box. Failure is keyed to the
+  // exact URI, so a different photo resets it during render (no effect).
+  const resolvedUri = resolveAvatarUrl(uri);
+  const [failedUri, setFailedUri] = useState<string | null>(null);
+  const imgFailed = failedUri !== null && failedUri === resolvedUri;
+
   return (
     <View style={[styles.wrapper, style]}>
       <View
@@ -34,8 +43,12 @@ export const Avatar: React.FC<AvatarProps> = ({
           { width: size, height: size, borderRadius: size / 2 },
         ]}
       >
-        {uri ? (
-          <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size / 2 }} />
+        {resolvedUri && !imgFailed ? (
+          <Image
+            source={{ uri: resolvedUri }}
+            style={{ width: size, height: size, borderRadius: size / 2 }}
+            onError={() => setFailedUri(resolvedUri)}
+          />
         ) : (
           <View style={[styles.fallback, { width: size, height: size, borderRadius: size / 2 }]}>
             <Text style={[styles.initials, { fontSize: size * 0.4 }]}>{getInitials(name)}</Text>

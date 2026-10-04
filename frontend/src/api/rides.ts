@@ -25,6 +25,8 @@ export interface Ride {
   cancelledAt?: string | null;
   // Driver-side view only: first name of the rider.
   riderName?: string;
+  // Driver-side view only: rider's profile photo (https or /users/<id>/avatar).
+  riderAvatar?: string | null;
   // Rider-side view only: safe driver subset (null when unassigned).
   driver?: RideDriverInfo | null;
 }

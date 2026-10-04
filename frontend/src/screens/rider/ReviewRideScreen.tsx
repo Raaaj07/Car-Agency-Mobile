@@ -6,6 +6,7 @@ import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { Header } from '../../components/primitives/Header';
+import { useRideStore } from '../../store/rideStore';
 
 interface Props {
   onBack: () => void;
@@ -26,6 +27,12 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
   const [rating, setRating] = useState<number>(5);
   const [selectedCompliments, setSelectedCompliments] = useState<string[]>(['Safe Driver 🛡️']);
   const [selectedTip, setSelectedTip] = useState<string>('₹20');
+  // Real driver from the completed ride (photo + name + vehicle).
+  const driver = useRideStore((state) => state.activeRide?.driver ?? null);
+  const driverName = driver?.name?.trim() || 'Your driver';
+  const vehicleInfo =
+    [driver?.vehicleModel, driver?.plateNumber].filter((p): p is string => !!p && p.trim().length > 0).join(' • ') ||
+    'Thanks for riding with Vazhi';
 
   const toggleCompliment = (item: string) => {
     if (selectedCompliments.includes(item)) {
@@ -41,9 +48,9 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.driverSection}>
-          <Avatar name="Rajesh Kumar" size={72} />
-          <Text style={styles.driverName}>Rajesh Kumar</Text>
-          <Text style={styles.vehicleInfo}>Comfort Sedan • KA 05 MN 4821</Text>
+          <Avatar name={driverName} uri={driver?.avatar ?? undefined} size={72} />
+          <Text style={styles.driverName}>{driverName}</Text>
+          <Text style={styles.vehicleInfo}>{vehicleInfo}</Text>
         </View>
 
         {/* 5 Star Selection */}

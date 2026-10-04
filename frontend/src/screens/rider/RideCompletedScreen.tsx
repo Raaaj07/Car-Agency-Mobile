@@ -5,12 +5,29 @@ import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
+import { useRideStore } from '../../store/rideStore';
 
 interface Props {
   onGoHome: () => void;
 }
 
 export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
+  // Real trip data from the completed ride (no demo numbers).
+  const activeRide = useRideStore((state) => state.activeRide);
+  const driver = activeRide?.driver ?? null;
+  const driverName = driver?.name?.trim() || 'Your driver';
+  const vehicleInfo =
+    [driver?.vehicleModel, driver?.plateNumber].filter((p): p is string => !!p && p.trim().length > 0).join(' • ') ||
+    'Thanks for riding with Vazhi';
+  const totalPaid = Number(activeRide?.fareBreakdown?.total ?? 0) + Number(activeRide?.tipAmount ?? 0);
+  const distanceKm = Number(activeRide?.distanceKm ?? 0);
+  const durationMins = (() => {
+    const started = activeRide?.createdAt ? Date.parse(activeRide.createdAt) : NaN;
+    const ended = activeRide?.completedAt ? Date.parse(activeRide.completedAt) : NaN;
+    return Number.isFinite(started) && Number.isFinite(ended) && ended > started
+      ? Math.max(1, Math.round((ended - started) / 60000))
+      : null;
+  })();
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -31,7 +48,7 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
           <View style={styles.statsGrid}>
             <View style={styles.statCol}>
               <Navigation size={20} color={colors.accent} />
-              <Text style={styles.statVal}>8.4 km</Text>
+              <Text style={styles.statVal}>{distanceKm > 0 ? `${distanceKm.toFixed(1)} km` : '—'}</Text>
               <Text style={styles.statLabel}>Distance</Text>
             </View>
 
@@ -39,7 +56,7 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
 
             <View style={styles.statCol}>
               <Clock size={20} color={colors.primary} />
-              <Text style={styles.statVal}>22 mins</Text>
+              <Text style={styles.statVal}>{durationMins != null ? `${durationMins} mins` : '—'}</Text>
               <Text style={styles.statLabel}>Trip Duration</Text>
             </View>
 
@@ -47,7 +64,7 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
 
             <View style={styles.statCol}>
               <Text style={styles.currencySymbol}>₹</Text>
-              <Text style={styles.statVal}>240</Text>
+              <Text style={styles.statVal}>{totalPaid > 0 ? totalPaid.toFixed(0) : '—'}</Text>
               <Text style={styles.statLabel}>Total Paid</Text>
             </View>
           </View>
@@ -56,10 +73,10 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
         {/* Driver Acknowledgement Card */}
         <Card style={styles.driverCard}>
           <View style={styles.driverRow}>
-            <Avatar name="Rajesh Kumar" rating={4.9} size={50} />
+            <Avatar name={driverName} rating={driver?.rating ?? undefined} uri={driver?.avatar ?? undefined} size={50} />
             <View style={styles.driverText}>
-              <Text style={styles.driverName}>Driven by Rajesh Kumar</Text>
-              <Text style={styles.vehicleInfo}>Comfort Sedan • KA 05 MN 4821</Text>
+              <Text style={styles.driverName}>Driven by {driverName}</Text>
+              <Text style={styles.vehicleInfo}>{vehicleInfo}</Text>
             </View>
           </View>
         </Card>
