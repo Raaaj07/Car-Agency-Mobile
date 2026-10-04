@@ -42,6 +42,24 @@ export interface AdminRideSummary {
   completedAt: string | null;
 }
 
+// One uploaded document. Cloudinary-hosted files come with a short-lived signed
+// `url`; legacy local-disk files come back inline as `base64`.
+export interface AdminDocument {
+  kind: 'licenseImage' | 'rcImage' | 'vehiclePhoto';
+  label: string;
+  mime: string;
+  url: string | null;
+  base64?: string;
+  expiresAt: string | null;
+}
+
+export interface AdminFileResponse {
+  mime: string;
+  url?: string;
+  base64?: string;
+  expiresAt?: string | null;
+}
+
 export const adminApi = {
   list: async (status?: ApplicationStatus, page = 1, limit = 20) =>
     (
@@ -63,7 +81,14 @@ export const adminApi = {
     (await api.post<ApplicationDetail>(`/admin/driver-applications/${id}/reject`, { reason })).data,
   suspend: async (driverId: string) => (await api.post(`/admin/drivers/${driverId}/suspend`)).data,
   reinstate: async (driverId: string) => (await api.post(`/admin/drivers/${driverId}/reinstate`)).data,
-  // Returns { mime, base64 } so <Image source={{uri: data:...}}> works without headers.
+  // { mime, url, expiresAt } for Cloudinary docs (signed, ~10 min) or { mime, base64 } for legacy local files.
   file: async (applicationId: string, kind: 'licenseImage' | 'rcImage' | 'vehiclePhoto') =>
-    (await api.get<{ mime: string; base64: string }>(`/admin/files/${applicationId}/${kind}`)).data,
+    (await api.get<AdminFileResponse>(`/admin/files/${applicationId}/${kind}`)).data,
+  // All documents of an application in one call (handy for a web dashboard).
+  documents: async (applicationId: string) =>
+    (
+      await api.get<{ applicationId: string; documents: AdminDocument[] }>(
+        `/admin/driver-applications/${applicationId}/documents`,
+      )
+    ).data,
 };

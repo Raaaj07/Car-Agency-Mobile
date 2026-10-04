@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, ActivityIndicator, Alert, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, ActivityIndicator, Alert, TextInput, Linking } from 'react-native';
 import { colors, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
@@ -14,14 +14,18 @@ interface Props {
 }
 
 function DocImage({ appId, kind, label }: { appId: string; kind: 'licenseImage' | 'rcImage' | 'vehiclePhoto'; label: string }) {
-  const [uri, setUri] = useState<string | null>(null);
+  const [doc, setDoc] = useState<{ uri: string; mime: string } | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let live = true;
     adminApi
       .file(appId, kind)
       .then((f) => {
-        if (live) setUri(`data:${f.mime};base64,${f.base64}`);
+        if (!live) return;
+        // Cloudinary: signed https URL. Legacy local file: inline base64.
+        const uri = f.url ?? (f.base64 ? `data:${f.mime};base64,${f.base64}` : null);
+        if (uri) setDoc({ uri, mime: f.mime });
+        else setFailed(true);
       })
       .catch(() => live && setFailed(true));
     return () => {
@@ -31,8 +35,10 @@ function DocImage({ appId, kind, label }: { appId: string; kind: 'licenseImage' 
   return (
     <View style={styles.docWrap}>
       <Text style={styles.docLabel}>{label}</Text>
-      {uri ? (
-        <Image source={{ uri }} style={styles.docImg} resizeMode="contain" />
+      {doc && doc.mime === 'application/pdf' ? (
+        <Button title="Open PDF" onPress={() => Linking.openURL(doc.uri)} />
+      ) : doc ? (
+        <Image source={{ uri: doc.uri }} style={styles.docImg} resizeMode="contain" />
       ) : (
         <Text style={styles.docMissing}>{failed ? 'Document unavailable' : 'Loading…'}</Text>
       )}

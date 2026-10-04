@@ -33,6 +33,7 @@
     "axios": "^1.7.7",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "cloudinary": "^2.11.0",
     "dotenv": "^16.4.5",
     "google-auth-library": "^11.1.0",
     "ioredis": "^5.4.1",

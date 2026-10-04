@@ -251,7 +251,7 @@ export class AuthService {
   }
 
   // Local uploads store only the file name in users.avatar; expose a full
-  // URL. Legacy remote URLs (social sign-in) pass through untouched.
+  // URL. Cloudinary / social-sign-in avatars are https URLs and pass through untouched.
   private avatarUrl(user: UserEntity): string | undefined {
     const v = user.avatar;
     if (!v) return undefined;
@@ -261,8 +261,8 @@ export class AuthService {
   }
 
   async uploadAvatar(userId: string, file: Express.Multer.File): Promise<FrontendUser> {
-    const name = this.storage.validateAndStoreAvatar(userId, file);
-    await this.users.update({ id: userId }, { avatar: name });
+    const stored = await this.storage.storeAvatar(userId, file); // https URL (Cloudinary) or file name (local)
+    await this.users.update({ id: userId }, { avatar: stored });
     const user = await this.users.findOne({ where: { id: userId } });
     if (!user) throw new BadRequestException('User not found');
     return this.toFullUser(user);

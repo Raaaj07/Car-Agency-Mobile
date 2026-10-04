@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 import { UserEntity } from '../auth/entities/user.entity';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
-import { StorageService } from '../drivers/storage.service';
+import { DocumentAccess, StorageService } from '../drivers/storage.service';
 import { RidesGateway } from '../rides/gateway/rides.gateway';
 import { RideEntity } from '../rides/entities/ride.entity';
 
@@ -199,16 +199,53 @@ export class AdminService implements OnApplicationBootstrap {
     };
   }
 
-  async readDocument(applicationId: string, kind: string) {
-    if (!['licenseImage', 'rcImage', 'vehiclePhoto'].includes(kind)) {
-      throw new BadRequestException('Unknown document kind');
-    }
-    const d = (await this.drivers.findOne({ where: { id: applicationId } })) as any;
+  private static readonly DOC_KINDS = {
+    licenseImage: { label: 'Driving licence', path: 'licenseImagePath', legacyUrl: 'drivingLicenceImageUrl' },
+    rcImage: { label: 'RC book', path: 'rcImagePath', legacyUrl: 'rcImageUrl' },
+    vehiclePhoto: { label: 'Vehicle photo', path: 'vehiclePhotoPath', legacyUrl: 'carImageUrl' },
+  } as const;
+
+  private async accessFor(d: any, kind: keyof typeof AdminService.DOC_KINDS): Promise<DocumentAccess | null> {
+    const def = AdminService.DOC_KINDS[kind];
+    const stored: string | null | undefined = d[def.path] || d[def.legacyUrl];
+    if (!stored) return null;
+    return this.storage.getDocumentAccess(stored);
+  }
+
+  /** Single document (GET /admin/files/:applicationId/:kind). */
+  async getDocument(applicationId: string, kind: string): Promise<DocumentAccess> {
+    if (!(kind in AdminService.DOC_KINDS)) throw new BadRequestException('Unknown document kind');
+    const d = (await this.drivers.findOne({ where: { id: applicationId } }).catch(() => null)) as any;
     if (!d) throw new NotFoundException('Application not found');
-    const localPath =
-      kind === 'licenseImage' ? d.licenseImagePath : kind === 'rcImage' ? d.rcImagePath : d.vehiclePhotoPath;
-    if (!localPath) throw new NotFoundException('Document not uploaded');
-    return this.storage.readAbsolute(localPath);
+    const access = await this.accessFor(d, kind as keyof typeof AdminService.DOC_KINDS);
+    if (!access) throw new NotFoundException('Document not uploaded');
+    return access;
+  }
+
+  /** All documents of an application with fresh signed URLs (for the admin dashboard). */
+  async listDocuments(applicationId: string) {
+    const d = (await this.drivers.findOne({ where: { id: applicationId } }).catch(() => null)) as any;
+    if (!d) throw new NotFoundException('Application not found');
+    const out: Array<{
+      kind: string;
+      label: string;
+      mime: string;
+      url: string | null;
+      base64?: string;
+      expiresAt: string | null;
+    }> = [];
+    for (const kind of Object.keys(AdminService.DOC_KINDS) as Array<keyof typeof AdminService.DOC_KINDS>) {
+      const access = await this.accessFor(d, kind);
+      if (!access) continue;
+      const label = AdminService.DOC_KINDS[kind].label;
+      if (access.type === 'url') {
+        out.push({ kind, label, mime: access.mime, url: access.url, expiresAt: access.expiresAt || null });
+      } else {
+        // Legacy local file: no URL exists, so inline it (small, admin-only).
+        out.push({ kind, label, mime: access.mime, url: null, base64: access.buffer.toString('base64'), expiresAt: null });
+      }
+    }
+    return { applicationId, documents: out };
   }
 
   private async forceOffline(d: any) {

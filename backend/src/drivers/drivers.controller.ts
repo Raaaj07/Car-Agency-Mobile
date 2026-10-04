@@ -10,7 +10,7 @@ import { UpdateDriverLocationDto } from './dto/update-driver-location.dto';
 import { UpdateDriverStatusDto } from './dto/update-driver-status.dto';
 import { ApprovedDriverGuard } from './guards/approved-driver.guard';
 import { DriversService } from './drivers.service';
-import { DocumentKind, StorageService } from './storage.service';
+import { DocumentKind, StorageService, StoredDocument } from './storage.service';
 
 const APPLY_FILES_LIMIT = 5 * 1024 * 1024;
 
@@ -46,26 +46,49 @@ export class DriversController {
     const vehicle = files?.vehiclePhoto?.[0];
     if (!license) throw new BadRequestException('licenseImage is required');
     if (!rc) throw new BadRequestException('rcImage is required');
-    const storedLicense = this.storage.validateAndStore(user.userId, 'licenseImage' as DocumentKind, license);
-    const storedRc = this.storage.validateAndStore(user.userId, 'rcImage' as DocumentKind, rc);
-    const storedVehicle = vehicle
-      ? this.storage.validateAndStore(user.userId, 'vehiclePhoto' as DocumentKind, vehicle)
-      : null;
-    return this.drivers.applyApplication(
-      user.userId,
-      {
-        vehicleType: dto.vehicleType,
-        carModel: dto.carModel,
-        plateNumber: dto.plateNumber,
-        licenseNumber: dto.licenseNumber,
-        rcNumber: dto.rcNumber,
-      },
-      {
-        licenseImagePath: storedLicense.path,
-        rcImagePath: storedRc.path,
-        vehiclePhotoPath: storedVehicle?.path ?? null,
-      },
-    );
+
+    // Upload the three documents in parallel. If anything fails (an upload or
+    // the DB write), delete whatever already reached Cloudinary so no orphans remain.
+    const jobs: Array<[DocumentKind, Express.Multer.File]> = [
+      ['licenseImage', license],
+      ['rcImage', rc],
+    ];
+    if (vehicle) jobs.push(['vehiclePhoto', vehicle]);
+
+    const settled = await Promise.allSettled(jobs.map(([kind, f]) => this.storage.storeDocument(user.userId, kind, f)));
+    const stored = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed) {
+      await this.discard(stored);
+      throw failed.reason;
+    }
+
+    const byKind = (k: DocumentKind): StoredDocument | undefined => stored.find((d) => d.kind === k);
+    try {
+      return await this.drivers.applyApplication(
+        user.userId,
+        {
+          vehicleType: dto.vehicleType,
+          carModel: dto.carModel,
+          plateNumber: dto.plateNumber,
+          licenseNumber: dto.licenseNumber,
+          rcNumber: dto.rcNumber,
+        },
+        {
+          licenseImagePath: byKind('licenseImage')!.path,
+          rcImagePath: byKind('rcImage')!.path,
+          vehiclePhotoPath: byKind('vehiclePhoto')?.path ?? null,
+        },
+      );
+    } catch (err) {
+      // e.g. 409 "already pending" — don't leave the fresh uploads behind.
+      await this.discard(stored);
+      throw err;
+    }
+  }
+
+  private async discard(docs: StoredDocument[]): Promise<void> {
+    await Promise.all(docs.map((d) => this.storage.deleteDocument(d.path)));
   }
 
   // Own application status (null when never applied).

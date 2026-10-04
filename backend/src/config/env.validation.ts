@@ -1,5 +1,5 @@
 import { plainToInstance } from 'class-transformer';
-import { IsBooleanString, IsNumberString, IsOptional, IsString, MinLength, validateSync } from 'class-validator';
+import { IsBooleanString, IsIn, IsNumberString, IsOptional, IsString, MinLength, validateSync } from 'class-validator';
 
 class EnvironmentVariables {
   @IsOptional()
@@ -111,6 +111,31 @@ class EnvironmentVariables {
   @IsNumberString()
   MAX_UPLOAD_MB?: string;
 
+  // ── Cloudinary storage (driver documents + avatars) ──
+  @IsOptional()
+  @IsIn(['cloudinary', 'local'])
+  STORAGE_DRIVER?: string;
+
+  @IsOptional()
+  @IsString()
+  CLOUDINARY_CLOUD_NAME?: string;
+
+  @IsOptional()
+  @IsString()
+  CLOUDINARY_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  CLOUDINARY_API_SECRET?: string;
+
+  @IsOptional()
+  @IsString()
+  CLOUDINARY_FOLDER?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  CLOUDINARY_SIGNED_URL_TTL_SECONDS?: string;
+
   @IsOptional()
   @IsBooleanString()
   DB_SSL_REJECT_UNAUTHORIZED?: string;
@@ -173,6 +198,14 @@ export function validateEnv(config: Record<string, unknown>) {
     const cors = (validated as unknown as Record<string, unknown>).CORS_ORIGIN;
     if (cors === '*' || !cors) {
       throw new Error('Invalid environment configuration:\nCORS_ORIGIN must not be "*" or empty in production');
+    }
+    const env = validated as unknown as Record<string, unknown>;
+    if (env.STORAGE_DRIVER !== 'local') {
+      for (const key of ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'] as const) {
+        if (!env[key]) {
+          throw new Error(`Invalid environment configuration:\n${key} is required in production (Cloudinary storage)`);
+        }
+      }
     }
     const publicUrl = (validated as unknown as Record<string, unknown>).PUBLIC_API_URL;
     if (!publicUrl || typeof publicUrl !== 'string' || !publicUrl.startsWith('https://')) {

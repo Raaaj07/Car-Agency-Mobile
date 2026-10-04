@@ -5,6 +5,7 @@ import { In, Repository } from 'typeorm';
 import { DriverEntity, VehicleType } from './entities/driver.entity';
 import { GeoService, NearbyDriverHit } from './geo.service';
 import { RideEntity } from '../rides/entities/ride.entity';
+import { StorageService } from './storage.service';
 
 export interface NearbyDriverResult {
   driverId: string;
@@ -29,6 +30,7 @@ export class DriversService {
       @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>, // ADD
       private readonly geo: GeoService,
       private readonly config: ConfigService,
+      private readonly storage: StorageService,
     ) {
       this.defaultRadiusMeters = this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000;
     }
@@ -49,6 +51,13 @@ export class DriversService {
     if (!driver) {
       driver = this.drivers.create({ userId, isOnline: false, isAvailable: false });
     }
+    // Remember the previous (rejected) application's documents so they can be
+    // removed from storage once the new ones are saved.
+    const previousDocs = [
+      (driver as any).licenseImagePath,
+      (driver as any).rcImagePath,
+      (driver as any).vehiclePhotoPath,
+    ].filter((v): v is string => !!v);
     driver.vehicleType = data.vehicleType;
     driver.carModel = data.carModel;
     driver.plateNumber = data.plateNumber;
@@ -62,7 +71,11 @@ export class DriversService {
     (driver as any).rejectionReason = null;
     (driver as any).reviewedByUserId = null;
     (driver as any).reviewedAt = null;
-    return this.drivers.save(driver);
+    const saved = await this.drivers.save(driver);
+
+    const kept = new Set([files.licenseImagePath, files.rcImagePath, files.vehiclePhotoPath]);
+    await Promise.all(previousDocs.filter((p) => !kept.has(p)).map((p) => this.storage.deleteDocument(p)));
+    return saved;
   }
 
   /** GET /drivers/application — own application status (null when never applied). */

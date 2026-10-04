@@ -55,8 +55,17 @@ export class AdminController {
     return this.admin.reinstate(id, user.userId);
   }
 
-  // Authenticated document access (admins only). Returns JSON base64 so the
-  // Expo client can render without custom image headers; set ?raw=1 for bytes.
+  // All documents of one application with fresh, short-lived signed URLs.
+  // This is the endpoint a web admin dashboard should call.
+  @Get('driver-applications/:id/documents')
+  documents(@Param('id') id: string, @Res({ passthrough: true }) res: Response) {
+    res.setHeader('Cache-Control', 'no-store');
+    return this.admin.listDocuments(id);
+  }
+
+  // Single document (admins only). Cloudinary-hosted docs return a short-lived
+  // signed URL: { mime, url, expiresAt }. Legacy local files still return
+  // { mime, base64 }. ?raw=1 -> 302 to the signed URL (or raw bytes for legacy).
   @Get('files/:applicationId/:kind')
   async getFile(
     @Param('applicationId') applicationId: string,
@@ -64,7 +73,16 @@ export class AdminController {
     @Query('raw') raw: string | undefined,
     @Res() res: Response,
   ) {
-    const doc = await this.admin.readDocument(applicationId, kind);
+    const doc = await this.admin.getDocument(applicationId, kind);
+    res.setHeader('Cache-Control', 'no-store');
+    if (doc.type === 'url') {
+      if (raw === '1') {
+        res.redirect(doc.url);
+        return;
+      }
+      res.json({ mime: doc.mime, url: doc.url, expiresAt: doc.expiresAt || null });
+      return;
+    }
     if (raw === '1') {
       res.setHeader('Content-Type', doc.mime);
       res.send(doc.buffer);
