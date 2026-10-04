@@ -82,9 +82,27 @@ export type DriverDashboardStackParamList = {
 };
 
 // Admin tabs (visible only when user.role === 'admin').
+// NOTE: Phase 4 replaces these values with the new stacks below
+// (OverviewStack/DriversStack/RidesStack/Account) when the new console is
+// swapped in; kept as-is until then so the live screens still type-check.
 export type AdminTabParamList = {
   ApplicationsTab: undefined;
   DriversTab: undefined;
   RidesTab: undefined;
   AdminAccountTab: undefined;
+};
+
+// ── New admin console (Phase 3 foundation; wired in Phase 4) ──
+export type AdminOverviewStackParamList = {
+  AdminOverview: undefined;
+};
+
+export type AdminDriversStackParamList = {
+  AdminDrivers: undefined;
+  AdminDriverDetail: { driverId: string };
+};
+
+export type AdminRidesStackParamList = {
+  AdminRides: undefined;
+  AdminRideDetail: { rideId: string };
 };

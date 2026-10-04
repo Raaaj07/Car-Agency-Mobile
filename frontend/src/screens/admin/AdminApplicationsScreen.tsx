@@ -25,7 +25,7 @@ export const AdminApplicationsScreen: React.FC<Props> = ({ onOpen }) => {
   const load = useCallback(
     async (p = 1, append = false) => {
       try {
-        const res = await adminApi.list(filter, p, 20);
+        const res = await adminApi.list({ status: filter, page: p, limit: 20 });
         setTotal(res.total);
         setPage(p);
         setItems((prev) => (append ? [...prev, ...res.items] : res.items));

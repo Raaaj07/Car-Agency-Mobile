@@ -14,8 +14,8 @@ export const AdminDriversScreen: React.FC = () => {
   const load = useCallback(async () => {
     try {
       const [approved, suspended] = await Promise.all([
-        adminApi.list('approved', 1, 50),
-        adminApi.list('suspended', 1, 50),
+        adminApi.list({ status: 'approved', page: 1, limit: 50 }),
+        adminApi.list({ status: 'suspended', page: 1, limit: 50 }),
       ]);
       setItems([...approved.items, ...suspended.items]);
     } catch (err) {
@@ -38,7 +38,9 @@ export const AdminDriversScreen: React.FC = () => {
         style: 'destructive',
         onPress: async () => {
           try {
-            await adminApi.suspend(id);
+            // Phase 4 replaces this screen with a reason modal; interim
+            // default keeps the endpoint (reason now required) working.
+            await adminApi.suspend(id, 'Suspended from admin console');
             load();
           } catch (err) {
             Alert.alert('Suspend failed', getApiError(err));

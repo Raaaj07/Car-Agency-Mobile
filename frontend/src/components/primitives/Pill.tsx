@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ViewStyle, TextStyle } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ViewStyle, TextStyle, StyleProp } from 'react-native';
 import { colors, radii, typography } from '../../theme/theme';
 
 interface PillProps {
@@ -8,8 +8,8 @@ interface PillProps {
   active?: boolean;
   onPress?: () => void;
   icon?: React.ReactNode;
-  style?: ViewStyle;
-  textStyle?: TextStyle;
+  style?: StyleProp<ViewStyle>;
+  textStyle?: StyleProp<TextStyle>;
 }
 
 export const Pill: React.FC<PillProps> = ({

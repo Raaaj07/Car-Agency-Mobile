@@ -33,7 +33,7 @@ export const AdminRidesScreen: React.FC = () => {
 
   const load = useCallback(async () => {
     try {
-      const res = await adminApi.listRides(1, 50);
+      const res = await adminApi.listRides({ page: 1, limit: 50 });
       setItems(res.items);
     } catch (err) {
       Alert.alert('Failed to load rides', getApiError(err));
@@ -47,7 +47,7 @@ export const AdminRidesScreen: React.FC = () => {
     // Initial fetch via promise callbacks (no sync setState in the effect);
     // refreshes reuse load() from the pull-to-refresh handler.
     adminApi
-      .listRides(1, 50)
+      .listRides({ page: 1, limit: 50 })
       .then((res) => setItems(res.items))
       .catch((err) => Alert.alert('Failed to load rides', getApiError(err)))
       .finally(() => setLoading(false));

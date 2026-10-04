@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Home, Compass, Clock, User, Navigation } from 'lucide-react-native';
+import { Home, Compass, Clock, User, Navigation, LayoutDashboard, Users, Receipt } from 'lucide-react-native';
 import { colors, shadows, typography } from '../../theme/theme';
 
 export const TAB_BAR_HEIGHT = 64 + 12; // 76px
@@ -14,13 +14,13 @@ export function useTabBarSpace(): number {
 export interface TabItem {
   id: string;
   label: string;
-  iconName: 'home' | 'explore' | 'activity' | 'profile' | 'nav';
+  iconName: 'home' | 'explore' | 'activity' | 'profile' | 'nav' | 'dashboard' | 'users' | 'receipt';
 }
 
 interface BottomTabBarProps {
   activeTab: string;
   onTabPress: (id: string) => void;
-  mode?: 'rider' | 'driver';
+  mode?: 'rider' | 'driver' | 'admin';
   visible?: boolean;
 }
 
@@ -64,7 +64,15 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
     { id: 'profile', label: 'Account', iconName: 'profile' },
   ];
 
-  const tabs = mode === 'rider' ? riderTabs : driverTabs;
+  // Admin console (spec §3.2): 4 tabs, no fake "Log out" tab.
+  const adminTabs: TabItem[] = [
+    { id: 'overview', label: 'Overview', iconName: 'dashboard' },
+    { id: 'drivers', label: 'Drivers', iconName: 'users' },
+    { id: 'rides', label: 'Rides', iconName: 'receipt' },
+    { id: 'account', label: 'Account', iconName: 'profile' },
+  ];
+
+  const tabs = mode === 'rider' ? riderTabs : mode === 'driver' ? driverTabs : adminTabs;
 
   const renderIcon = (name: string, active: boolean) => {
     const color = active ? colors.primary : colors.textMuted;
@@ -74,6 +82,9 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
       case 'explore': return <Compass size={size} color={color} />;
       case 'activity': return <Clock size={size} color={color} />;
       case 'nav': return <Navigation size={size} color={color} />;
+      case 'dashboard': return <LayoutDashboard size={size} color={color} />;
+      case 'users': return <Users size={size} color={color} />;
+      case 'receipt': return <Receipt size={size} color={color} />;
       case 'profile':
       default: return <User size={size} color={color} />;
     }
