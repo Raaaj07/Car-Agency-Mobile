@@ -19,4 +19,8 @@ export class DevPaymentProvider implements PaymentProvider {
   async verifyPayment(_input: VerifyPaymentInput): Promise<boolean> {
     return true;
   }
+
+  providerKey(): string {
+    return '';
+  }
 }

@@ -25,7 +25,11 @@ export type RideStatus =
   | 'cancelled';
 
 export type PaymentMethod = 'upi' | 'wallet' | 'card' | 'cash';
-export type PaymentStatus = 'pending' | 'paid' | 'failed';
+// State machine (P-1): pending → rider_claimed → paid | disputed, plus
+// 'failed' for a failed Razorpay verification. Only the driver/admin/provider
+// paths may reach 'paid' — a rider claim alone never settles the ride.
+export type PaymentStatus = 'pending' | 'rider_claimed' | 'paid' | 'disputed' | 'failed';
+export type PaymentMarkedBy = 'rider' | 'driver' | 'admin' | 'provider';
 
 export interface RideLocation {
   address: string;
@@ -88,13 +92,19 @@ export class RideEntity {
   cancellationReason?: string | null;
 
   @Column({ type: 'varchar', length: 10, nullable: true })
-  cancelledBy?: 'rider' | 'driver' | 'system' | null;
+  cancelledBy?: 'rider' | 'driver' | 'system' | 'admin' | null;
 
   @Column({ type: 'varchar', length: 10, default: 'upi' })
   paymentMethod!: PaymentMethod;
 
   @Column({ type: 'varchar', length: 10, default: 'pending' })
   paymentStatus!: PaymentStatus;
+
+  // Who last moved paymentStatus to a settled state (P-1):
+  // rider=claimed in app, driver="Amount Received", admin=console resolution,
+  // provider=Razorpay signature verification.
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  paymentMarkedBy?: PaymentMarkedBy | null;
 
   // Set by ReviewRideScreen.
   @Column({ type: 'smallint', nullable: true })

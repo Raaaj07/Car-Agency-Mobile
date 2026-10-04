@@ -62,7 +62,8 @@ export interface ActiveRide {
   riderAvatar?: string | null;
   pickupOtp?: string | null;
   fareBreakdown: FareBreakdown;
-  paymentStatus: 'pending' | 'paid' | 'failed';
+  /** P-1: pending → rider_claimed → paid | disputed (+ failed). */
+  paymentStatus: 'pending' | 'rider_claimed' | 'paid' | 'disputed' | 'failed';
   pickup?: RideLocation;
   dropoff?: RideLocation;
   vehicleType?: string;
@@ -101,6 +102,12 @@ interface RideState {
   activeRide: ActiveRide | null;
   /** Vehicle type to pre-select on VehicleSelection; cleared after first use. */
   preferredVehicleId: string | null;
+  /**
+   * R-1: what the last book/rematch call came back with. Kept outside
+   * activeRide because status polls replace that object and would drop it.
+   * null = no search yet / no longer relevant.
+   */
+  matchResult: 'offered' | 'no_drivers' | null;
 
   setPickup: (location: string, address?: string, coords?: LatLng) => void;
   setDropoff: (location: string, address?: string, coords?: LatLng) => void;
@@ -111,6 +118,7 @@ interface RideState {
   toggleCompliment: (compliment: string) => void;
   setTipAmount: (amount: number) => void;
   setActiveRide: (ride: ActiveRide | null) => void;
+  setMatchResult: (result: 'offered' | 'no_drivers' | null) => void;
   getFareBreakdown: () => FareBreakdown;
   resetRide: () => void;
   setPreferredVehicle: (id: string | null) => void;
@@ -156,6 +164,7 @@ export const useRideStore = create<RideState>((set, get) => ({
   tipAmount: 0,
   activeRide: null,
   preferredVehicleId: null,
+  matchResult: null,
 
   setPickup: (location, address, coords) =>
     set((state) => ({
@@ -204,6 +213,8 @@ export const useRideStore = create<RideState>((set, get) => ({
     // Replace (don't merge) so stale pickupOtp/status fields can't survive transitions.
     set(() => ({ activeRide: ride })),
 
+  setMatchResult: (result) => set(() => ({ matchResult: result })),
+
   getFareBreakdown: () => {
     const { selectedVehicle, discountAmount, activeRide } = get();
     if (activeRide) return activeRide.fareBreakdown;
@@ -241,6 +252,7 @@ export const useRideStore = create<RideState>((set, get) => ({
       compliments: [],
       tipAmount: 0,
       activeRide: null,
+      matchResult: null,
       // Preserve pickup so the home screen stays centred on the last known position.
       pickup: state.pickup,
       pickupAddress: state.pickupAddress,

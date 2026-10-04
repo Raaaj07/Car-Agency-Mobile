@@ -36,7 +36,7 @@ export interface AdminRideSummary {
   dropoffAddress: string;
   fareTotal: number;
   tipAmount: number;
-  paymentStatus: 'pending' | 'paid' | 'failed';
+  paymentStatus: 'pending' | 'rider_claimed' | 'paid' | 'disputed' | 'failed';
   paymentMethod: string;
   createdAt: string;
   completedAt: string | null;

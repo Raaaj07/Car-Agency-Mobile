@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
@@ -11,6 +12,9 @@ async function bootstrap() {
   const isProd = (config.get<string>('NODE_ENV') ?? 'development') === 'production';
 
   app.setGlobalPrefix(config.get<string>('API_PREFIX') ?? 'api/v1');
+  // AU-1: baseline security headers (CSP/HSTS/frame options etc.) — harmless
+  // for a JSON API, meaningful for any HTML/error pages it might serve.
+  app.use(helmet());
   // CORS_ORIGIN may be "*" in dev, or a comma-separated allowlist in prod.
   const rawOrigin = config.get<string>('CORS_ORIGIN') ?? '*';
   const origin =

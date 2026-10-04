@@ -120,6 +120,17 @@ export class DriversService {
     const driver = await this.findByUserId(userId);
 
     if (isOnline) {
+      // R-3: a driver mid-trip must never re-enter the available pool — they
+      // would be offered a second ride while still on one. (Going offline
+      // mid-trip stays allowed; isAvailable is forced false below.)
+      const activeTrip = await this.rides.findOne({
+        where: { driverId: driver.id, status: In(['matched', 'driver_en_route', 'in_progress']) },
+      });
+      if (activeTrip) {
+        throw new ConflictException(
+          `You have an active ride (${activeTrip.status}). Finish it before going online.`,
+        );
+      }
       const status = ((driver as any).status as string | undefined) ?? 'pending';
       if (status === 'pending') {
         throw new ConflictException('Driver verification pending. You can go online once approved.');

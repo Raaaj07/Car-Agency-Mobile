@@ -51,6 +51,8 @@ export class AuthService {
 
   // Matches MobileNumberScreen -> POST /auth/otp/send
   async sendOtp({ phone }: SendOtpDto): Promise<{ message: string; expiresInSeconds: number; devOtp?: string }> {
+    // AU-1: per-phone cooldown + window cap, before any SMS is spent.
+    await this.otp.assertCanSend(phone);
     const code = await this.otp.issue(phone);
     await this.sms.sendOtp(phone, code);
     const ttl = Number(this.config.get<string>('OTP_TTL_SECONDS') ?? 300);
@@ -143,6 +145,9 @@ export class AuthService {
       if (payload.picture && !user.avatar) user.avatar = payload.picture;
     }
     user = await this.users.save(user);
+    // A-1: ADMIN_PHONES promotion must also run at social sign-in, not just
+    // OTP login — otherwise an owner who signs up after boot never gets in.
+    await this.promoteAdminByPhone(user);
 
     const tokenPair = await this.issueAndPersist(user);
     const full = await this.toFullUser(user);
@@ -171,6 +176,8 @@ export class AuthService {
     }
     if (!user.role) user.role = 'rider';
     user = await this.users.save(user);
+    // A-1: same promotion pass as OTP/Google sign-in.
+    await this.promoteAdminByPhone(user);
 
     const tokenPair = await this.issueAndPersist(user);
     const full = await this.toFullUser(user);

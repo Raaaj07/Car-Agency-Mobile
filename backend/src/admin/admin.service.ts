@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { UserEntity } from '../auth/entities/user.entity';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
@@ -113,6 +113,8 @@ export class AdminService implements OnApplicationBootstrap {
     d.rejectionReason = null;
     d.reviewedByUserId = reviewerId;
     d.reviewedAt = new Date();
+    // A-2: reinstate is only legal while approvedAt is set — stamp it here.
+    d.approvedAt = new Date();
     await this.drivers.save(d);
     this.gateway.emitDriverStatus(d.userId, { status: 'approved' });
     return this.getApplication(id);
@@ -139,10 +141,30 @@ export class AdminService implements OnApplicationBootstrap {
     return this.getApplication(id);
   }
 
-  async suspend(id: string, reviewerId: string) {
+  // A-3: suspending a driver mid-trip would orphan the rider. Default: 409
+  // carrying the ride id; `{ force: true }` cancels that ride first
+  // (cancelledBy='admin', rider gets the status push), then suspends.
+  async suspend(id: string, reviewerId: string, opts?: { force?: boolean }) {
     const d = (await this.drivers.findOne({ where: { id } })) as any;
     if (!d) throw new NotFoundException('Driver not found');
     if (d.status === 'suspended') return this.getApplication(id); // idempotent
+    // A-2: only an approved driver may be suspended — pending → suspend →
+    // reinstate used to be a backdoor approval with zero document review.
+    if (d.status !== 'approved') {
+      throw new ConflictException(`Cannot suspend from status ${d.status} — only approved drivers can be suspended`);
+    }
+    const activeRide = await this.rides.findOne({
+      where: { driverId: d.id, status: In(AdminService.ACTIVE_RIDE_STATUSES) },
+    });
+    if (activeRide) {
+      if (!opts?.force) {
+        throw new ConflictException({
+          message: 'Driver has an active ride; retry with { force: true } to cancel it before suspending',
+          rideId: activeRide.id,
+        });
+      }
+      await this.cancelRideForAdmin(activeRide.id, 'Driver suspended by admin');
+    }
     d.status = 'suspended';
     d.reviewedByUserId = reviewerId;
     d.reviewedAt = new Date();
@@ -159,6 +181,11 @@ export class AdminService implements OnApplicationBootstrap {
     if (d.status !== 'suspended') {
       throw new ConflictException(`Cannot reinstate from status ${d.status}`);
     }
+    // A-2: a driver who was never approved must go through document review —
+    // reinstating them would be an approval with zero review.
+    if (!d.approvedAt) {
+      throw new ConflictException('Driver was never approved — use approve/reject after document review instead');
+    }
     d.status = 'approved';
     d.rejectionReason = null;
     d.reviewedByUserId = reviewerId;
@@ -166,6 +193,48 @@ export class AdminService implements OnApplicationBootstrap {
     await this.drivers.save(d);
     this.gateway.emitDriverStatus(d.userId, { status: 'approved' });
     return this.getApplication(id);
+  }
+
+  private static readonly ACTIVE_RIDE_STATUSES = ['matched', 'driver_en_route', 'in_progress'] as const;
+
+  /**
+   * Cancels an active ride on behalf of an admin action (A-3 force-suspend;
+   * Phase 2 admin ride-cancel reuses this). Frees the driver's availability
+   * without touching their online flag, and pushes the status so the rider
+   * isn't left hanging.
+   */
+  async cancelRideForAdmin(rideId: string, reason: string): Promise<void> {
+    const ride = await this.rides.findOne({ where: { id: rideId } });
+    if (!ride || ride.status === 'completed' || ride.status === 'cancelled') return;
+    const result = await this.rides.update(
+      { id: ride.id, status: ride.status },
+      {
+        status: 'cancelled',
+        cancelledBy: 'admin',
+        cancellationReason: reason.slice(0, 200),
+        cancelledAt: new Date(),
+      },
+    );
+    if (!result.affected) return;
+    ride.status = 'cancelled';
+    ride.cancelledBy = 'admin';
+    ride.cancellationReason = reason.slice(0, 200);
+    ride.cancelledAt = new Date();
+    const payload = {
+      rideId: ride.id,
+      status: ride.status,
+      driverId: null,
+      cancellationReason: ride.cancellationReason,
+    };
+    if (ride.driverId) {
+      await this.drivers.update({ id: ride.driverId }, { isAvailable: true }).catch(() => {});
+      const driver = await this.drivers.findOne({ where: { id: ride.driverId } }).catch(() => null);
+      if (driver) {
+        this.gateway.emitRideStatus(ride.id, ride.riderId, driver.userId, payload);
+        return;
+      }
+    }
+    this.gateway.emitRideStatus(ride.id, ride.riderId, null, payload);
   }
 
   // GET /admin/rides — newest-first ride list for the admin console. Exposes

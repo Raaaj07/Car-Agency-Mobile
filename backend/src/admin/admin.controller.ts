@@ -6,6 +6,7 @@ import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminService } from './admin.service';
 import { ReviewApplicationDto } from './dto/review-application.dto';
+import { SuspendDriverDto } from './dto/suspend-driver.dto';
 import { ListApplicationsQueryDto } from './dto/list-applications-query.dto';
 import { ListRidesQueryDto } from './dto/list-rides-query.dto';
 
@@ -45,8 +46,8 @@ export class AdminController {
 
   @Post('drivers/:id/suspend')
   @HttpCode(HttpStatus.OK)
-  suspend(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
-    return this.admin.suspend(id, user.userId);
+  suspend(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: SuspendDriverDto) {
+    return this.admin.suspend(id, user.userId, { force: dto?.force === true });
   }
 
   @Post('drivers/:id/reinstate')

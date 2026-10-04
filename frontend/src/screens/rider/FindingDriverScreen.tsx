@@ -22,13 +22,36 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
   const [progress, setProgress] = useState<number>(30);
   const [nearbyDrivers, setNearbyDrivers] = useState<LatLng[]>([]);
   const [route, setRoute] = useState<RouteResult | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
+  const matchResult = useRideStore((state) => state.matchResult);
+  const setMatchResult = useRideStore((state) => state.setMatchResult);
   const pickupCoords = useRideStore((state) => state.pickupCoords);
   const dropoffCoords = useRideStore((state) => state.dropoffCoords);
   const pickupAddress = useRideStore((state) => state.pickupAddress);
   const dropoffAddress = useRideStore((state) => state.dropoffAddress);
+
+  // R-1: the search came back empty — be honest about it instead of spinning
+  // at 90% forever. (If nobody is found at all, the server auto-cancels the
+  // ride after its search window and the poll below routes to the outcome.)
+  const isNoDrivers = activeRide?.status === 'requested' && matchResult === 'no_drivers';
+
+  const retrySearch = async () => {
+    if (!activeRide || retrying) return;
+    setRetrying(true);
+    try {
+      const updated = await ridesApi.rematch(activeRide.id);
+      setActiveRide(updated);
+      setMatchResult(updated.match?.status ?? 'no_drivers');
+    } catch {
+      // Network hiccup: keep the no-drivers state — the poll and the server's
+      // search window still resolve the ride either way.
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   // Poll the ride's own status. Once it reaches a terminal state, polling
   // stops immediately (hasResolved + clearInterval) — this is what stops the
@@ -138,14 +161,22 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
 
         <View style={styles.searchingHeader}>
           <View style={styles.radarIconWrap}>
-            <Navigation size={24} color={colors.accent} />
+            <Navigation size={24} color={isNoDrivers ? colors.danger : colors.accent} />
           </View>
           <View style={styles.searchingTextWrap}>
-            <Text style={styles.searchingTitle}>Searching for your driver...</Text>
+            <Text style={styles.searchingTitle}>
+              {isNoDrivers
+                ? retrying
+                  ? 'Searching again...'
+                  : 'No drivers nearby'
+                : 'Searching for your driver...'}
+            </Text>
             <Text style={styles.searchingSub}>
-              {nearbyDrivers.length > 0
-                ? `${nearbyDrivers.length} driver${nearbyDrivers.length === 1 ? '' : 's'} nearby`
-                : 'Looking for nearby drivers'}
+              {isNoDrivers
+                ? 'Retry, or cancel and try again in a few minutes'
+                : nearbyDrivers.length > 0
+                  ? `${nearbyDrivers.length} driver${nearbyDrivers.length === 1 ? '' : 's'} nearby`
+                  : 'Looking for nearby drivers'}
             </Text>
           </View>
         </View>
@@ -172,13 +203,35 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
           </View>
         ) : null}
 
-        <Button
-          title="Cancel Search"
-          onPress={onCancelPress}
-          variant="outline"
-          size="medium"
-          style={styles.cancelBtn}
-        />
+        {isNoDrivers ? (
+          <View style={styles.noDriversActions}>
+            <Button
+              title="Retry Search"
+              onPress={retrySearch}
+              variant="primary"
+              size="medium"
+              loading={retrying}
+              disabled={retrying}
+              style={styles.noDriversBtn}
+            />
+            <Button
+              title="Cancel Search"
+              onPress={onCancelPress}
+              variant="outline"
+              size="medium"
+              disabled={retrying}
+              style={styles.noDriversBtn}
+            />
+          </View>
+        ) : (
+          <Button
+            title="Cancel Search"
+            onPress={onCancelPress}
+            variant="outline"
+            size="medium"
+            style={styles.cancelBtn}
+          />
+        )}
       </View>
     </View>
   );
@@ -218,4 +271,6 @@ const styles = StyleSheet.create({
   otpPillLabel: { ...typography.metaBold, color: colors.primary, fontSize: 12 },
   otpPillVal: { ...typography.heading, fontSize: 18, color: colors.primary, letterSpacing: 2, flex: 1, textAlign: 'right' },
   cancelBtn: { marginTop: 4 },
+  noDriversActions: { flexDirection: 'row', gap: 12 },
+  noDriversBtn: { flex: 1 },
 });

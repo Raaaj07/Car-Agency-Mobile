@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { validateEnv } from './config/env.validation';
 import { RedisModule } from './config/redis.module';
@@ -26,6 +28,10 @@ import { PromosModule } from './promos/promos.module';
       isGlobal: true,
       validate: validateEnv,
     }),
+
+    // AU-1: global per-IP rate limit (300 req/min — room for 3 s polling),
+    // with tighter per-route overrides on the OTP endpoints.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
 
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -56,6 +62,9 @@ import { PromosModule } from './promos/promos.module';
     AdminModule,
     PlacesModule,
     PromosModule,
+  ],
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule {}

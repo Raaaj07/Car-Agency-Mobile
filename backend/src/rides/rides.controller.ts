@@ -23,6 +23,13 @@ export class RidesController {
     return this.rides.create(user.userId, dto);
   }
 
+  // R-1: "Retry" when the search came back with no drivers — re-runs the
+  // match immediately instead of waiting out the server search window.
+  @Post(':id/rematch')
+  rematch(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.rides.rematch(id, user.userId);
+  }
+
   // My Rides tab. ?as=rider|driver selects the side for unified accounts.
   @Get()
   list(@CurrentUser() user: AuthenticatedUser, @Query() query: ListRidesQueryDto) {

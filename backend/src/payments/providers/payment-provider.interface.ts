@@ -18,4 +18,7 @@ export interface VerifyPaymentInput {
 export interface PaymentProvider {
   createOrder(amountRupees: number, receiptId: string): Promise<CreateOrderResult>;
   verifyPayment(input: VerifyPaymentInput): Promise<boolean>;
+  /** Public checkout key for the client (e.g. Razorpay key id) — lets the
+   *  service reuse a pending order without minting a new one. */
+  providerKey(): string;
 }

@@ -88,6 +88,10 @@ export class DriverEntity {
   @Column({ type: 'timestamptz', nullable: true })
   reviewedAt?: Date | null;
 
+  // Set on approve/reinstate; reinstate is only legal while this is set (A-2).
+  @Column({ type: 'timestamptz', nullable: true })
+  approvedAt?: Date | null;
+
   @Column({ type: 'timestamptz', nullable: true })
   submittedAt?: Date | null;
 

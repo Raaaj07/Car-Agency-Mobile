@@ -5,6 +5,10 @@ export type RideStatus = 'requested' | 'matched' | 'driver_en_route' | 'in_progr
 export type PaymentMethod = 'upi' | 'wallet' | 'card' | 'cash';
 
 export interface RideLocation { address: string; lat: number; lng: number; }
+// P-1 state machine (mirrors backend): pending → rider_claimed → paid | disputed,
+// plus 'failed' for a failed gateway verification.
+export type PaymentStatus = 'pending' | 'rider_claimed' | 'paid' | 'disputed' | 'failed';
+
 export interface Ride {
   id: string;
   status: RideStatus;
@@ -14,7 +18,7 @@ export interface Ride {
   fareBreakdown: FareBreakdown;
   pickupOtp?: string | null;
   driverId?: string | null;
-  paymentStatus: 'pending' | 'paid' | 'failed';
+  paymentStatus: PaymentStatus;
   paymentMethod: PaymentMethod;
   distanceKm?: string | null;
   rating?: number | null;
@@ -29,11 +33,17 @@ export interface Ride {
   riderAvatar?: string | null;
   // Rider-side view only: safe driver subset (null when unassigned).
   driver?: RideDriverInfo | null;
+  // Only on create/rematch responses: whether a driver was offered right away
+  // or the search came back empty (R-1 no-drivers state).
+  match?: { status: 'offered' | 'no_drivers'; candidates: number };
 }
 
 export const ridesApi = {
   create: async (input: { pickup: RideLocation; dropoff: RideLocation; vehicleType: string; promoCode?: string | null; paymentMethod?: PaymentMethod; allowUpgrade?: boolean }) =>
     (await api.post<Ride>('/rides', input)).data,
+  // R-1: "Retry" after a no-drivers match — re-runs the search server-side
+  // instead of waiting out the search timeout.
+  rematch: async (rideId: string) => (await api.post<Ride>(`/rides/${rideId}/rematch`)).data,
   // Backend infers rider vs driver from the JWT, so no role param needed —
   // riders get their bookings, drivers get rides they've driven.
   // Unified accounts: pass as='rider'|'driver' to select the side.

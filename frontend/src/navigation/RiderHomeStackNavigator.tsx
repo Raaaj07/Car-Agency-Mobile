@@ -31,6 +31,7 @@ export const RiderHomeStackNavigator: React.FC = () => {
   const setSelectedVehicle = useRideStore((state) => state.setSelectedVehicle);
   const resetRide = useRideStore((state) => state.resetRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
+  const setMatchResult = useRideStore((state) => state.setMatchResult);
 
   return (
     <Stack.Navigator
@@ -100,6 +101,9 @@ export const RiderHomeStackNavigator: React.FC = () => {
                 try {
                   const ride = await ridesApi.create(bookingInput);
                   setActiveRide(ride);
+                  // R-1: remember whether the search came back empty so
+                  // FindingDriver can show the honest "no drivers" state.
+                  setMatchResult(ride.match?.status ?? null);
                   navigation.navigate('FindingDriver');
                 } finally {
                   // Keep the flag up for the whole booking attempt so a

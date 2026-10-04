@@ -15,6 +15,10 @@ export class RazorpayPaymentProvider implements PaymentProvider {
 
   constructor(private readonly config: ConfigService) {}
 
+  providerKey(): string {
+    return this.config.get<string>('RAZORPAY_KEY_ID') ?? '';
+  }
+
   async createOrder(amountRupees: number, receiptId: string): Promise<CreateOrderResult> {
     const keyId = this.config.get<string>('RAZORPAY_KEY_ID');
     const keySecret = this.config.get<string>('RAZORPAY_KEY_SECRET');

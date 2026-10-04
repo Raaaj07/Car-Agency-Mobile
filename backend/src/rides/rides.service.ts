@@ -13,7 +13,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as crypto from 'crypto';
-import { In, LessThan, Repository } from 'typeorm';
+import { In, IsNull, LessThan, Repository } from 'typeorm';
 import { haversineKm } from '../common/geo-utils';
 import { toAvatarUrl } from '../common/avatar-url';
 import { DriversService } from '../drivers/drivers.service';
@@ -44,8 +44,11 @@ export const ACTIVE_RIDE_STATUSES = ['requested', 'matched', 'driver_en_route', 
 @Injectable()
 export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly requestTimeoutSeconds: number;
+  // R-1: max time a ride may sit in `requested` with nobody offering.
+  private readonly searchTimeoutSeconds: number;
   private readonly logger = new Logger(RidesService.name);
   private readonly offerTimeouts = new Map<string, NodeJS.Timeout>();
+  private readonly searchTimeouts = new Map<string, NodeJS.Timeout>();
   private staleSweepTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -57,6 +60,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly promosService: PromosService,
   ) {
     this.requestTimeoutSeconds = this.config.get<number>('RIDE_REQUEST_TIMEOUT_SECONDS') ?? 15;
+    this.searchTimeoutSeconds = this.config.get<number>('RIDE_SEARCH_TIMEOUT_SECONDS') ?? 90;
   }
 
   // Startup sweep: recover from server restarts so no drivers are permanently reserved
@@ -132,23 +136,36 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       clearTimeout(timer);
     }
     this.offerTimeouts.clear();
+    for (const timer of this.searchTimeouts.values()) {
+      clearTimeout(timer);
+    }
+    this.searchTimeouts.clear();
   }
 
   // Auto-cancels rides abandoned mid-flow: matched/driver_en_route untouched
-  // for 60 minutes, in_progress untouched for 6 hours. Frees the driver and
-  // pushes the status so the rider can book again.
+  // for 60 minutes, in_progress untouched for 6 hours, and requested rides
+  // with no offer for 5 minutes (R-1 — no driver came forward). Frees the
+  // driver and pushes the status so the rider can book again.
   async sweepStaleRides(now = new Date()): Promise<number> {
     const assignedCutoff = new Date(now.getTime() - 60 * 60 * 1000);
     const tripCutoff = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+    const searchCutoff = new Date(now.getTime() - 5 * 60 * 1000);
     const staleAssigned = await this.rides.find({
       where: { status: In(['matched', 'driver_en_route']), updatedAt: LessThan(assignedCutoff) },
     });
     const staleTrips = await this.rides.find({
       where: { status: In(['in_progress']), updatedAt: LessThan(tripCutoff) },
     });
-    const stale = [...staleAssigned, ...staleTrips];
+    const staleSearches = await this.rides.find({
+      where: { status: 'requested', driverId: IsNull(), updatedAt: LessThan(searchCutoff) },
+    });
+    const stale: Array<{ ride: RideEntity; reason: string }> = [
+      ...staleAssigned.map((ride) => ({ ride, reason: 'stale_ride_timeout' })),
+      ...staleTrips.map((ride) => ({ ride, reason: 'stale_ride_timeout' })),
+      ...staleSearches.map((ride) => ({ ride, reason: 'no_drivers_available' })),
+    ];
     let cancelled = 0;
-    for (const ride of stale) {
+    for (const { ride, reason } of stale) {
       try {
         // Captured before mutation so the log shows the real previous status.
         const previousStatus = ride.status;
@@ -160,14 +177,16 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
           {
             status: 'cancelled',
             cancelledBy: 'system',
-            cancellationReason: 'stale_ride_timeout',
+            cancellationReason: reason,
             cancelledAt: new Date(),
           },
         );
         if (!result.affected) continue;
+        this.clearOfferTimeout(ride.id);
+        this.clearSearchTimeout(ride.id);
         ride.status = 'cancelled';
         ride.cancelledBy = 'system';
-        ride.cancellationReason = 'stale_ride_timeout';
+        ride.cancellationReason = reason;
         ride.cancelledAt = new Date();
         if (ride.driverId) {
           await this.drivers.setAvailability(ride.driverId, true).catch(() => {});
@@ -198,6 +217,49 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       clearTimeout(timer);
       this.offerTimeouts.delete(rideId);
     }
+  }
+
+  private clearSearchTimeout(rideId: string): void {
+    const timer = this.searchTimeouts.get(rideId);
+    if (timer) {
+      clearTimeout(timer);
+      this.searchTimeouts.delete(rideId);
+    }
+  }
+
+  // R-1: without this, a "no drivers nearby" ride stays `requested` forever —
+  // the stale sweep skips that status and the rider is locked out of booking.
+  // Fires once after the search window; only cancels a ride that is still
+  // requested AND unassigned (a driver who appeared meanwhile wins).
+  private scheduleSearchTimeout(rideId: string, timeoutMs: number): void {
+    this.clearSearchTimeout(rideId);
+    const timer = setTimeout(async () => {
+      this.searchTimeouts.delete(rideId);
+      try {
+        const ride = await this.rides.findOne({ where: { id: rideId } });
+        if (!ride || ride.status !== 'requested' || ride.driverId) return;
+        const result = await this.rides.update(
+          { id: rideId, status: 'requested', driverId: IsNull() },
+          {
+            status: 'cancelled',
+            cancelledBy: 'system',
+            cancellationReason: 'no_drivers_available',
+            cancelledAt: new Date(),
+          },
+        );
+        if (!result.affected) return;
+        ride.status = 'cancelled';
+        ride.cancelledBy = 'system';
+        ride.cancellationReason = 'no_drivers_available';
+        ride.cancelledAt = new Date();
+        this.logger.warn(`Ride ${rideId} search timed out after ${this.searchTimeoutSeconds}s (no drivers)`);
+        this.pushStatus(ride);
+      } catch (err) {
+        this.logger.error(`Search timeout failed for ride ${rideId}`, err as Error);
+      }
+    }, timeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    this.searchTimeouts.set(rideId, timer);
   }
 
   private scheduleOfferTimeout(rideId: string, driverId: string, timeoutMs: number): void {
@@ -289,6 +351,33 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     };
   }
 
+  // POST /rides/:id/rematch — "Retry" on the client's no-drivers state (R-1).
+  // Re-runs the search immediately instead of waiting out the search window;
+  // returns the same view+match shape as create().
+  async rematch(rideId: string, riderId: string): Promise<any> {
+    const ride = await this.getOrThrow(rideId);
+    if (ride.riderId !== riderId) {
+      throw new ForbiddenException('Not your ride');
+    }
+    if (ride.status !== 'requested' || ride.driverId) {
+      throw new BadRequestException(`Ride is ${ride.status} and cannot be re-matched`);
+    }
+    let matchResult: { status: 'offered' | 'no_drivers'; candidates: number } = {
+      status: 'no_drivers',
+      candidates: 0,
+    };
+    try {
+      matchResult = await this.matchNearestDriver(ride);
+    } catch (error) {
+      this.logger.error(`matchNearestDriver failed for rematch of ride ${ride.id}`, error as Error);
+    }
+    const reloaded = await this.findById(ride.id, riderId);
+    return {
+      ...this.toRiderView(reloaded),
+      match: matchResult,
+    };
+  }
+
   private async matchNearestDriver(
     ride: RideEntity,
     allowUpgrade = false,
@@ -355,12 +444,20 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         ride.cancellationReason = 'no_drivers_available';
         ride.cancelledBy = 'system';
         ride.cancelledAt = new Date();
+        this.clearSearchTimeout(ride.id);
         await this.rides.save(ride);
         this.pushStatus(ride);
+      } else {
+        // R-1: nobody is nearby — arm (or re-arm) the search window so the
+        // rider isn't locked into `requested` forever.
+        this.scheduleSearchTimeout(ride.id, this.searchTimeoutSeconds * 1000);
       }
       return { status: 'no_drivers', candidates: 0 };
     }
 
+    // A driver is being offered: the search window no longer applies — the
+    // 15 s offer timer takes over from here.
+    this.clearSearchTimeout(ride.id);
     const nearest = candidates[0];
     await this.drivers.setAvailability(nearest.driverId, false);
     const now = new Date();
@@ -601,14 +698,20 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // Received". The rider pays via the UPI QR shown on the driver's phone
   // (outside the app), so the driver confirms collection here; that flag is
   // what the admin console reports. Driver-owned and completed-only.
+  // P-1: this is the ONLY rider/driver path that can settle a ride (a rider's
+  // own claim only reaches `rider_claimed`), and it records who confirmed.
   async markPaymentReceived(rideId: string, driverUserId: string): Promise<any> {
     const ride = await this.getOrThrow(rideId);
     await this.assertOwningDriver(ride, driverUserId);
     if (ride.status !== 'completed') {
       throw new BadRequestException(`Ride is ${ride.status}, payment can only be collected after completion`);
     }
+    if (ride.paymentStatus === 'disputed') {
+      throw new ConflictException('Payment is disputed — only an admin can resolve it');
+    }
     if (ride.paymentStatus !== 'paid') {
       ride.paymentStatus = 'paid';
+      ride.paymentMarkedBy = 'driver';
       await this.rides.save(ride);
     }
     return this.toDriverView(ride);
@@ -619,40 +722,68 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // (possibly stale) JWT role claim. Rider-side cancel works when
   // ride.riderId matches; driver-side when the caller's driver profile owns
   // ride.driverId. Either party may cancel an assigned ride.
+  //
+  // R-2: the ride row is locked and ownership is verified BEFORE any timer is
+  // touched — previously a foreign caller got a 403 but the offer timer had
+  // already been cleared, leaving the offered driver stuck offline forever.
   async cancel(rideId: string, userId: string, role: 'rider' | 'driver' | 'admin', dto: CancelRideDto): Promise<any> {
-    this.clearOfferTimeout(rideId);
-    const ride = await this.getOrThrow(rideId);
+    const queryRunner = this.rides.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    let ride!: RideEntity;
+    let effectiveRole!: 'rider' | 'driver';
+    try {
+      const locked = await queryRunner.manager.findOne(RideEntity, {
+        where: { id: rideId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked) throw new NotFoundException('Ride not found');
+      ride = locked;
 
-    const isRider = ride.riderId === userId;
-    let isDriver = false;
-    if (!isRider) {
-      const driver = await this.drivers.findByUserId(userId).catch(() => null);
-      isDriver = !!driver && ride.driverId === driver.id;
-    } else if (ride.driverId) {
-      // Rider cancelling a ride that already has a driver: still allowed.
-      const driver = await this.drivers.findByUserId(userId).catch(() => null);
-      if (driver && ride.driverId === driver.id) isDriver = true;
-    }
-    if (!isRider && !isDriver) {
-      throw new ForbiddenException('Not your ride');
-    }
-    const effectiveRole: 'rider' | 'driver' = isDriver && !isRider ? 'driver' : isRider && !isDriver ? 'rider' : role === 'admin' ? 'rider' : role;
-    if (ride.status === 'completed' || ride.status === 'cancelled') {
-      throw new BadRequestException(`Ride is already ${ride.status}`);
+      const isRider = ride.riderId === userId;
+      let isDriver = false;
+      if (!isRider) {
+        const driver = await this.drivers.findByUserId(userId).catch(() => null);
+        isDriver = !!driver && ride.driverId === driver.id;
+      } else if (ride.driverId) {
+        // Rider cancelling a ride that already has a driver: still allowed.
+        const driver = await this.drivers.findByUserId(userId).catch(() => null);
+        if (driver && ride.driverId === driver.id) isDriver = true;
+      }
+      if (!isRider && !isDriver) {
+        throw new ForbiddenException('Not your ride');
+      }
+      effectiveRole = isDriver && !isRider ? 'driver' : isRider && !isDriver ? 'rider' : role === 'admin' ? 'rider' : role;
+      if (ride.status === 'completed' || ride.status === 'cancelled') {
+        throw new BadRequestException(`Ride is already ${ride.status}`);
+      }
+
+      // Ownership + status both checked: we own this transition now.
+      this.clearOfferTimeout(rideId);
+      this.clearSearchTimeout(rideId);
+
+      ride.status = 'cancelled';
+      ride.cancellationReason = dto.reason;
+      ride.cancelledBy = effectiveRole;
+      ride.cancelledAt = new Date();
+      await queryRunner.manager.save(ride);
+      await queryRunner.commitTransaction();
+    } catch (err) {
+      await queryRunner.rollbackTransaction().catch(() => {});
+      throw err;
+    } finally {
+      await queryRunner.release().catch(() => {});
     }
 
     if (ride.driverId) {
       await this.drivers.setAvailability(ride.driverId, true);
     }
 
-    ride.status = 'cancelled';
-    ride.cancellationReason = dto.reason;
-    ride.cancelledBy = effectiveRole;
-    ride.cancelledAt = new Date();
-    await this.rides.save(ride);
-
-    this.pushStatus(ride);
-    return effectiveRole === 'driver' ? this.toDriverView(ride) : this.toRiderView(ride);
+    // Reload with relations so the response keeps riderName/driver info the
+    // un-locked row can't carry.
+    const fresh = await this.getOrThrow(rideId).catch(() => ride);
+    this.pushStatus(fresh);
+    return effectiveRole === 'driver' ? this.toDriverView(fresh) : this.toRiderView(fresh);
   }
 
   // Matches ReviewRideScreen's onSubmitReview (rating + compliments + tip).

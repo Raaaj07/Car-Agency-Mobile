@@ -36,6 +36,8 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
   const tip = Number(activeRide?.tipAmount ?? 0);
   const amount = fareTotal + tip;
   const isPaid = activeRide?.paymentStatus === 'paid';
+  // P-1: the driver can't settle a disputed payment — admin resolves it.
+  const isDisputed = activeRide?.paymentStatus === 'disputed';
 
   const [vpaInput, setVpaInput] = useState('');
   const [savedVpa, setSavedVpa] = useState('');
@@ -105,8 +107,8 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
             <Text style={styles.amount}>{amount.toFixed(2)}</Text>
           </View>
           <Pill
-            label={isPaid ? 'AMOUNT RECEIVED' : 'AWAITING PAYMENT'}
-            variant={isPaid ? 'success' : 'warning'}
+            label={isPaid ? 'AMOUNT RECEIVED' : isDisputed ? 'DISPUTED' : 'AWAITING PAYMENT'}
+            variant={isPaid ? 'success' : isDisputed ? 'danger' : 'warning'}
           />
           <Text style={styles.amountSub}>
             Trip fare ₹{fareTotal.toFixed(2)}
@@ -171,6 +173,12 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
             <CheckCircle2 size={22} color={colors.success} />
             <Text style={styles.receivedText}>
               Amount received — recorded and visible to admin.
+            </Text>
+          </View>
+        ) : isDisputed ? (
+          <View style={styles.disputedBox}>
+            <Text style={styles.disputedText}>
+              This payment is disputed — an admin must resolve it. Nothing to collect in the app.
             </Text>
           </View>
         ) : (
@@ -332,6 +340,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.textPrimary,
     flex: 1,
+  },
+  disputedBox: {
+    gap: 10,
+    backgroundColor: colors.dangerLight,
+    borderRadius: radii.card,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(220, 38, 38, 0.3)',
+  },
+  disputedText: {
+    ...typography.bodyBold,
+    fontSize: 13,
+    color: colors.danger,
+    textAlign: 'center',
   },
   footer: {
     position: 'absolute',

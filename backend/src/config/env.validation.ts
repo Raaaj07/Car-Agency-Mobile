@@ -159,6 +159,30 @@ class EnvironmentVariables {
   @IsOptional()
   @IsNumberString()
   RIDE_REQUEST_TIMEOUT_SECONDS?: string;
+
+  // R-1: how long a ride may sit in `requested` with no driver offer
+  // before the server auto-cancels it with `no_drivers_available`.
+  @IsOptional()
+  @IsNumberString()
+  RIDE_SEARCH_TIMEOUT_SECONDS?: string;
+
+  // AU-1: per-phone OTP send limits.
+  @IsOptional()
+  @IsNumberString()
+  OTP_SEND_MAX?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  OTP_SEND_WINDOW_SECONDS?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  OTP_RESEND_COOLDOWN_SECONDS?: string;
+
+  // R-6: day-boundary timezone for "today's earnings" and admin stats.
+  @IsOptional()
+  @IsString()
+  APP_TIMEZONE?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {

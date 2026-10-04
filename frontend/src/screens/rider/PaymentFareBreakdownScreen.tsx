@@ -23,6 +23,16 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
   const breakdown = activeRide?.fareBreakdown ?? estimateBreakdown;
   const tip = Number(activeRide?.tipAmount ?? 0);
   const isPaid = activeRide?.paymentStatus === 'paid';
+  // P-1: a rider claim only reaches rider_claimed; disputed needs an admin.
+  const isClaimed = activeRide?.paymentStatus === 'rider_claimed';
+  const isDisputed = activeRide?.paymentStatus === 'disputed';
+  const statusLabel = isPaid
+    ? 'PAYMENT RECEIVED'
+    : isDisputed
+      ? 'PAYMENT DISPUTED'
+      : isClaimed
+        ? 'CLAIMED — AWAITING DRIVER'
+        : 'AWAITING PAYMENT';
   const amount = Number(breakdown?.total ?? 0) + tip;
   const vehicleName = selectedVehicle?.name ?? activeRide?.vehicleType ?? 'your ride';
 
@@ -50,21 +60,37 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Total Amount Header Card */}
         <Card style={styles.totalHeaderCard}>
-          <View style={[styles.statusBadge, !isPaid && styles.statusBadgePending]}>
+          <View
+            style={[
+              styles.statusBadge,
+              !isPaid && styles.statusBadgePending,
+              isDisputed && styles.statusBadgeDisputed,
+            ]}
+          >
             {isPaid ? (
               <CheckCircle size={16} color={colors.success} />
             ) : (
-              <Clock size={16} color={colors.warning} />
+              <Clock size={16} color={isDisputed ? colors.danger : colors.warning} />
             )}
-            <Text style={[styles.statusText, !isPaid && styles.statusTextPending]}>
-              {isPaid ? 'PAYMENT RECEIVED' : 'AWAITING PAYMENT'}
+            <Text
+              style={[
+                styles.statusText,
+                !isPaid && styles.statusTextPending,
+                isDisputed && styles.statusTextDisputed,
+              ]}
+            >
+              {statusLabel}
             </Text>
           </View>
           <Text style={styles.totalAmount}>₹{amount.toFixed(2)}</Text>
           <Text style={styles.paymentMethodText}>
             {isPaid
               ? `Paid via UPI • ${vehicleName}`
-              : "Pay by scanning the UPI QR on your driver's app — GPay, PhonePe or Paytm"}
+              : isDisputed
+                ? 'This payment is under review by support.'
+                : isClaimed
+                  ? 'Reported as paid — waiting for your driver to confirm.'
+                  : "Pay by scanning the UPI QR on your driver's app — GPay, PhonePe or Paytm"}
           </Text>
         </Card>
 
@@ -172,6 +198,12 @@ const styles = StyleSheet.create({
   },
   statusTextPending: {
     color: colors.warning,
+  },
+  statusBadgeDisputed: {
+    backgroundColor: colors.dangerLight,
+  },
+  statusTextDisputed: {
+    color: colors.danger,
   },
   totalAmount: {
     ...typography.heading,

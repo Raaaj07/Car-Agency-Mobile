@@ -16,8 +16,10 @@ export class PaymentEntity {
   @Column({ type: 'int' })
   amount!: number; // rupees
 
-  @Column({ type: 'varchar', length: 100 })
-  providerOrderId!: string;
+  // Nullable so duplicate legacy orders can be kept (older copy nulled) by the
+  // unique (rideId, providerOrderId) index migration (P-2).
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  providerOrderId!: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
   providerPaymentId?: string | null;
