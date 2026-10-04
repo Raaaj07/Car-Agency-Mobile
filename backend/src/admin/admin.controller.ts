@@ -7,8 +7,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminService } from './admin.service';
 import { ReviewApplicationDto } from './dto/review-application.dto';
 import { SuspendDriverDto } from './dto/suspend-driver.dto';
+import { ReinstateDriverDto } from './dto/reinstate-driver.dto';
+import { CancelRideDto } from './dto/cancel-ride.dto';
+import { ResolvePaymentDto } from './dto/resolve-payment.dto';
 import { ListApplicationsQueryDto } from './dto/list-applications-query.dto';
 import { ListRidesQueryDto } from './dto/list-rides-query.dto';
+import { AuditQueryDto } from './dto/audit-query.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
@@ -16,9 +20,24 @@ import { ListRidesQueryDto } from './dto/list-rides-query.dto';
 export class AdminController {
   constructor(private readonly admin: AdminService) {}
 
+  // Dashboard (day boundaries in APP_TIMEZONE, attention lists, activity).
+  @Get('overview')
+  overview() {
+    return this.admin.overview();
+  }
+
   @Get('driver-applications')
   list(@Query() query: ListApplicationsQueryDto) {
-    return this.admin.listApplications(query.status, query.page, query.limit);
+    return this.admin.listApplications(query.status, query.page, query.limit, {
+      q: query.q,
+      sort: query.sort,
+    });
+  }
+
+  // Declared before ':id' so "counts" never becomes an application id.
+  @Get('driver-applications/counts')
+  counts() {
+    return this.admin.listApplicationCounts();
   }
 
   @Get('driver-applications/:id')
@@ -26,10 +45,58 @@ export class AdminController {
     return this.admin.getApplication(id);
   }
 
-  // Admin console "Rides" tab: statuses + fare + payment collection flags.
+  // Full driver console detail: application + stats + last rides + history.
+  @Get('drivers/:id')
+  driverDetail(@Param('id') id: string) {
+    return this.admin.getDriverDetail(id);
+  }
+
+  // Admin console "Rides" tab: filters (status/payment/date/search) + paging.
   @Get('rides')
   listRides(@Query() query: ListRidesQueryDto) {
-    return this.admin.listRides(query.page, query.limit);
+    return this.admin.listRides({
+      status: query.status,
+      paymentStatus: query.paymentStatus,
+      from: query.from,
+      to: query.to,
+      q: query.q,
+      driverId: query.driverId,
+      riderId: query.riderId,
+      page: query.page,
+      limit: query.limit,
+    });
+  }
+
+  // Ride timeline + fare + payment rows + audited admin actions.
+  @Get('rides/:id')
+  rideDetail(@Param('id') id: string) {
+    return this.admin.getRideDetail(id);
+  }
+
+  @Post('rides/:id/cancel')
+  @HttpCode(HttpStatus.OK)
+  cancelRide(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: CancelRideDto,
+  ) {
+    return this.admin.adminCancelRide(id, user.userId, dto.reason);
+  }
+
+  @Post('rides/:id/payment')
+  @HttpCode(HttpStatus.OK)
+  resolvePayment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: ResolvePaymentDto,
+  ) {
+    return this.admin.resolvePayment(id, user.userId, dto.status, dto.note);
+  }
+
+  // Paginated audit trail (overview "recent activity" can use it too).
+  @Get('audit')
+  audit(@Query() query: AuditQueryDto) {
+    return this.admin.auditList(query);
   }
 
   @Post('driver-applications/:id/approve')
@@ -47,13 +114,13 @@ export class AdminController {
   @Post('drivers/:id/suspend')
   @HttpCode(HttpStatus.OK)
   suspend(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: SuspendDriverDto) {
-    return this.admin.suspend(id, user.userId, { force: dto?.force === true });
+    return this.admin.suspend(id, user.userId, { reason: dto.reason, force: dto?.force === true });
   }
 
   @Post('drivers/:id/reinstate')
   @HttpCode(HttpStatus.OK)
-  reinstate(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
-    return this.admin.reinstate(id, user.userId);
+  reinstate(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: ReinstateDriverDto) {
+    return this.admin.reinstate(id, user.userId, { reason: dto?.reason });
   }
 
   // All documents of one application with fresh, short-lived signed URLs.

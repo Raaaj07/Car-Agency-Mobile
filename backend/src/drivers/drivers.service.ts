@@ -6,6 +6,8 @@ import { DriverEntity, VehicleType } from './entities/driver.entity';
 import { GeoService, NearbyDriverHit } from './geo.service';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { StorageService } from './storage.service';
+import { ApplicationEventsService } from '../common/events/application-events.service';
+import { appTimezone, zonedStartOfDay } from '../common/timezone';
 
 export interface NearbyDriverResult {
   driverId: string;
@@ -31,6 +33,7 @@ export class DriversService {
       private readonly geo: GeoService,
       private readonly config: ConfigService,
       private readonly storage: StorageService,
+      private readonly events: ApplicationEventsService,
     ) {
       this.defaultRadiusMeters = this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000;
     }
@@ -75,6 +78,15 @@ export class DriversService {
 
     const kept = new Set([files.licenseImagePath, files.rcImagePath, files.vehiclePhotoPath]);
     await Promise.all(previousDocs.filter((p) => !kept.has(p)).map((p) => this.storage.deleteDocument(p)));
+
+    // A-11: tell every connected admin console about the new/re-submitted
+    // application so the queue updates without a pull-to-refresh.
+    this.events.emitApplicationNew({
+      driverId: saved.id,
+      userId,
+      status: saved.status ?? 'pending',
+      submittedAt: saved.submittedAt ?? saved.createdAt,
+    });
     return saved;
   }
 
@@ -201,18 +213,20 @@ export class DriversService {
   async getMyProfile(userId: string) {
     const driver = await this.findByUserId(userId); // already loads relations: ['user']
 
-    // UTC day boundary (server TZ-independent).
+    // R-6: day boundary in the operator's timezone (IST by default), not UTC —
+    // the old UTC boundary reset "today" at 05:30 IST. Tips count as earnings.
     const now = new Date();
-    const startOfTodayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const startOfToday = zonedStartOfDay(now, appTimezone(this.config));
 
-  const { sum, count } = await this.rides
-    .createQueryBuilder('ride')
-    .select(`COALESCE(SUM((ride."fareBreakdown"->>'total')::numeric), 0)`, 'sum')
-    .addSelect('COUNT(*)', 'count')
-    .where('ride.driverId = :driverId', { driverId: driver.id })
-    .andWhere('ride.status = :status', { status: 'completed' })
-    .andWhere('ride.completedAt >= :start', { start: startOfTodayUtc })
-    .getRawOne();
+    const { sum, tip, count } = await this.rides
+      .createQueryBuilder('ride')
+      .select(`COALESCE(SUM((ride."fareBreakdown"->>'total')::numeric), 0)`, 'sum')
+      .addSelect(`COALESCE(SUM(ride."tipAmount"), 0)`, 'tip')
+      .addSelect('COUNT(*)', 'count')
+      .where('ride.driverId = :driverId', { driverId: driver.id })
+      .andWhere('ride.status = :status', { status: 'completed' })
+      .andWhere('ride.completedAt >= :start', { start: startOfToday })
+      .getRawOne();
 
   return {
     name: driver.user?.name ?? 'Driver',
@@ -223,7 +237,7 @@ export class DriversService {
     plateNumber: driver.plateNumber,
     rating: Number(driver.rating),
     totalTrips: driver.totalTrips, // lifetime, real column
-    todayEarnings: Number(sum ?? 0),
+    todayEarnings: Number(sum ?? 0) + Number(tip ?? 0),
     todayTrips: Number(count ?? 0),
     isOnline: driver.isOnline,
     isAvailable: driver.isAvailable,

@@ -5,6 +5,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { validateEnv } from './config/env.validation';
 import { RedisModule } from './config/redis.module';
+import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
 import { DriversModule } from './drivers/drivers.module';
 import { RidesModule } from './rides/rides.module';
@@ -54,6 +55,8 @@ import { PromosModule } from './promos/promos.module';
               : { rejectUnauthorized: false },
       }),
     }),
+    // Global bridge for cross-module events (admin application notifications).
+    CommonModule,
     RedisModule,
     AuthModule,
     DriversModule,

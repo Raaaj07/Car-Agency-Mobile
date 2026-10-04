@@ -6,6 +6,7 @@ import { DriverEntity } from './entities/driver.entity';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { GeoService } from './geo.service';
 import { StorageService } from './storage.service';
+import { ApplicationEventsService } from '../common/events/application-events.service';
 
 /**
  * R-3: a driver mid-trip must not re-enter the available pool by toggling
@@ -47,6 +48,7 @@ describe('DriversService.setStatus (R-3)', () => {
       geo as unknown as GeoService,
       { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
       {} as unknown as StorageService,
+      { emitApplicationNew: jest.fn() } as unknown as ApplicationEventsService,
     );
   });
 

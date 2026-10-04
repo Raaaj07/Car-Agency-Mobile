@@ -227,6 +227,16 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     }
   }
 
+  /**
+   * Drops every in-memory timer for a ride. Public for admin-side cancels
+   * (suspend force, admin ride cancel) so an offered driver never stays
+   * reserved after the ride is gone — same discipline as the R-2 fix.
+   */
+  clearPendingTimers(rideId: string): void {
+    this.clearOfferTimeout(rideId);
+    this.clearSearchTimeout(rideId);
+  }
+
   // R-1: without this, a "no drivers nearby" ride stays `requested` forever —
   // the stale sweep skips that status and the rider is locked out of booking.
   // Fires once after the search window; only cancels a ride that is still

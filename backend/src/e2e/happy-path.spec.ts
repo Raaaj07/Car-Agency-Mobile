@@ -2,7 +2,9 @@ import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { AdminService } from '../admin/admin.service';
+import { AdminAuditService } from '../admin/admin-audit.service';
 import { UserEntity } from '../auth/entities/user.entity';
+import { ApplicationEventsService } from '../common/events/application-events.service';
 import { DriversService } from '../drivers/drivers.service';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
@@ -235,15 +237,19 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       geo as unknown as GeoService,
       config,
       storage as unknown as StorageService,
+      { emitApplicationNew: jest.fn() } as unknown as ApplicationEventsService,
     );
     adminService = new AdminService(
       usersRepo,
       driversRepo as unknown as Repository<DriverEntity>,
       ridesRepo as unknown as Repository<RideEntity>,
+      paymentsRepo as unknown as Repository<PaymentEntity>,
       geo as unknown as GeoService,
       storage as unknown as StorageService,
       gateway as unknown as RidesGateway,
       config,
+      { log: jest.fn().mockResolvedValue(undefined) } as unknown as AdminAuditService,
+      { clearPendingTimers: jest.fn() } as unknown as RidesService,
     );
     ridesService = new RidesService(
       ridesRepo as unknown as Repository<RideEntity>,

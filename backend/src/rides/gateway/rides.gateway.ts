@@ -16,6 +16,7 @@ import { Repository } from 'typeorm';
 import { DriverEntity } from '../../drivers/entities/driver.entity';
 import { UserEntity } from '../../auth/entities/user.entity';
 import { JwtPayload } from '../../auth/strategies/jwt.strategy';
+import { ApplicationEventsService } from '../../common/events/application-events.service';
 import { RideEntity } from '../entities/ride.entity';
 
 interface AuthedSocket extends Socket {
@@ -52,10 +53,16 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly events: ApplicationEventsService,
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
     @InjectRepository(DriverEntity) private readonly drivers: Repository<DriverEntity>,
     @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
-  ) {}
+  ) {
+    // A-11: push new/re-submitted driver applications to every connected
+    // admin console (registered here; DriversService cannot import this
+    // module without a cycle).
+    this.events.register((payload) => this.emitApplicationNew(payload));
+  }
 
   async handleConnection(client: AuthedSocket): Promise<void> {
     try {
@@ -77,6 +84,10 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.data.userId = user.id;
       client.data.role = (user.role ?? 'rider') as AuthedSocket['data']['role'];
       client.join(this.userRoom(user.id));
+      // Admin consoles listen on a shared room for live counts/badges (A-11).
+      if (client.data.role === 'admin') {
+        await client.join('admins');
+      }
     } catch (err) {
       this.logger.warn(`Rejected socket connection: ${(err as Error).message}`);
       client.disconnect(true);
@@ -179,6 +190,11 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
   /** Server-initiated push: driver application status change (reject/suspend). */
   emitDriverStatus(driverUserId: string, payload: unknown): void {
     this.server.to(this.userRoom(driverUserId)).emit('driver:status', payload);
+  }
+
+  /** Server-initiated push: a new/re-submitted application to all admin consoles (A-11). */
+  emitApplicationNew(payload: unknown): void {
+    this.server.to('admins').emit('admin:application:new', payload);
   }
 
   /** Server-initiated push: a new ride request to the matched driver. */
