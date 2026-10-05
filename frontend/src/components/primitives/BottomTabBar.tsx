@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, Compass, Clock, User, Navigation, LayoutDashboard, Users, Receipt } from 'lucide-react-native';
@@ -22,6 +22,8 @@ interface BottomTabBarProps {
   onTabPress: (id: string) => void;
   mode?: 'rider' | 'driver' | 'admin';
   visible?: boolean;
+  /** Per-tab badge counts (admin: pending applications on the Drivers tab, A-11). */
+  badges?: Partial<Record<string, number>>;
 }
 
 export const BottomTabBar: React.FC<BottomTabBarProps> = ({
@@ -29,10 +31,13 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
   onTabPress,
   mode = 'rider',
   visible = true,
+  badges,
 }) => {
   const insets = useSafeAreaInsets();
-  const translateY = useRef(new Animated.Value(visible ? 0 : 120)).current;
-  const opacity = useRef(new Animated.Value(visible ? 1 : 0)).current;
+  // Lazy useState initializers (same pattern as SkeletonList): `useRef(x).current`
+  // reads the ref during render, which react-hooks/refs rejects.
+  const [translateY] = useState(() => new Animated.Value(visible ? 0 : 120));
+  const [opacity] = useState(() => new Animated.Value(visible ? 1 : 0));
 
   useEffect(() => {
     Animated.parallel([
@@ -103,9 +108,17 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
       <View style={styles.bar}>
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
+          const badge = badges?.[tab.id];
           return (
             <TouchableOpacity key={tab.id} style={styles.tab} onPress={() => onTabPress(tab.id)} activeOpacity={0.7}>
-              {renderIcon(tab.iconName, isActive)}
+              <View style={styles.iconWrap}>
+                {renderIcon(tab.iconName, isActive)}
+                {badge !== undefined && badge > 0 ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{badge > 99 ? '99+' : badge}</Text>
+                  </View>
+                ) : null}
+              </View>
               <Text style={[styles.label, isActive ? styles.labelActive : null]}>{tab.label}</Text>
               {isActive && <View style={styles.activeIndicator} />}
             </TouchableOpacity>
@@ -120,6 +133,22 @@ const styles = StyleSheet.create({
   container: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'transparent', paddingHorizontal: 16 },
   bar: { flexDirection: 'row', height: 64, backgroundColor: '#FFFFFF', borderRadius: 32, borderWidth: 1, borderColor: '#EEECF2', alignItems: 'center', justifyContent: 'space-around', ...shadows.cardHover },
   tab: { alignItems: 'center', justifyContent: 'center', flex: 1, height: '100%' },
+  iconWrap: { width: 30, height: 26, alignItems: 'center', justifyContent: 'center' },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: colors.danger,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: { fontSize: 9, fontWeight: '800', color: '#FFFFFF' },
   label: { ...typography.meta, fontSize: 11, marginTop: 3, color: colors.textMuted },
   labelActive: { color: colors.primary, fontWeight: '700' },
   activeIndicator: { width: 4, height: 4, borderRadius: 2, backgroundColor: colors.accent, marginTop: 2 },

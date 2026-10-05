@@ -1,26 +1,23 @@
-import { IsDateString, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
-import { PaymentStatus, RideStatus } from '../../rides/entities/ride.entity';
 
-const RIDE_STATUSES: RideStatus[] = [
-  'requested',
-  'matched',
-  'driver_en_route',
-  'in_progress',
-  'completed',
-  'cancelled',
-];
-const PAYMENT_STATUSES: PaymentStatus[] = ['pending', 'rider_claimed', 'paid', 'disputed', 'failed'];
-
-/** GET /admin/rides — filters for the admin rides console (Section 3.2). */
+/**
+ * GET /admin/rides — filters for the admin rides console (Section 3.2).
+ * `status` / `paymentStatus` accept comma-separated values so chips can query
+ * groups in one request (e.g. Active = requested,matched,driver_en_route,
+ * in_progress; Unpaid = pending,rider_claimed,disputed,failed). Membership is
+ * validated against the whitelists in AdminService.listRides.
+ */
 export class ListRidesQueryDto {
   @IsOptional()
-  @IsIn(RIDE_STATUSES)
-  status?: RideStatus;
+  @IsString()
+  @MaxLength(80)
+  status?: string;
 
   @IsOptional()
-  @IsIn(PAYMENT_STATUSES)
-  paymentStatus?: PaymentStatus;
+  @IsString()
+  @MaxLength(80)
+  paymentStatus?: string;
 
   @IsOptional()
   @IsDateString()

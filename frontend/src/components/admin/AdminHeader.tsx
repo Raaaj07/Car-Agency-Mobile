@@ -1,6 +1,7 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ArrowLeft } from 'lucide-react-native';
 import { colors, typography } from '../../theme/theme';
 
 interface AdminHeaderProps {
@@ -16,6 +17,8 @@ interface AdminHeaderProps {
   variant?: 'hero' | 'plain';
   /** Right-aligned slot (e.g. avatar or action icon). */
   right?: React.ReactNode;
+  /** Render a back button (detail screens; headerShown is false everywhere). */
+  onBack?: () => void;
 }
 
 export const AdminHeader: React.FC<AdminHeaderProps> = ({
@@ -24,6 +27,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   subtitle,
   variant = 'hero',
   right,
+  onBack,
 }) => {
   const insets = useSafeAreaInsets();
   const hero = variant === 'hero';
@@ -33,15 +37,30 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
       style={[
         styles.base,
         hero ? styles.hero : styles.plain,
-        hero ? { paddingTop: insets.top + 12 } : { paddingTop: 8 },
+        hero ? { paddingTop: insets.top + 12 } : { paddingTop: insets.top + 8 },
       ]}
     >
+      {onBack ? (
+        <TouchableOpacity
+          onPress={onBack}
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
+          hitSlop={10}
+          style={styles.back}
+        >
+          <ArrowLeft size={22} color={hero ? colors.textLight : colors.textPrimary} />
+        </TouchableOpacity>
+      ) : null}
       <View style={styles.textCol}>
         {greeting ? <Text style={styles.greeting}>{greeting}</Text> : null}
         <Text style={[styles.title, hero && styles.titleHero]} numberOfLines={1}>
           {title}
         </Text>
-        {subtitle ? <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text> : null}
+        {subtitle ? (
+          <Text style={[styles.subtitle, !hero && styles.subtitlePlain]} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        ) : null}
       </View>
       {right ? <View style={styles.right}>{right}</View> : null}
     </View>
@@ -55,6 +74,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingBottom: 18,
+  },
+  back: {
+    marginRight: 12,
+    paddingBottom: 4,
   },
   hero: {
     backgroundColor: colors.primary,
@@ -87,6 +110,10 @@ const styles = StyleSheet.create({
     color: colors.textLight,
     opacity: 0.8,
     marginTop: 4,
+  },
+  subtitlePlain: {
+    color: colors.textSecondary,
+    opacity: 1,
   },
   right: {
     alignItems: 'flex-end',

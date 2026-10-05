@@ -19,7 +19,7 @@ export function getSocket(): Socket | null {
   return socketInstance;
 }
 
-export function connectSocket(token: string, role?: 'rider' | 'driver' | null): Socket {
+export function connectSocket(token: string, role?: 'rider' | 'driver' | 'admin' | null): Socket {
   if (socketInstance && socketInstance.connected) {
     return socketInstance;
   }

@@ -15,6 +15,17 @@ import { AdminAuditService } from './admin-audit.service';
 
 type AppStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 
+// Whitelists for comma-separated list filters (Rides console chips).
+const RIDE_STATUS_VALUES: RideStatus[] = [
+  'requested',
+  'matched',
+  'driver_en_route',
+  'in_progress',
+  'completed',
+  'cancelled',
+];
+const PAYMENT_STATUS_VALUES: PaymentStatus[] = ['pending', 'rider_claimed', 'paid', 'disputed', 'failed'];
+
 /** Ride list/detail never expose raw phone numbers — only this masked form. */
 function maskPhone(phone?: string | null): string {
   const digits = (phone ?? '').replace(/\D/g, '');
@@ -137,6 +148,11 @@ export class AdminService implements OnApplicationBootstrap {
       licenseNumber: d.drivingLicenceNumber ?? null,
       submittedAt,
       reviewedAt: d.reviewedAt ?? null,
+      // Spec §3.2: list rows show rating/trips + an online dot for active
+      // drivers — plain entity columns, no extra queries.
+      rating: Number(d.rating),
+      totalTrips: d.totalTrips,
+      isOnline: d.isOnline,
     };
   }
 
@@ -482,6 +498,22 @@ export class AdminService implements OnApplicationBootstrap {
     };
   }
 
+  /** Validates a comma-separated filter against a whitelist (400 on unknown). */
+  private parseFilterList<T extends string>(raw: string, allowed: readonly T[], label: string): T[] {
+    const values = raw
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean) as T[];
+    if (values.length === 0) {
+      throw new BadRequestException(`Invalid ${label} filter`);
+    }
+    const invalid = values.filter((v) => !allowed.includes(v));
+    if (invalid.length > 0) {
+      throw new BadRequestException(`Invalid ${label} filter: ${invalid.join(', ')}`);
+    }
+    return values;
+  }
+
   /** Whitelisted ride row for every list surface (never phones, never entities). */
   private toRideSummary(r: RideEntity) {
     return {
@@ -507,11 +539,12 @@ export class AdminService implements OnApplicationBootstrap {
   }
 
   // GET /admin/rides — filters (status/payment/date/search) + pagination.
-  // Response exposes names/addresses/fare/payment flags only — phone numbers
-  // are never returned in ride lists (and `q` never matches against them).
+  // `status` / `paymentStatus` accept comma-separated groups ("Active" and
+  // "Unpaid" chips). Response exposes names/addresses/fare/payment flags only
+  // — phone numbers are never returned in ride lists (nor matched by `q`).
   async listRides(filters: {
-    status?: RideStatus;
-    paymentStatus?: PaymentStatus;
+    status?: string;
+    paymentStatus?: string;
     from?: string;
     to?: string;
     q?: string;
@@ -529,9 +562,15 @@ export class AdminService implements OnApplicationBootstrap {
       .leftJoinAndSelect('r.driver', 'driver')
       .leftJoinAndSelect('driver.user', 'driverUser');
 
-    if (filters.status) qb.andWhere('r.status = :status', { status: filters.status });
+    if (filters.status) {
+      qb.andWhere('r.status IN (:...statuses)', {
+        statuses: this.parseFilterList(filters.status, RIDE_STATUS_VALUES, 'status'),
+      });
+    }
     if (filters.paymentStatus) {
-      qb.andWhere('r.paymentStatus = :paymentStatus', { paymentStatus: filters.paymentStatus });
+      qb.andWhere('r.paymentStatus IN (:...paymentStatuses)', {
+        paymentStatuses: this.parseFilterList(filters.paymentStatus, PAYMENT_STATUS_VALUES, 'paymentStatus'),
+      });
     }
     if (filters.from) qb.andWhere('r.createdAt >= :from', { from: new Date(filters.from) });
     if (filters.to) qb.andWhere('r.createdAt <= :to', { to: new Date(filters.to) });

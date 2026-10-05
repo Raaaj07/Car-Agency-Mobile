@@ -104,7 +104,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
     const token = tokens?.accessToken;
     if (token) {
-      connectSocket(token, role === 'admin' ? 'rider' : (role as 'rider' | 'driver'));
+      // A-14: admins keep their own role — the gateway joins them to the
+      // `admins` room (new-application pushes) instead of masquerading as riders.
+      connectSocket(token, role);
     }
   },
 
@@ -184,7 +186,7 @@ export const useAuthStore = create<AuthState>((set) => ({
           role,
           activeMode: me.driverStatus === 'approved' && mode === 'driver' ? 'driver' : 'rider',
         });
-        connectSocket(access, role === 'admin' ? 'rider' : (role as 'rider' | 'driver'));
+        connectSocket(access, role);
       } catch (e) {
         // Network failure (no response) keeps stored tokens and shows the
         // offline retry screen. A 401 after refresh already logged out, which

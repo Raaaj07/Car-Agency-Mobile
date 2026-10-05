@@ -1,5 +1,4 @@
 import { NavigatorScreenParams } from '@react-navigation/native';
-import { VehicleOption } from '../store/rideStore';
 
 // Onboarding Stack Types — sign-in only. Profile completion is a root-level
 // gate (AppNavigator) driven by server user.profileComplete.
@@ -81,28 +80,37 @@ export type DriverDashboardStackParamList = {
   RideAvailableAgain: undefined;
 };
 
-// Admin tabs (visible only when user.role === 'admin').
-// NOTE: Phase 4 replaces these values with the new stacks below
-// (OverviewStack/DriversStack/RidesStack/Account) when the new console is
-// swapped in; kept as-is until then so the live screens still type-check.
+// Admin tabs (visible only when user.role === 'admin') — Phase 4 console:
+// Overview + Drivers (applications) + Rides + Account, each list with its own
+// stack so detail screens push over the list and hide the floating tab bar.
 export type AdminTabParamList = {
-  ApplicationsTab: undefined;
-  DriversTab: undefined;
-  RidesTab: undefined;
-  AdminAccountTab: undefined;
+  overview: NavigatorScreenParams<AdminOverviewStackParamList>;
+  drivers: NavigatorScreenParams<AdminDriversStackParamList>;
+  rides: NavigatorScreenParams<AdminRidesStackParamList>;
+  account: undefined;
 };
 
-// ── New admin console (Phase 3 foundation; wired in Phase 4) ──
+// ── Admin console stacks ──
 export type AdminOverviewStackParamList = {
   AdminOverview: undefined;
 };
 
+/** Initial segment for the Drivers list (Overview stat-card tap-through). */
+export type AdminDriversSegment = 'pending' | 'approved' | 'suspended' | 'rejected';
+
 export type AdminDriversStackParamList = {
-  AdminDrivers: undefined;
+  AdminDrivers: { segment?: AdminDriversSegment } | undefined;
   AdminDriverDetail: { driverId: string };
 };
 
+/** Initial filters for the Rides list (Overview stat-card tap-through). */
+export type AdminRidesPreset = {
+  status?: 'active';
+  payment?: 'unpaid';
+  date?: 'today';
+};
+
 export type AdminRidesStackParamList = {
-  AdminRides: undefined;
+  AdminRides: AdminRidesPreset | undefined;
   AdminRideDetail: { rideId: string };
 };

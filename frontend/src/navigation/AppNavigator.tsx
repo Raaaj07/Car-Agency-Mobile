@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator, Text } from 'react-native';
+import { View, ActivityIndicator, Text, Alert } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './types';
 
 import { OnboardingNavigator } from './OnboardingNavigator';
 import { MainTabNavigator } from './MainTabNavigator';
-import { AdminTabNavigator } from './AdminTabNavigator';
+import { AdminNavigator } from './AdminNavigator';
 
 import { CancelRideConfirmationScreen } from '../screens/shared/CancelRideConfirmationScreen';
 import { RideCancelledScreen } from '../screens/shared/RideCancelledScreen';
@@ -18,7 +18,6 @@ import { useRideStore } from '../store/rideStore';
 import { ridesApi } from '../api/rides';
 import { authApi } from '../api/auth';
 import { getApiError } from '../api/client';
-import { Alert } from 'react-native';
 import { colors } from '../theme/theme';
 import { Button } from '../components/primitives/Button';
 
@@ -51,10 +50,10 @@ export const AppNavigator: React.FC = () => {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background, padding: 32, gap: 12 }}>
         <Text style={{ fontSize: 18, fontWeight: '700', color: colors.textPrimary, textAlign: 'center' }}>
-          You're offline
+          {`You're offline`}
         </Text>
         <Text style={{ fontSize: 14, color: colors.textMuted, textAlign: 'center' }}>
-          Couldn't reach the server. Check your connection and try again — you're still signed in on this device.
+          {`Couldn't reach the server. Check your connection and try again — you're still signed in on this device.`}
         </Text>
         <Button title="Retry" onPress={() => restoreSession()} />
       </View>
@@ -93,7 +92,7 @@ export const AppNavigator: React.FC = () => {
           <>
             {/* Admins get the review console; everyone else gets the unified app. */}
             {user?.role === 'admin' ? (
-              <Stack.Screen name="Admin" component={AdminTabNavigator} />
+              <Stack.Screen name="Admin" component={AdminNavigator} />
             ) : (
               <Stack.Screen name="Main" component={MainTabNavigator} />
             )}

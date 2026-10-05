@@ -22,6 +22,10 @@ export interface ApplicationSummary {
   licenseNumber: string | null;
   submittedAt: string;
   reviewedAt: string | null;
+  /** Active-driver extras for list rows (spec §3.2); absent on detail payloads. */
+  rating?: number;
+  totalTrips?: number;
+  isOnline?: boolean;
 }
 
 export interface ApplicationDetail extends ApplicationSummary {
@@ -178,8 +182,13 @@ export interface ListApplicationsParams {
 }
 
 export interface ListRidesParams {
-  status?: RideStatus;
-  paymentStatus?: PaymentStatus;
+  /**
+   * Comma-list filters (backend whitelists each value and 400s on unknowns):
+   * pass several statuses at once, e.g. active = requested+matched+
+   * driver_en_route+in_progress, unpaid = pending+rider_claimed+disputed+failed.
+   */
+  status?: RideStatus | RideStatus[];
+  paymentStatus?: PaymentStatus | PaymentStatus[];
   from?: string;
   to?: string;
   q?: string;
@@ -252,8 +261,16 @@ export const adminApi = {
     (
       await api.get<Page<AdminRideSummary>>('/admin/rides', {
         params: {
-          ...(params.status ? { status: params.status } : {}),
-          ...(params.paymentStatus ? { paymentStatus: params.paymentStatus } : {}),
+          ...(params.status
+            ? { status: Array.isArray(params.status) ? params.status.join(',') : params.status }
+            : {}),
+          ...(params.paymentStatus
+            ? {
+                paymentStatus: Array.isArray(params.paymentStatus)
+                  ? params.paymentStatus.join(',')
+                  : params.paymentStatus,
+              }
+            : {}),
           ...(params.from ? { from: params.from } : {}),
           ...(params.to ? { to: params.to } : {}),
           ...(params.q ? { q: params.q } : {}),
