@@ -14,6 +14,7 @@ import { PaymentEntity } from '../payments/entities/payment.entity';
 import { PaymentProvider } from '../payments/providers/payment-provider.interface';
 import { PromosService } from '../promos/promos.service';
 import { RidesService } from '../rides/rides.service';
+import { RouteDistanceService } from '../rides/route-distance.service';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { RidesGateway } from '../rides/gateway/rides.gateway';
@@ -252,6 +253,7 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       config,
       { log: jest.fn().mockResolvedValue(undefined) } as unknown as AdminAuditService,
       { clearPendingTimers: jest.fn() } as unknown as RidesService,
+      { routedKm: jest.fn().mockResolvedValue(10) } as unknown as RouteDistanceService,
     );
     ridesService = new RidesService(
       ridesRepo as unknown as Repository<RideEntity>,
@@ -260,6 +262,7 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       gateway as unknown as RidesGateway,
       config,
       { resolveDiscount: jest.fn().mockResolvedValue(0), discountFor: jest.fn().mockReturnValue(0) } as unknown as PromosService,
+      { routedKm: jest.fn().mockResolvedValue(10) } as unknown as RouteDistanceService,
     );
     paymentsService = new PaymentsService(
       paymentsRepo as unknown as Repository<PaymentEntity>,

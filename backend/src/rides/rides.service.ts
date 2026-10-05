@@ -14,7 +14,6 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as crypto from 'crypto';
 import { EntityManager, In, IsNull, LessThan, QueryRunner, Repository } from 'typeorm';
-import { haversineKm } from '../common/geo-utils';
 import { toAvatarUrl } from '../common/avatar-url';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
@@ -26,6 +25,7 @@ import { SubmitReviewDto } from './dto/submit-review.dto';
 import { VerifyPickupOtpDto } from './dto/verify-pickup-otp.dto';
 import { RideEntity } from './entities/ride.entity';
 import { computeFareBreakdown, computeNumericPrice } from './fare-catalog';
+import { RouteDistanceService } from './route-distance.service';
 import { RidesGateway } from './gateway/rides.gateway';
 import { PromosService } from '../promos/promos.service';
 
@@ -62,6 +62,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly gateway: RidesGateway,
     private readonly config: ConfigService,
     private readonly promosService: PromosService,
+    private readonly routes: RouteDistanceService,
   ) {
     this.requestTimeoutSeconds = this.config.get<number>('RIDE_REQUEST_TIMEOUT_SECONDS') ?? 15;
     this.searchTimeoutSeconds = this.config.get<number>('RIDE_SEARCH_TIMEOUT_SECONDS') ?? 90;
@@ -362,7 +363,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (ownDriver?.isOnline) {
       throw new BadRequestException('Go offline as a driver before booking a ride.');
     }
-    const distanceKm = haversineKm(dto.pickup, dto.dropoff);
+    // R-7: fare is based on the ROUTED road distance (Mapbox, 3 s timeout,
+    // straight-line x1.3 fallback) — straight-line under-counts detours.
+    const distanceKm = await this.routes.routedKm(dto.pickup, dto.dropoff);
     const numericPrice = computeNumericPrice(dto.vehicleType, distanceKm);
     const discount = dto.promoCode ? await this.promosService.resolveDiscount(dto.promoCode, riderId) : 0;
     const fareBreakdown = computeFareBreakdown(numericPrice, discount);
@@ -731,10 +734,11 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   // PATCH /rides/:id/complete — calculates final fare.
-  // R-7: driver-supplied distance is NOT trusted beyond 1.5x the booking
-  // estimate (2 km absolute floor for short trips, 500 km hard cap). The
-  // admin ride detail flags rides whose recorded distance still exceeds
-  // 1.5x the straight-line route, so an inflated claim is visible to review.
+  // R-7: driver-supplied distance is NOT trusted beyond 1.25x the booking
+  // estimate, which is the ROUTED distance recorded at booking (2 km absolute
+  // floor for short trips, 500 km hard cap). The admin ride detail flags rides
+  // whose recorded distance still exceeds 1.5x the routed route, so an
+  // inflated claim is visible to review.
   // R-4: the whole transition runs under the row lock (cancel can no longer
   // interleave between the status check and the fare write).
   async complete(rideId: string, driverUserId: string, dto: CompleteRideDto): Promise<any> {
@@ -750,7 +754,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       if (!Number.isFinite(finalDistanceKm) || finalDistanceKm <= 0) {
         throw new BadRequestException('Invalid trip distance');
       }
-      const clampAt = Math.min(Math.max(estimateKm * 1.5, 2), 500);
+      const clampAt = Math.min(Math.max(estimateKm * 1.25, 2), 500);
       finalDistanceKm = Math.min(finalDistanceKm, clampAt);
       const numericPrice = computeNumericPrice(ride.vehicleType, finalDistanceKm);
       const discount = ride.promoCode ? this.promosService.discountFor(ride.promoCode) : 0;

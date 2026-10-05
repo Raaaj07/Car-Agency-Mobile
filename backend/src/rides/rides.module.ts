@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { HttpModule } from '@nestjs/axios';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -9,10 +10,12 @@ import { RideEntity } from './entities/ride.entity';
 import { RidesGateway } from './gateway/rides.gateway';
 import { RidesController } from './rides.controller';
 import { RidesService } from './rides.service';
+import { RouteDistanceService } from './route-distance.service';
 import { PromosModule } from '../promos/promos.module';
 
 @Module({
   imports: [
+    HttpModule,
     TypeOrmModule.forFeature([RideEntity, DriverEntity, UserEntity]),
     DriversModule,
     PromosModule,
@@ -25,7 +28,7 @@ import { PromosModule } from '../promos/promos.module';
     }),
   ],
   controllers: [RidesController],
-  providers: [RidesService, RidesGateway],
-  exports: [RidesService, RidesGateway, TypeOrmModule],
+  providers: [RidesService, RidesGateway, RouteDistanceService],
+  exports: [RidesService, RidesGateway, RouteDistanceService, TypeOrmModule],
 })
 export class RidesModule {}

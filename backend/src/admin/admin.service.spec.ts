@@ -11,6 +11,7 @@ import { GeoService } from '../drivers/geo.service';
 import { StorageService } from '../drivers/storage.service';
 import { RidesGateway } from '../rides/gateway/rides.gateway';
 import { RidesService } from '../rides/rides.service';
+import { RouteDistanceService } from '../rides/route-distance.service';
 
 /**
  * A-2 (status machine) and A-3 (no orphaned rides on suspend):
@@ -27,6 +28,7 @@ describe('AdminService status machine (A-2, A-3)', () => {
   let audit: Record<string, jest.Mock>;
   let ridesSvc: Record<string, jest.Mock>;
   let payments: Record<string, jest.Mock>;
+  let routes: Record<string, jest.Mock>;
 
   const SUSPEND_REASON = 'Repeated rider cancellations reported';
   const suspendOpts = { reason: SUSPEND_REASON };
@@ -69,7 +71,9 @@ describe('AdminService status machine (A-2, A-3)', () => {
       list: jest.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 }),
     };
     ridesSvc = { clearPendingTimers: jest.fn() };
-    payments = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
+    payments = { update: jest.fn().mockResolvedValue({ affected: 1 }), find: jest.fn().mockResolvedValue([]) };
+    // R-7: routed distance for the booking estimate / outlier flag.
+    routes = { routedKm: jest.fn().mockResolvedValue(10) };
 
     service = new AdminService(
       {} as unknown as Repository<UserEntity>,
@@ -82,6 +86,7 @@ describe('AdminService status machine (A-2, A-3)', () => {
       { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
       audit as unknown as AdminAuditService,
       ridesSvc as unknown as RidesService,
+      routes as unknown as RouteDistanceService,
     );
   });
 
@@ -366,6 +371,56 @@ describe('AdminService status machine (A-2, A-3)', () => {
         ConflictException,
       );
       expect(rides.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // R-7: the outlier flag is based on the ROUTED distance (Mapbox via
+  // RouteDistanceService, straight-line x1.3 fallback), not straight-line.
+  describe('ride detail distance outlier (R-7)', () => {
+    const rideFixture = (overrides: Record<string, unknown> = {}) => ({
+      id: 'ride-9',
+      status: 'completed',
+      riderId: 'rider-1',
+      driverId: 'drv-1',
+      vehicleType: 'auto',
+      distanceKm: '50.00',
+      pickup: { address: 'Point A', lat: 12.9, lng: 77.6 },
+      dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
+      fareBreakdown: { total: 250 },
+      paymentStatus: 'paid',
+      createdAt: new Date('2026-01-01'),
+      ...overrides,
+    });
+
+    it('flags a recorded distance above routed x1.5', async () => {
+      rides.findOne.mockResolvedValue(rideFixture()); // 50 km recorded
+      routes.routedKm.mockResolvedValue(10); // routed 10 km -> threshold 15
+
+      const detail = await service.getRideDetail('ride-9');
+
+      expect(routes.routedKm).toHaveBeenCalledWith(
+        expect.objectContaining({ lat: 12.9 }),
+        expect.objectContaining({ lat: 13.0 }),
+      );
+      expect(detail.distanceOutlier).toBe(true);
+    });
+
+    it('does not flag a distance within the routed bound', async () => {
+      rides.findOne.mockResolvedValue(rideFixture({ distanceKm: '12.00' }));
+      routes.routedKm.mockResolvedValue(10); // threshold 15
+
+      const detail = await service.getRideDetail('ride-9');
+
+      expect(detail.distanceOutlier).toBe(false);
+    });
+
+    it('never flags rides that are not completed yet', async () => {
+      rides.findOne.mockResolvedValue(rideFixture({ status: 'in_progress' }));
+      routes.routedKm.mockResolvedValue(10);
+
+      const detail = await service.getRideDetail('ride-9');
+
+      expect(detail.distanceOutlier).toBe(false);
     });
   });
 });

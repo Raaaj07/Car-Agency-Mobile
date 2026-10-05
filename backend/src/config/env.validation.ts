@@ -140,6 +140,12 @@ class EnvironmentVariables {
   @IsBooleanString()
   DB_SSL_REJECT_UNAUTHORIZED?: string;
 
+  /** Mapbox Directions token for routed fare distances (R-7); optional —
+   * without it estimates fall back to straight-line x1.3. */
+  @IsOptional()
+  @IsString()
+  MAPBOX_TOKEN?: string;
+
   @IsOptional()
   @IsString()
   GOOGLE_PLACES_API_KEY?: string;
