@@ -1,7 +1,14 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
 /** Every auditable admin action (A-12 / money decisions stay traceable). */
-export type AuditAction = 'approve' | 'reject' | 'suspend' | 'reinstate' | 'ride_cancel' | 'payment_resolve';
+export type AuditAction =
+  | 'approve'
+  | 'reject'
+  | 'suspend'
+  | 'reinstate'
+  | 'ride_cancel'
+  | 'payment_resolve'
+  | 'upi_update';
 
 export type AuditTargetType = 'driver' | 'ride';
 

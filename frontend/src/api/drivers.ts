@@ -24,6 +24,8 @@ export interface DriverProfile {
   drivingLicenceImageUrl?: string | null;
   rcNumber?: string | null;
   rcImageUrl?: string | null;
+  /** D-1: payee VPA the payment QR pays to (null until the driver sets it). */
+  upiVpa?: string | null;
 }
 
 export interface NearbyDriver {
@@ -88,4 +90,7 @@ export const driversApi = {
   nearby: async (lat: number, lng: number, vehicleType?: string): Promise<NearbyDriver[]> =>
     (await api.get<NearbyDriver[]>('/drivers/nearby', { params: { lat, lng, vehicleType } })).data,
   getMyProfile: async (): Promise<DriverProfile | null> => (await api.get('/drivers/me')).data,
+  /** D-1: store the payee VPA server-side (approved drivers, audited). */
+  setUpiVpa: async (vpa: string): Promise<{ upiVpa: string }> =>
+    (await api.patch('/drivers/me/upi-vpa', { vpa })).data,
 };

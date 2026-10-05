@@ -8,6 +8,7 @@ import { NearbyDriversQueryDto } from './dto/nearby-drivers-query.dto';
 import { ApplyDriverDto } from './dto/apply-driver.dto';
 import { UpdateDriverLocationDto } from './dto/update-driver-location.dto';
 import { UpdateDriverStatusDto } from './dto/update-driver-status.dto';
+import { SetUpiVpaDto } from './dto/set-upi-vpa.dto';
 import { ApprovedDriverGuard } from './guards/approved-driver.guard';
 import { DriversService } from './drivers.service';
 import { DocumentKind, StorageService, StoredDocument } from './storage.service';
@@ -110,6 +111,13 @@ export class DriversController {
   @Get('me')
   getMyProfile(@CurrentUser() user: AuthenticatedUser) {
     return this.drivers.tryGetMyProfile(user.userId);
+  }
+
+  // D-1: payee VPA for the payment QR (approved only, validated, audited).
+  @UseGuards(JwtAuthGuard, ApprovedDriverGuard)
+  @Patch('me/upi-vpa')
+  setMyUpiVpa(@CurrentUser() user: AuthenticatedUser, @Body() dto: SetUpiVpaDto) {
+    return this.drivers.setMyUpiVpa(user.userId, dto.vpa);
   }
 
   // Matches TurnByTurnNavigationScreen's periodic location pings (approved only).

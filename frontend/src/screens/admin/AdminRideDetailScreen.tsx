@@ -191,6 +191,9 @@ export const AdminRideDetailScreen: React.FC<Props> = ({ navigation, route }) =>
             <StatusPill kind="payment" value={detail.paymentStatus} />
             <Pill label={METHOD_LABEL[detail.paymentMethod]} variant="outline" />
             <Pill label={detail.vehicleType} variant="outline" />
+            {detail.distanceOutlier ? (
+              <Pill label="Distance inflated" variant="warning" />
+            ) : null}
           </View>
           <Text style={styles.route} numberOfLines={2}>
             {detail.pickupAddress || 'Pickup'} → {detail.dropoffAddress || 'Drop-off'}
@@ -297,6 +300,9 @@ export const AdminRideDetailScreen: React.FC<Props> = ({ navigation, route }) =>
                   {detail.driver.rating != null ? `★ ${detail.driver.rating.toFixed(1)} · ` : ''}
                   {maskPhone(detail.driver.phone)}
                 </Text>
+                {detail.driver.upiVpa ? (
+                  <Text style={styles.personMeta}>UPI · {detail.driver.upiVpa}</Text>
+                ) : null}
               </View>
               <Text style={styles.chevron}>›</Text>
             </View>

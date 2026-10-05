@@ -7,7 +7,14 @@ export type PaymentStatus = 'pending' | 'rider_claimed' | 'paid' | 'disputed' | 
 export type PaymentMethod = 'upi' | 'wallet' | 'card' | 'cash';
 export type PaymentMarkedBy = 'rider' | 'driver' | 'admin' | 'provider' | null;
 
-export type AuditAction = 'approve' | 'reject' | 'suspend' | 'reinstate' | 'ride_cancel' | 'payment_resolve';
+export type AuditAction =
+  | 'approve'
+  | 'reject'
+  | 'suspend'
+  | 'reinstate'
+  | 'ride_cancel'
+  | 'payment_resolve'
+  | 'upi_update';
 
 export interface ApplicationSummary {
   id: string;
@@ -135,8 +142,12 @@ export interface AdminRideDetail extends AdminRideSummary {
     carModel: string | null;
     plateNumber: string | null;
     rating: number | null;
+    /** D-1: payee VPA the ride's QR pointed at. */
+    upiVpa: string | null;
   } | null;
   payments: AdminPaymentRow[];
+  /** R-7: recorded distance > 1.5x the straight-line route (inflated claim). */
+  distanceOutlier: boolean;
 }
 
 export interface AdminOverview {

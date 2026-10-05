@@ -1,8 +1,29 @@
-import { Global, Module } from '@nestjs/common';
+import { Global, Inject, Injectable, Logger, Module, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 export const REDIS_CLIENT = 'REDIS_CLIENT';
+
+/**
+ * D-3: quit the shared client on app shutdown so connections don't leak
+ * (dev reloads, tests, rolling deploys). quit() is graceful; disconnect() is
+ * the fallback when the server already went away.
+ */
+@Injectable()
+class RedisLifecycle implements OnApplicationShutdown {
+  private readonly logger = new Logger(RedisLifecycle.name);
+
+  constructor(@Inject(REDIS_CLIENT) private readonly client: Redis) {}
+
+  async onApplicationShutdown(): Promise<void> {
+    try {
+      await this.client.quit();
+    } catch (err) {
+      this.logger.warn(`Redis quit failed, forcing disconnect: ${(err as Error).message}`);
+      this.client.disconnect();
+    }
+  }
+}
 
 @Global()
 @Module({
@@ -32,6 +53,7 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
         return client;
       },
     },
+    RedisLifecycle,
   ],
   exports: [REDIS_CLIENT],
 })

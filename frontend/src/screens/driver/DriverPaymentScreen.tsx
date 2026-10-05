@@ -10,11 +10,12 @@ import { Pill } from '../../components/primitives/Pill';
 import { useRideStore } from '../../store/rideStore';
 import { useAuthStore } from '../../store/authStore';
 import { ridesApi } from '../../api/rides';
+import { driversApi } from '../../api/drivers';
 import { getApiError } from '../../api/client';
 import { buildUpiPaymentUrl, isValidUpiId } from '../../utils/upi';
 
-// The driver's own UPI ID (payee) persists on this device so the QR can be
-// regenerated without retyping it after every trip.
+// D-1: SecureStore is the offline/pre-approval fallback; the profile VPA
+// (driversApi.getMyProfile) is the source of truth the admin can see.
 const UPI_ID_KEY = 'driver_upi_id';
 
 interface Props {
@@ -43,17 +44,33 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
   const [savedVpa, setSavedVpa] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Restore the previously saved payee UPI ID.
+  // Restore the payee UPI ID: profile first (admin-visible, audited), then
+  // whatever this device stored (offline or not yet approved).
   useEffect(() => {
     let mounted = true;
-    SecureStore.getItemAsync(UPI_ID_KEY)
-      .then((value) => {
-        if (mounted && value) {
-          setVpaInput(value);
-          setSavedVpa(value);
+    driversApi
+      .getMyProfile()
+      .then((profile) => profile?.upiVpa?.trim() ?? null)
+      .catch(() => null)
+      .then((serverVpa) => {
+        if (serverVpa) {
+          if (mounted) {
+            setVpaInput(serverVpa);
+            setSavedVpa(serverVpa);
+          }
+          return null;
+        }
+        return SecureStore.getItemAsync(UPI_ID_KEY);
+      })
+      .then((local) => {
+        if (mounted && local) {
+          setVpaInput(local);
+          setSavedVpa(local);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        // Offline — device-stored payee still generates a working QR.
+      });
     return () => {
       mounted = false;
     };
@@ -69,6 +86,13 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
       await SecureStore.setItemAsync(UPI_ID_KEY, trimmed);
     } catch {
       // Non-fatal: QR still works for this session from local state.
+    }
+    // D-1: also persist on the profile so the admin ride detail can verify
+    // what the QR paid to (403 for non-approved drivers — local copy stands).
+    try {
+      await driversApi.setUpiVpa(trimmed);
+    } catch {
+      // Audit/server copy unavailable — collection must not be blocked.
     }
   };
 

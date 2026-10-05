@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { DriversService } from './drivers.service';
 import { DriverEntity } from './entities/driver.entity';
 import { RideEntity } from '../rides/entities/ride.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { GeoService } from './geo.service';
 import { StorageService } from './storage.service';
 import { ApplicationEventsService } from '../common/events/application-events.service';
@@ -45,6 +46,7 @@ describe('DriversService.setStatus (R-3)', () => {
     service = new DriversService(
       drivers as unknown as Repository<DriverEntity>,
       rides as unknown as Repository<RideEntity>,
+      { save: jest.fn(async (row: unknown) => row) } as unknown as Repository<AdminAuditLogEntity>,
       geo as unknown as GeoService,
       { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
       {} as unknown as StorageService,

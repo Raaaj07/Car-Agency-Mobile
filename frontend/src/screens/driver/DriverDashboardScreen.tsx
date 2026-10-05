@@ -16,6 +16,11 @@ import { NotificationBar } from '../../components/primitives/NotificationBar';
 import { useAuthStore } from '../../store/authStore';
 import { connectSocket, disconnectSocket } from '../../lib/socket';
 import { tokenManager } from '../../lib/tokenManager';
+import {
+  promptBackgroundLocationOnce,
+  startDriverBackgroundLocation,
+  stopDriverBackgroundLocation,
+} from '../../lib/locationTask';
 
 const LOCATION_HEARTBEAT_MS = 5000;
 
@@ -51,8 +56,12 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
 
   useEffect(() => {
     if (useAuthStore.getState().justLoggedIn) {
-      setShowWelcome(true);
-      useAuthStore.getState().clearJustLoggedIn();
+      // Async boundary — calling setShowWelcome directly in the effect body
+      // trips react-hooks/set-state-in-effect (setState belongs in a callback).
+      Promise.resolve().then(() => {
+        setShowWelcome(true);
+        useAuthStore.getState().clearJustLoggedIn();
+      });
     }
   }, []);
 
@@ -122,10 +131,18 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   useEffect(() => {
     if (isOnline) {
       startHeartbeat();
+      // D-4: OS-level updates keep the heartbeat alive while the app is
+      // backgrounded/locked (best-effort no-op without background permission
+      // or outside a dev build — foreground interval above still runs).
+      void startDriverBackgroundLocation();
     } else {
       stopHeartbeat();
+      void stopDriverBackgroundLocation();
     }
-    return stopHeartbeat;
+    return () => {
+      stopHeartbeat();
+      void stopDriverBackgroundLocation();
+    };
   }, [isOnline, startHeartbeat, stopHeartbeat]);
 
   // ── Check for a pending offer on mount and on socket reconnect ────────────
@@ -212,6 +229,9 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     try {
       await driversApi.setStatus(nextStatus);
       setIsOnline(nextStatus);
+      // D-4: first go-online of the session nudges for background permission
+      // (non-blocking; registering happens inside once granted).
+      if (nextStatus) void promptBackgroundLocationOnce();
     } catch (error) {
       Alert.alert('Unable to update availability', getApiError(error));
     }

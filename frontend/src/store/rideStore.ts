@@ -188,8 +188,9 @@ export const useRideStore = create<RideState>((set, get) => ({
   applyPromoCode: (code) => {
     const normalized = code.trim().toUpperCase();
     // Only known codes apply; unknown codes are rejected (no silent discount).
+    // PR-1: must match backend PROMOS_CONFIG (discountFor) — Rs 20 for VAZHI20.
     if (normalized === 'VAZHI20') {
-      set({ promoCode: 'VAZHI20', discountAmount: 40 });
+      set({ promoCode: 'VAZHI20', discountAmount: 20 });
     } else if (!normalized) {
       set({ promoCode: null, discountAmount: 0 });
     } else {

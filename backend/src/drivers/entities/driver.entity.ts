@@ -65,17 +65,15 @@ export class DriverEntity {
   @Column({ type: 'text', nullable: true })
   rcImageUrl?: string | null;
 
-  // NOTE: `verificationStatus`/`verificationNote` columns are deprecated and
-  // no longer read anywhere — `status`/`rejectionReason` are the source of
-  // truth. The columns stay in the DB for now (no destructive migration).
-  @Column({ type: 'varchar', length: 20, default: 'approved' })
-  verificationStatus!: 'pending' | 'approved' | 'rejected';
+  // D-1: payee VPA for the payment QR, stored server-side (validated +
+  // approved-only edits + `upi_update` audit) instead of only device
+  // SecureStore, so admins can see what a ride's QR paid to.
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  upiVpa?: string | null;
 
-  @Column({ type: 'varchar', length: 500, nullable: true })
-  verificationNote?: string | null;
-
-  // ── Canonical application lifecycle (Phase 2; verificationStatus kept as a
-  // legacy mirror). One profile per user, so state lives on this row.
+  // Canonical application lifecycle (Phase 2). One profile per user, so
+  // state lives on this row. The deprecated verificationStatus/verificationNote
+  // columns were dropped by migration 1791200002000 (D-2).
   @Column({ type: 'varchar', length: 20, default: 'pending' })
   status!: 'pending' | 'approved' | 'rejected' | 'suspended';
 

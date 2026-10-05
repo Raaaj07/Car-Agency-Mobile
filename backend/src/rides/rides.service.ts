@@ -13,7 +13,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as crypto from 'crypto';
-import { In, IsNull, LessThan, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, LessThan, QueryRunner, Repository } from 'typeorm';
 import { haversineKm } from '../common/geo-utils';
 import { toAvatarUrl } from '../common/avatar-url';
 import { DriversService } from '../drivers/drivers.service';
@@ -47,6 +47,10 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // R-1: max time a ride may sit in `requested` with nobody offering.
   private readonly searchTimeoutSeconds: number;
   private readonly logger = new Logger(RidesService.name);
+  // R-5 (documented limitation): offer/search timers are in-memory per
+  // process. A restart is covered by the bootstrap re-arm + stale sweeps, but
+  // >1 backend instance would each hold their own timers — move to a
+  // Redis-backed delayed job (BullMQ or key-expiry) before scaling out.
   private readonly offerTimeouts = new Map<string, NodeJS.Timeout>();
   private readonly searchTimeouts = new Map<string, NodeJS.Timeout>();
   private staleSweepTimer: NodeJS.Timeout | null = null;
@@ -216,6 +220,44 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (timer) {
       clearTimeout(timer);
       this.offerTimeouts.delete(rideId);
+    }
+  }
+
+  /**
+   * R-4: run a ride transition under a pessimistic row lock inside a
+   * transaction (same discipline as accept()/cancel()), so a concurrent
+   * decline/timeout/cancel/complete cannot interleave and double-release a
+   * driver, double-charge, or resurrect a cancelled ride.
+   *
+   * Contract:
+   *  - `fn` receives the locked (relation-less) row; it must save `ride`
+   *    itself if it mutates it (all saves join the same transaction);
+   *  - throwing rolls the transaction back and rethrows;
+   *  - on success the transaction commits before the helper returns, so
+   *    callers do side effects (pushStatus, timer clears, re-matching,
+   *    relation reloads) AFTER `await withRideLock(...)`.
+   */
+  private async withRideLock<T>(
+    rideId: string,
+    fn: (ride: RideEntity, manager: EntityManager) => Promise<T>,
+  ): Promise<T> {
+    const queryRunner: QueryRunner = this.rides.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      const ride = await queryRunner.manager.findOne(RideEntity, {
+        where: { id: rideId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!ride) throw new NotFoundException('Ride not found');
+      const result = await fn(ride, queryRunner.manager);
+      await queryRunner.commitTransaction();
+      return result;
+    } catch (err) {
+      await queryRunner.rollbackTransaction().catch(() => {});
+      throw err;
+    } finally {
+      await queryRunner.release().catch(() => {});
     }
   }
 
@@ -567,141 +609,171 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   // PATCH /rides/:id/decline — driver declines or the 15s timer lapses;
-  // re-offer to the next nearest driver. Validated before the timer is
-  // cleared so a failed decline keeps the offer alive.
+  // re-offer to the next nearest driver. R-4: validation + transition run
+  // under the ride row lock; the offer timer is cleared only after the
+  // commit so a failed decline keeps the offer alive.
   async decline(rideId: string, driverUserId: string): Promise<any> {
-    const ride = await this.getOrThrow(rideId);
     const driver = await this.drivers.findByUserId(driverUserId);
-
-    if (ride.status !== 'requested' || ride.driverId !== driver.id) {
-      throw new BadRequestException('Nothing to decline');
-    }
+    const locked = await this.withRideLock(rideId, async (ride, manager) => {
+      if (ride.status !== 'requested' || ride.driverId !== driver.id) {
+        throw new BadRequestException('Nothing to decline');
+      }
+      ride.driverId = null;
+      ride.declinedDriverIds = [...(ride.declinedDriverIds || []), driver.id];
+      await manager.save(ride);
+      return ride;
+    });
 
     this.clearOfferTimeout(rideId);
     await this.drivers.setAvailability(driver.id, true);
-    ride.driverId = null;
-    ride.declinedDriverIds = [...(ride.declinedDriverIds || []), driver.id];
-    await this.rides.save(ride);
-    await this.matchNearestDriver(ride);
+    await this.matchNearestDriver(locked);
     const updated = await this.getOrThrow(rideId);
     return this.toDriverView(updated);
   }
 
   // Driver begins navigating toward the pickup point (TurnByTurnNavigationScreen).
+  // R-4: locked transition — a concurrent cancel can no longer be overwritten
+  // by a stale `driver_en_route` write.
   async markEnRoute(rideId: string, driverUserId: string): Promise<any> {
-    const ride = await this.getOrThrow(rideId);
-    await this.assertOwningDriver(ride, driverUserId);
-
-    if (ride.status !== 'matched') {
-      throw new BadRequestException(`Ride is ${ride.status}, cannot mark en route`);
-    }
-    ride.status = 'driver_en_route';
-    await this.rides.save(ride);
-    this.pushStatus(ride);
-    return this.toDriverView(ride);
+    await this.withRideLock(rideId, async (ride, manager) => {
+      await this.assertOwningDriver(ride, driverUserId);
+      if (ride.status !== 'matched') {
+        throw new BadRequestException(`Ride is ${ride.status}, cannot mark en route`);
+      }
+      ride.status = 'driver_en_route';
+      await manager.save(ride);
+    });
+    const fresh = await this.getOrThrow(rideId);
+    this.pushStatus(fresh);
+    return this.toDriverView(fresh);
   }
 
   // PATCH /rides/:id/start — driver has arrived and is ready to collect the
   // pickup OTP from the rider (DriverEnRouteScreen's "Driver Arrived" action).
   async start(rideId: string, driverUserId: string): Promise<{ ride: any; readyForOtp: true }> {
-    const ride = await this.getOrThrow(rideId);
-    await this.assertOwningDriver(ride, driverUserId);
-
-    if (ride.status !== 'driver_en_route' && ride.status !== 'matched') {
-      throw new BadRequestException(`Ride is ${ride.status}, cannot start pickup`);
-    }
-    if (ride.status === 'matched') {
-      ride.status = 'driver_en_route';
-      await this.rides.save(ride);
-      this.pushStatus(ride);
-    }
-    return { ride: this.toDriverView(ride), readyForOtp: true };
+    const mutated = await this.withRideLock(rideId, async (ride, manager) => {
+      await this.assertOwningDriver(ride, driverUserId);
+      if (ride.status !== 'driver_en_route' && ride.status !== 'matched') {
+        throw new BadRequestException(`Ride is ${ride.status}, cannot start pickup`);
+      }
+      if (ride.status === 'matched') {
+        ride.status = 'driver_en_route';
+        await manager.save(ride);
+        return true;
+      }
+      return false;
+    });
+    const fresh = await this.getOrThrow(rideId);
+    if (mutated) this.pushStatus(fresh);
+    return { ride: this.toDriverView(fresh), readyForOtp: true };
   }
 
   // PATCH /rides/:id/verify-pickup-otp — confirms the code shown on
   // YouGotTheRideScreen; on success the trip formally begins.
+  // R-4: the lock serializes the attempt counter and the status flip; failed
+  // attempts COMMIT their counter (returned as a result, thrown by the caller
+  // after the commit so the rollback cannot swallow the increment).
   async verifyPickupOtp(rideId: string, driverUserId: string, dto: VerifyPickupOtpDto): Promise<any> {
-    const ride = await this.getOrThrow(rideId);
-    await this.assertOwningDriver(ride, driverUserId);
+    const outcome = await this.withRideLock(rideId, async (ride, manager) => {
+      await this.assertOwningDriver(ride, driverUserId);
 
-    if (ride.otpLockedUntil && new Date() < ride.otpLockedUntil) {
-      const waitSeconds = Math.ceil((ride.otpLockedUntil.getTime() - Date.now()) / 1000);
-      throw new HttpException(
-        `Too many incorrect OTP attempts. Locked for ${Math.ceil(waitSeconds / 60)} more minute(s).`,
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
-
-    if (ride.status !== 'driver_en_route') {
-      throw new BadRequestException(`Ride is ${ride.status}, cannot verify pickup OTP`);
-    }
-
-    const expected = ride.pickupOtp ?? '';
-    const bufA = Buffer.from(dto.otp);
-    const bufB = Buffer.from(expected);
-    const isMatch = bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
-
-    if (!isMatch) {
-      ride.otpAttempts = (ride.otpAttempts || 0) + 1;
-      this.logger.warn(`Ride ${rideId} incorrect OTP attempt ${ride.otpAttempts}/5`);
-      if (ride.otpAttempts >= 5) {
-        ride.otpLockedUntil = new Date(Date.now() + 5 * 60 * 1000);
-        ride.otpAttempts = 0;
-        await this.rides.save(ride);
+      if (ride.otpLockedUntil && new Date() < ride.otpLockedUntil) {
+        const waitSeconds = Math.ceil((ride.otpLockedUntil.getTime() - Date.now()) / 1000);
         throw new HttpException(
-          'Too many incorrect OTP attempts. Verification locked for 5 minutes.',
+          `Too many incorrect OTP attempts. Locked for ${Math.ceil(waitSeconds / 60)} more minute(s).`,
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
-      await this.rides.save(ride);
-      throw new BadRequestException(`Incorrect pickup OTP. ${5 - ride.otpAttempts} attempts remaining.`);
+
+      if (ride.status !== 'driver_en_route') {
+        throw new BadRequestException(`Ride is ${ride.status}, cannot verify pickup OTP`);
+      }
+
+      const expected = ride.pickupOtp ?? '';
+      const bufA = Buffer.from(dto.otp);
+      const bufB = Buffer.from(expected);
+      const isMatch = bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+
+      if (!isMatch) {
+        ride.otpAttempts = (ride.otpAttempts || 0) + 1;
+        this.logger.warn(`Ride ${rideId} incorrect OTP attempt ${ride.otpAttempts}/5`);
+        if (ride.otpAttempts >= 5) {
+          ride.otpLockedUntil = new Date(Date.now() + 5 * 60 * 1000);
+          ride.otpAttempts = 0;
+          await manager.save(ride);
+          return { result: 'locked' as const };
+        }
+        await manager.save(ride);
+        return { result: 'wrong' as const, attemptsLeft: 5 - ride.otpAttempts };
+      }
+
+      ride.otpAttempts = 0;
+      ride.otpLockedUntil = null;
+      ride.status = 'in_progress';
+      ride.startedAt = new Date();
+      await manager.save(ride);
+      return { result: 'ok' as const };
+    });
+
+    if (outcome.result === 'locked') {
+      throw new HttpException(
+        'Too many incorrect OTP attempts. Verification locked for 5 minutes.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    if (outcome.result === 'wrong') {
+      throw new BadRequestException(`Incorrect pickup OTP. ${outcome.attemptsLeft} attempts remaining.`);
     }
 
-    ride.otpAttempts = 0;
-    ride.otpLockedUntil = null;
-    ride.status = 'in_progress';
-    ride.startedAt = new Date();
-    await this.rides.save(ride);
-    this.pushStatus(ride);
-    return this.toDriverView(ride);
+    const fresh = await this.getOrThrow(rideId);
+    this.pushStatus(fresh);
+    return this.toDriverView(fresh);
   }
 
   // PATCH /rides/:id/complete — calculates final fare.
-  // Driver-supplied distance is clamped: it may exceed the estimate by at most
-  // 3x (detours) and never exceed 500 km (fare bomb guard).
+  // R-7: driver-supplied distance is NOT trusted beyond 1.5x the booking
+  // estimate (2 km absolute floor for short trips, 500 km hard cap). The
+  // admin ride detail flags rides whose recorded distance still exceeds
+  // 1.5x the straight-line route, so an inflated claim is visible to review.
+  // R-4: the whole transition runs under the row lock (cancel can no longer
+  // interleave between the status check and the fare write).
   async complete(rideId: string, driverUserId: string, dto: CompleteRideDto): Promise<any> {
-    const ride = await this.getOrThrow(rideId);
-    await this.assertOwningDriver(ride, driverUserId);
+    const { driverId, dropoff } = await this.withRideLock(rideId, async (ride, manager) => {
+      await this.assertOwningDriver(ride, driverUserId);
 
-    if (ride.status !== 'in_progress') {
-      throw new BadRequestException(`Ride is ${ride.status}, cannot complete`);
-    }
+      if (ride.status !== 'in_progress') {
+        throw new BadRequestException(`Ride is ${ride.status}, cannot complete`);
+      }
 
-    const estimateKm = Number(ride.distanceKm ?? 0);
-    let finalDistanceKm = dto.actualDistanceKm ?? estimateKm;
-    if (!Number.isFinite(finalDistanceKm) || finalDistanceKm <= 0) {
-      throw new BadRequestException('Invalid trip distance');
-    }
-    finalDistanceKm = Math.min(finalDistanceKm, Math.max(estimateKm * 3, 5), 500);
-    const numericPrice = computeNumericPrice(ride.vehicleType, finalDistanceKm);
-    const discount = ride.promoCode ? this.promosService.discountFor(ride.promoCode) : 0;
-    ride.fareBreakdown = computeFareBreakdown(numericPrice, discount);
-    ride.distanceKm = finalDistanceKm.toFixed(2);
-    ride.status = 'completed';
-    ride.completedAt = new Date();
-    await this.rides.save(ride);
+      const estimateKm = Number(ride.distanceKm ?? 0);
+      let finalDistanceKm = dto.actualDistanceKm ?? estimateKm;
+      if (!Number.isFinite(finalDistanceKm) || finalDistanceKm <= 0) {
+        throw new BadRequestException('Invalid trip distance');
+      }
+      const clampAt = Math.min(Math.max(estimateKm * 1.5, 2), 500);
+      finalDistanceKm = Math.min(finalDistanceKm, clampAt);
+      const numericPrice = computeNumericPrice(ride.vehicleType, finalDistanceKm);
+      const discount = ride.promoCode ? this.promosService.discountFor(ride.promoCode) : 0;
+      ride.fareBreakdown = computeFareBreakdown(numericPrice, discount);
+      ride.distanceKm = finalDistanceKm.toFixed(2);
+      ride.status = 'completed';
+      ride.completedAt = new Date();
+      await manager.save(ride);
+      return { driverId: ride.driverId!, dropoff: ride.dropoff };
+    });
 
-    await this.drivers.setAvailability(ride.driverId!, true);
-    const driver = await this.drivers.findById(ride.driverId!);
+    await this.drivers.setAvailability(driverId, true);
+    const driver = await this.drivers.findById(driverId);
     await this.geo.upsertDriverLocation(
       driver.id,
       driver.vehicleType,
-      driver.location?.coordinates[1] ?? ride.dropoff.lat,
-      driver.location?.coordinates[0] ?? ride.dropoff.lng,
+      driver.location?.coordinates[1] ?? dropoff?.lat ?? 0,
+      driver.location?.coordinates[0] ?? dropoff?.lng ?? 0,
     );
 
-    this.pushStatus(ride);
-    return this.toDriverView(ride);
+    const fresh = await this.getOrThrow(rideId);
+    this.pushStatus(fresh);
+    return this.toDriverView(fresh);
   }
 
   // PATCH /rides/:id/payment-received — DriverPaymentScreen's "Amount

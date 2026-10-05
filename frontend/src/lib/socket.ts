@@ -33,7 +33,12 @@ export function connectSocket(token: string, role?: 'rider' | 'driver' | 'admin'
   // API_URL is .../api/v1 — strip only that suffix; fall back to raw URL.
   const baseUrl = API_URL.endsWith('/api/v1') ? API_URL.slice(0, -'/api/v1'.length) : API_URL;
   const socket = io(`${baseUrl}/realtime`, {
-    auth: { token },
+    // AU-3: auth is a callback, so EVERY (re)connection attempt reads the
+    // live access token from tokenManager instead of the value captured at
+    // first connect — a silent HTTP refresh keeps realtime alive past the
+    // 15-minute access-token expiry instead of failing the handshake on the
+    // next network blip and forcing a logout. `token` is the bootstrap value.
+    auth: (cb) => cb({ token: tokenManager.getAccessToken() ?? token }),
     transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionAttempts: Infinity,
@@ -120,4 +125,16 @@ export function subscribeSocket(listener: (socket: Socket | null) => void): () =
   return () => {
     listeners.delete(listener);
   };
+}
+
+/**
+ * AU-3: called by authStore whenever tokenManager lands new tokens (silent
+ * HTTP refresh). A healthy connection keeps its handshake — the auth callback
+ * above covers its next reconnect — but a dormant socket (network drop while
+ * tokens rotated) is nudged to retry immediately with the fresh token.
+ */
+export function refreshSocketAuth(): void {
+  if (socketInstance && !socketInstance.connected) {
+    socketInstance.connect();
+  }
 }

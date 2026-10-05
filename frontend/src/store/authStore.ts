@@ -1,7 +1,12 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
-import { connectSocket, disconnectSocket } from '../lib/socket';
-import { tokenManager } from '../lib/tokenManager';
+import { connectSocket, disconnectSocket, refreshSocketAuth } from '../lib/socket';
+import {
+  ACCESS_TOKEN_KEY as ACCESS_KEY,
+  REFRESH_TOKEN_KEY as REFRESH_KEY,
+  tokenManager,
+} from '../lib/tokenManager';
+import { stopDriverBackgroundLocation } from '../lib/locationTask';
 
 export type DriverStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'suspended';
 
@@ -16,8 +21,6 @@ export interface User {
   avatar?: string;
 }
 
-const ACCESS_KEY = 'vazhi.accessToken';
-const REFRESH_KEY = 'vazhi.refreshToken';
 const MODE_KEY = 'vazhi.activeMode';
 
 async function saveSecure(key: string, value: string | null) {
@@ -132,6 +135,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       );
     }
     disconnectSocket();
+    // D-4: a signed-out driver must not keep the background location service.
+    void stopDriverBackgroundLocation();
     tokenManager.clear();
     void saveSecure(ACCESS_KEY, null);
     void saveSecure(REFRESH_KEY, null);
@@ -223,4 +228,7 @@ tokenManager.setOnTokensChanged((t) => {
   // only) must never delete the stored refresh token.
   if (t.accessToken != null) void saveSecure(ACCESS_KEY, t.accessToken);
   if (t.refreshToken != null) void saveSecure(REFRESH_KEY, t.refreshToken);
+  // AU-3: silent refresh → any dormant socket reconnects with the new token
+  // (live connections keep their handshake; socket.ts auth is also a callback).
+  refreshSocketAuth();
 });

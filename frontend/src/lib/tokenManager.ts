@@ -2,6 +2,13 @@
 // Exists to break the require cycle:
 //   authStore -> socket -> client -> authStore
 // client.ts and socket.ts use only this module (no store imports).
+//
+// The key names are exported because three runtimes read/write them:
+// the main bundle (authStore), the axios interceptor (client.ts adoption),
+// and the headless location task (lib/locationTask.ts, D-4).
+
+export const ACCESS_TOKEN_KEY = 'vazhi.accessToken';
+export const REFRESH_TOKEN_KEY = 'vazhi.refreshToken';
 
 let accessToken: string | null = null;
 let refreshToken: string | null = null;

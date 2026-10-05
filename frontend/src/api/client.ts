@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { Platform } from 'react-native';
-import { tokenManager } from '../lib/tokenManager';
+import * as SecureStore from 'expo-secure-store';
+import { ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, tokenManager } from '../lib/tokenManager';
 
 // Set EXPO_PUBLIC_API_URL for a physical device (for example,
 // http://192.168.1.20:3000/api/v1). Android emulators can reach the host
@@ -35,7 +36,34 @@ api.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error?.config as any;
-    if (error?.response?.status !== 401 || !original || original._retried) {
+    if (error?.response?.status !== 401 || !original) {
+      return Promise.reject(error);
+    }
+
+    // D-4: the headless location task may have rotated tokens while the app
+    // was backgrounded — refresh tokens are single-use, so our in-memory pair
+    // could be revoked. Adopt the stored pair first (always the newest) before
+    // attempting our own refresh. No-op in the normal case: stored access ==
+    // ours, so nothing changes and the flow below runs as before.
+    if (!original._adoptedTokens) {
+      original._adoptedTokens = true;
+      try {
+        const storedAccess = await SecureStore.getItemAsync(ACCESS_TOKEN_KEY);
+        const storedRefresh = await SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
+        if (storedAccess && storedAccess !== tokenManager.getAccessToken()) {
+          tokenManager.setTokens({
+            accessToken: storedAccess,
+            refreshToken: storedRefresh ?? undefined,
+          });
+          original.headers = { ...(original.headers ?? {}), Authorization: `Bearer ${storedAccess}` };
+          return api(original);
+        }
+      } catch {
+        // SecureStore unavailable — fall through to the standard refresh.
+      }
+    }
+
+    if (original._retried) {
       return Promise.reject(error);
     }
     original._retried = true;

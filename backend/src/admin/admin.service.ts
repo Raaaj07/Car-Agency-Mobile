@@ -11,6 +11,7 @@ import { PaymentStatus, RideEntity, RideStatus } from '../rides/entities/ride.en
 import { PaymentEntity } from '../payments/entities/payment.entity';
 import { RidesService } from '../rides/rides.service';
 import { appTimezone, zonedStartOfDay, zonedStartOfDayAgo } from '../common/timezone';
+import { haversineKm } from '../common/geo-utils';
 import { AdminAuditService } from './admin-audit.service';
 
 type AppStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
@@ -607,6 +608,8 @@ export class AdminService implements OnApplicationBootstrap {
     const paymentRows = await this.payments
       .find({ where: { rideId: r.id }, order: { createdAt: 'DESC' } })
       .catch(() => []);
+    // R-7: straight-line route length, used to flag inflated distance claims.
+    const straightKm = r.pickup && r.dropoff ? haversineKm(r.pickup, r.dropoff) : 0;
 
     return {
       ...this.toRideSummary(r),
@@ -642,8 +645,18 @@ export class AdminService implements OnApplicationBootstrap {
             carModel: r.driver?.carModel ?? null,
             plateNumber: r.driver?.plateNumber ?? null,
             rating: r.driver ? Number(r.driver.rating) : null,
+            // D-1: payee VPA the ride's QR pointed at (admin verification).
+            upiVpa: r.driver?.upiVpa ?? null,
           }
         : null,
+      // R-7: recorded distance vs the straight-line route. >1.5x means the
+      // driver's claim was inflated (fare was clamped at complete(), but the
+      // outlier stays visible for review). Only meaningful post-completion —
+      // pre-complete distanceKm is still the booking estimate.
+      distanceOutlier:
+        r.status === 'completed' &&
+        straightKm > 0 &&
+        Number(r.distanceKm ?? 0) > straightKm * 1.5,
       payments: paymentRows.map((p) => ({
         id: p.id,
         method: p.method,

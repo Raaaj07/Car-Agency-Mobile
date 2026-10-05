@@ -82,7 +82,6 @@ async function main(): Promise<void> {
     if (existing) {
       existing.status = status as DriverEntity['status'];
       if (!pending) {
-        existing.verificationStatus = 'approved';
         existing.rejectionReason = null;
         existing.reviewedAt = new Date();
       }
@@ -97,7 +96,6 @@ async function main(): Promise<void> {
           carModel: 'To be updated',
           plateNumber: 'PENDING',
           status: status as DriverEntity['status'],
-          verificationStatus: pending ? 'pending' : 'approved',
           submittedAt: new Date(),
           reviewedAt: pending ? null : new Date(),
           isOnline: false,

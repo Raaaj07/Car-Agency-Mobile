@@ -15,6 +15,7 @@ import { PaymentProvider } from '../payments/providers/payment-provider.interfac
 import { PromosService } from '../promos/promos.service';
 import { RidesService } from '../rides/rides.service';
 import { RideEntity } from '../rides/entities/ride.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { RidesGateway } from '../rides/gateway/rides.gateway';
 
 /**
@@ -234,6 +235,7 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
     driversService = new DriversService(
       driversRepo as unknown as Repository<DriverEntity>,
       ridesRepo as unknown as Repository<RideEntity>,
+      { save: jest.fn(async (row: unknown) => row) } as unknown as Repository<AdminAuditLogEntity>,
       geo as unknown as GeoService,
       config,
       storage as unknown as StorageService,

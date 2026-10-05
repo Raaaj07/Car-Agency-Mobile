@@ -1,13 +1,18 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { DriverEntity, VehicleType } from './entities/driver.entity';
 import { GeoService, NearbyDriverHit } from './geo.service';
 import { RideEntity } from '../rides/entities/ride.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { StorageService } from './storage.service';
 import { ApplicationEventsService } from '../common/events/application-events.service';
 import { appTimezone, zonedStartOfDay } from '../common/timezone';
+
+// D-1: the payee VPA must look like `name@bank` (kept in sync with the
+// SetUpiVpaDto validator — service-level check too, since scripts call it).
+const UPI_VPA_PATTERN = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z]{2,64}$/;
 
 export interface NearbyDriverResult {
   driverId: string;
@@ -26,10 +31,12 @@ export interface NearbyDriverResult {
 @Injectable()
 export class DriversService {
   private readonly defaultRadiusMeters: number;
+  private readonly logger = new Logger(DriversService.name);
 
     constructor(
       @InjectRepository(DriverEntity) private readonly drivers: Repository<DriverEntity>,
       @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>, // ADD
+      @InjectRepository(AdminAuditLogEntity) private readonly auditLogs: Repository<AdminAuditLogEntity>,
       private readonly geo: GeoService,
       private readonly config: ConfigService,
       private readonly storage: StorageService,
@@ -250,7 +257,46 @@ export class DriversService {
     drivingLicenceImageUrl: driver.drivingLicenceImageUrl ?? null,
     rcNumber: driver.rcNumber ?? null,
     rcImageUrl: driver.rcImageUrl ?? null,
+    // D-1: what the payment QR on this driver's phone pays to.
+    upiVpa: driver.upiVpa ?? null,
   };
+  }
+
+  /**
+   * D-1: store the payee VPA on the profile so the admin ride detail can show
+   * what a ride's QR paid to (SecureStore alone was per-device and invisible
+   * to review). Approved-only (controller guard + status check), validated,
+   * and every change is audited as `upi_update`.
+   */
+  async setMyUpiVpa(userId: string, vpa: string): Promise<{ upiVpa: string }> {
+    const driver = await this.findByUserId(userId);
+    if (driver.status !== 'approved') {
+      throw new ForbiddenException('Only approved drivers can set a payee UPI ID');
+    }
+    const next = vpa.trim();
+    if (!UPI_VPA_PATTERN.test(next)) {
+      throw new BadRequestException('vpa must be a valid UPI ID like name@bank');
+    }
+    const previous = driver.upiVpa ?? null;
+    if (previous === next) return { upiVpa: next }; // idempotent — no audit noise
+
+    driver.upiVpa = next;
+    await this.drivers.save(driver);
+    await this.auditLogs
+      .save({
+        actorUserId: driver.userId,
+        actorName: driver.user?.name ?? null,
+        action: 'upi_update',
+        targetType: 'driver',
+        targetId: driver.id,
+        reason: previous ? 'Changed payee UPI ID' : 'Set payee UPI ID',
+        meta: { previous, next },
+      })
+      .catch((err: Error) => {
+        // The VPA itself is saved; losing an audit row must not fail the edit.
+        this.logger.warn(`upi_update audit write failed for driver ${driver.id}: ${err.message}`);
+      });
+    return { upiVpa: next };
   }
 
   /** Null (not 404) when the user has never registered as a driver. */

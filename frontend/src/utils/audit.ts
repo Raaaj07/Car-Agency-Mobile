@@ -11,4 +11,5 @@ export const AUDIT_ACTION_LABEL: Record<AuditAction, string> = {
   reinstate: 'Reinstated driver',
   ride_cancel: 'Cancelled ride',
   payment_resolve: 'Resolved payment',
+  upi_update: 'Updated payee UPI ID',
 };
