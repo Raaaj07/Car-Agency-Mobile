@@ -1,7 +1,9 @@
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 import { Repository } from 'typeorm';
-import { RidesService } from './rides.service';
+import { FakeRedis } from '../test/fake-redis';
+import { RIDE_TIMERS_KEY, RidesService } from './rides.service';
 import { RideEntity } from './entities/ride.entity';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
@@ -15,12 +17,13 @@ import { RouteDistanceService } from './route-distance.service';
  *        auto-cancels the ride (and the stale sweep covers abandoned ones).
  *  R-2 — a foreign cancel gets 403 WITHOUT killing the offer timer.
  *  P-1 — only the driver can settle a ride; disputed blocks confirmation.
+ *  R-5 — timers live in the Redis `ride:timers` zset: they survive restarts,
+ *        and the atomic ZREM claim gives exactly one winner per timer.
  */
 type RidesInternals = {
   matchNearestDriver(ride: RideEntity): Promise<{ status: 'offered' | 'no_drivers'; candidates: number }>;
-  scheduleOfferTimeout(rideId: string, driverId: string, timeoutMs: number): void;
-  offerTimeouts: Map<string, NodeJS.Timeout>;
-  searchTimeouts: Map<string, NodeJS.Timeout>;
+  scheduleOfferTimeout(rideId: string, timeoutMs: number): Promise<void>;
+  sweepDueTimers(nowMs?: number): Promise<number>;
 };
 
 type QueryRunnerStub = {
@@ -47,6 +50,22 @@ describe('RidesService phase-1 fixes', () => {
   let drivers: Record<string, jest.Mock>;
   let gateway: Record<string, jest.Mock>;
   let queryRunner: QueryRunnerStub;
+  // Shared "Redis server" — extra service instances in a test join the same
+  // FakeRedis to model multiple backend processes (R-5).
+  let fake: FakeRedis;
+
+  const buildService = (): RidesService =>
+    new RidesService(
+      rides as unknown as Repository<RideEntity>,
+      drivers as unknown as DriversService,
+      { removeDriver: jest.fn().mockResolvedValue(undefined), upsertDriverLocation: jest.fn().mockResolvedValue(undefined) } as unknown as GeoService,
+      gateway as unknown as RidesGateway,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      { discountFor: jest.fn().mockReturnValue(0), resolveDiscount: jest.fn().mockResolvedValue(0) } as unknown as PromosService,
+      // R-7: routed distance — tests use a fixed estimate (no HTTP).
+      { routedKm: jest.fn().mockResolvedValue(5) } as unknown as RouteDistanceService,
+      fake as unknown as Redis,
+    );
 
   const requestedRide = (overrides: Record<string, unknown> = {}) => ({
     id: 'r1',
@@ -109,16 +128,8 @@ describe('RidesService phase-1 fixes', () => {
     };
     (rides.manager.connection.createQueryRunner as jest.Mock).mockReturnValue(queryRunner);
 
-    service = new RidesService(
-      rides as unknown as Repository<RideEntity>,
-      drivers as unknown as DriversService,
-      { removeDriver: jest.fn().mockResolvedValue(undefined), upsertDriverLocation: jest.fn().mockResolvedValue(undefined) } as unknown as GeoService,
-      gateway as unknown as RidesGateway,
-      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
-      { discountFor: jest.fn().mockReturnValue(0), resolveDiscount: jest.fn().mockResolvedValue(0) } as unknown as PromosService,
-      // R-7: routed distance — tests use a fixed estimate (no HTTP).
-      { routedKm: jest.fn().mockResolvedValue(5) } as unknown as RouteDistanceService,
-    );
+    fake = new FakeRedis();
+    service = buildService();
     internals = service as unknown as RidesInternals;
   });
 
@@ -129,7 +140,6 @@ describe('RidesService phase-1 fixes', () => {
 
   describe('R-1: search timeout for no-drivers bookings', () => {
     it('arms a search window and auto-cancels with no_drivers_available', async () => {
-      jest.useFakeTimers();
       const ride = requestedRide();
       drivers.findNearby.mockResolvedValue([]); // nobody nearby at any strategy
       rides.findOne.mockResolvedValue(ride);
@@ -137,9 +147,11 @@ describe('RidesService phase-1 fixes', () => {
       const match = await internals.matchNearestDriver(ride as unknown as RideEntity);
 
       expect(match).toEqual({ status: 'no_drivers', candidates: 0 });
-      expect(internals.searchTimeouts.has('r1')).toBe(true);
+      // R-5: the window lives in Redis, not in a local setTimeout.
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).not.toBeNull();
 
-      await jest.advanceTimersByTimeAsync(90_000);
+      // Window elapsed → the 5 s sweep claims the due member and fires it.
+      expect(await internals.sweepDueTimers(Date.now() + 90_001)).toBe(1);
 
       expect(ride.status).toBe('cancelled');
       expect(ride.cancellationReason).toBe('no_drivers_available');
@@ -150,11 +162,10 @@ describe('RidesService phase-1 fixes', () => {
         null,
         expect.objectContaining({ status: 'cancelled' }),
       );
-      expect(internals.searchTimeouts.has('r1')).toBe(false);
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).toBeNull(); // claimed away
     });
 
     it('does not cancel the search once a driver has been offered', async () => {
-      jest.useFakeTimers();
       const ride = requestedRide();
       drivers.findNearby.mockResolvedValue([]);
       rides.findOne.mockResolvedValue(ride);
@@ -163,10 +174,12 @@ describe('RidesService phase-1 fixes', () => {
       // A driver appeared before the window elapsed (offer made elsewhere).
       ride.driverId = 'drv-1';
 
-      await jest.advanceTimersByTimeAsync(90_000);
+      await internals.sweepDueTimers(Date.now() + 90_001);
 
       expect(ride.status).toBe('requested');
+      expect(rides.update).not.toHaveBeenCalled();
       expect(gateway.emitRideStatus).not.toHaveBeenCalled();
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).toBeNull(); // claimed, no-op
     });
 
     it('sweep cancels requested rides that nobody has offered for 5 minutes', async () => {
@@ -196,9 +209,8 @@ describe('RidesService phase-1 fixes', () => {
 
   describe('R-2: cancel ownership vs offer timer', () => {
     it('a foreign cancel gets 403 and leaves the offer timer armed', async () => {
-      jest.useFakeTimers();
-      internals.scheduleOfferTimeout('r1', 'drv-1', 15_000);
-      expect(internals.offerTimeouts.has('r1')).toBe(true);
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
 
       queryRunner.manager.findOne.mockResolvedValue(requestedRide({ riderId: 'owner' }));
       drivers.findByUserId.mockRejectedValue(new Error('not a driver'));
@@ -209,7 +221,7 @@ describe('RidesService phase-1 fixes', () => {
 
       // Regression guard: the timer must survive a rejected (foreign) cancel,
       // otherwise the offered driver stays isAvailable=false forever.
-      expect(internals.offerTimeouts.has('r1')).toBe(true);
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
       expect(queryRunner.manager.save).not.toHaveBeenCalled();
       expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
       expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
@@ -217,8 +229,9 @@ describe('RidesService phase-1 fixes', () => {
     });
 
     it('the owning rider cancels inside a locked transaction and timers die', async () => {
-      jest.useFakeTimers();
-      internals.scheduleOfferTimeout('r1', 'drv-1', 15_000);
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      // A search window is armed too, so we can prove cancel drops BOTH.
+      await fake.zadd(RIDE_TIMERS_KEY, Date.now() + 90_000, 'search:r1');
       const ride = requestedRide({ riderId: 'owner' });
       queryRunner.manager.findOne.mockResolvedValue(ride);
       rides.findOne.mockResolvedValue(ride);
@@ -231,7 +244,9 @@ describe('RidesService phase-1 fixes', () => {
       );
       expect(queryRunner.commitTransaction).toHaveBeenCalled();
       expect(queryRunner.release).toHaveBeenCalled();
-      expect(internals.offerTimeouts.has('r1')).toBe(false);
+      // R-5: cancel drops BOTH members of the shared timer set.
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).toBeNull();
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).toBeNull();
       expect(result.status).toBe('cancelled');
     });
 
@@ -296,6 +311,89 @@ describe('RidesService phase-1 fixes', () => {
       drivers.findByUserId.mockResolvedValue({ id: 'drv-other', userId: 'du2', user: { name: 'Other' } });
 
       await expect(service.markPaymentReceived('r5', 'du2')).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  // R-5: timers are Redis sorted-set entries claimed with an atomic ZREM.
+  describe('R-5: Redis-backed offer/search timers', () => {
+    it('a due timer fires exactly once (claimed with ZREM)', async () => {
+      const ride = requestedRide({ driverId: 'drv-1' });
+      rides.findOne.mockResolvedValue(ride);
+      drivers.findNearby.mockResolvedValue([]); // re-match after release finds nobody
+
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
+
+      const due = Date.now() + 16_000;
+      const first = await internals.sweepDueTimers(due);
+      const second = await internals.sweepDueTimers(due); // entry already claimed
+
+      expect(first).toBe(1);
+      expect(second).toBe(0);
+      expect(drivers.setAvailability).toHaveBeenCalledTimes(1);
+      expect(drivers.setAvailability).toHaveBeenCalledWith('drv-1', true);
+      expect(ride.driverId).toBeNull();
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).toBeNull();
+    });
+
+    it('two instances sweeping the same timer: exactly one winner', async () => {
+      const ride = requestedRide({ driverId: 'drv-1' });
+      rides.findOne.mockResolvedValue(ride);
+      drivers.findNearby.mockResolvedValue([]);
+
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      // Second process: same mocks, SAME FakeRedis = a shared Redis server.
+      const other = buildService();
+
+      const due = Date.now() + 16_000;
+      const results = await Promise.all([
+        internals.sweepDueTimers(due),
+        (other as unknown as RidesInternals).sweepDueTimers(due),
+      ]);
+
+      expect(results[0] + results[1]).toBe(1); // exactly one fired
+      expect(drivers.setAvailability).toHaveBeenCalledTimes(1);
+      other.onModuleDestroy();
+    });
+
+    it('restart re-arms: a fresh instance keeps the persisted timer working', async () => {
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      service.onModuleDestroy(); // process dies — local timers would be gone
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull(); // Redis kept it
+
+      // New process: bootstrap re-arms the still-pending offer with its
+      // remaining window (offerExpiresAt 7 s out).
+      const s2 = buildService();
+      rides.find
+        .mockResolvedValueOnce([
+          requestedRide({ driverId: 'drv-1', offerExpiresAt: new Date(Date.now() + 7_000) }),
+        ])
+        .mockResolvedValue([]);
+      await s2.onApplicationBootstrap();
+
+      const due = await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1');
+      expect(due).not.toBeNull();
+      expect(due!).toBeGreaterThan(Date.now()); // pushed into the future
+
+      // ...and once due, the NEW instance fires it.
+      const ride = requestedRide({ driverId: 'drv-1' });
+      rides.findOne.mockResolvedValue(ride);
+      drivers.findNearby.mockResolvedValue([]);
+      expect(await (s2 as unknown as RidesInternals).sweepDueTimers(Date.now() + 8_000)).toBe(1);
+      expect(drivers.setAvailability).toHaveBeenCalledWith('drv-1', true);
+
+      s2.onModuleDestroy();
+    });
+
+    it('cancel removes every timer for the ride', async () => {
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      await fake.zadd(RIDE_TIMERS_KEY, Date.now() + 90_000, 'search:r1');
+
+      await service.clearPendingTimers('r1');
+
+      expect(await fake.zcard(RIDE_TIMERS_KEY)).toBe(0);
+      // A sweep afterwards finds nothing to fire.
+      expect(await internals.sweepDueTimers(Date.now() + 120_000)).toBe(0);
     });
   });
 });

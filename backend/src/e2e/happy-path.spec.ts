@@ -1,6 +1,8 @@
 import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 import { Repository } from 'typeorm';
+import { FakeRedis } from '../test/fake-redis';
 import { AdminService } from '../admin/admin.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import { UserEntity } from '../auth/entities/user.entity';
@@ -13,7 +15,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { PaymentEntity } from '../payments/entities/payment.entity';
 import { PaymentProvider } from '../payments/providers/payment-provider.interface';
 import { PromosService } from '../promos/promos.service';
-import { RidesService } from '../rides/rides.service';
+import { RIDE_TIMERS_KEY, RidesService } from '../rides/rides.service';
 import { RouteDistanceService } from '../rides/route-distance.service';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
@@ -34,11 +36,10 @@ import { RidesGateway } from '../rides/gateway/rides.gateway';
 type RideRow = RideEntity;
 type DriverRow = DriverEntity;
 
+// R-5: timers live in the shared Redis zset — tests read them from FakeRedis.
 type RidesInternals = {
-  offerTimeouts: Map<string, NodeJS.Timeout>;
-  searchTimeouts: Map<string, NodeJS.Timeout>;
+  sweepDueTimers(nowMs?: number): Promise<number>;
 };
-
 type QueryRunnerStub = {
   connect: jest.Mock;
   startTransaction: jest.Mock;
@@ -87,6 +88,8 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
   let driversService: DriversService;
   let adminService: AdminService;
   let ridesService: RidesService;
+  // R-5: shared "Redis server" for the ride:timers zset.
+  let fakeRedis: FakeRedis;
   let paymentsService: PaymentsService;
   let internals: RidesInternals;
 
@@ -233,6 +236,7 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
 
     const usersRepo = {} as unknown as Repository<UserEntity>;
 
+    fakeRedis = new FakeRedis();
     driversService = new DriversService(
       driversRepo as unknown as Repository<DriverEntity>,
       ridesRepo as unknown as Repository<RideEntity>,
@@ -263,6 +267,7 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       config,
       { resolveDiscount: jest.fn().mockResolvedValue(0), discountFor: jest.fn().mockReturnValue(0) } as unknown as PromosService,
       { routedKm: jest.fn().mockResolvedValue(10) } as unknown as RouteDistanceService,
+      fakeRedis as unknown as Redis,
     );
     paymentsService = new PaymentsService(
       paymentsRepo as unknown as Repository<PaymentEntity>,
@@ -324,16 +329,16 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
     expect(booked.match).toEqual({ status: 'offered', candidates: 1 });
     expect(rideRow?.status).toBe('requested');
     expect(rideRow?.driverId).toBe(driverRow?.id);
-    // Offer reservation: driver pulled out of the available pool + 15 s timer.
+    // Offer reservation: driver pulled out of the available pool + Redis timer.
     expect(driverRow?.isAvailable).toBe(false);
-    expect(internals.offerTimeouts.has(rideRow!.id)).toBe(true);
+    expect(await fakeRedis.zscore(RIDE_TIMERS_KEY, `offer:${rideRow!.id}`)).not.toBeNull();
 
     // 7. Driver accepts → matched, pickup OTP generated.
     const accepted = await ridesService.accept(rideRow!.id, DRIVER_USER);
     expect(accepted.status).toBe('matched');
     expect(rideRow?.status).toBe('matched');
     expect(rideRow?.pickupOtp).toMatch(/^\d{4}$/);
-    expect(internals.offerTimeouts.has(rideRow!.id)).toBe(false);
+    expect(await fakeRedis.zscore(RIDE_TIMERS_KEY, `offer:${rideRow!.id}`)).toBeNull();
 
     // 8. En route → start → OTP verification begins.
     await ridesService.markEnRoute(rideRow!.id, DRIVER_USER);
@@ -365,8 +370,11 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
     expect(rideRow?.paymentStatus).toBe('paid');
     expect(rideRow?.paymentMarkedBy).toBe('driver');
 
-    // No timers left behind at the end of the lifecycle.
-    expect(internals.offerTimeouts.size).toBe(0);
-    expect(internals.searchTimeouts.size).toBe(0);
+    // No timers left behind at the end of the lifecycle (R-5: the shared
+    // zset is empty — every armed member was cleared or claimed).
+    expect(await fakeRedis.zscore(RIDE_TIMERS_KEY, `offer:${rideRow!.id}`)).toBeNull();
+    expect(await fakeRedis.zcard(RIDE_TIMERS_KEY)).toBe(0);
+    // Even an hour ahead there is nothing left to fire.
+    expect(await internals.sweepDueTimers(Date.now() + 3_600_000)).toBe(0);
   });
 });

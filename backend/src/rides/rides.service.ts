@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   HttpException,
   HttpStatus,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -13,7 +14,9 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as crypto from 'crypto';
+import Redis from 'ioredis';
 import { EntityManager, In, IsNull, LessThan, QueryRunner, Repository } from 'typeorm';
+import { REDIS_CLIENT } from '../config/redis.module';
 import { toAvatarUrl } from '../common/avatar-url';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
@@ -41,19 +44,24 @@ function generateOtp(length = 4): string {
 // Used by create() and findActiveForRider() so they can never drift apart.
 export const ACTIVE_RIDE_STATUSES = ['requested', 'matched', 'driver_en_route', 'in_progress'] as const;
 
+// R-5: offer/search timers live in a Redis sorted set so they survive
+// restarts and are shared by every backend instance. Member format
+// `<kind>:<rideId>` (kind = `offer` | `search`), score = due epoch-ms.
+export const RIDE_TIMERS_KEY = 'ride:timers';
+// Every instance polls the set every 5 s and claims due entries with an
+// atomic ZREM: exactly one instance wins a given timer, and the handlers are
+// idempotent (conditional updates / row locks), so nothing can double-fire.
+export const TIMER_SWEEP_MS = 5_000;
+
 @Injectable()
 export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly requestTimeoutSeconds: number;
   // R-1: max time a ride may sit in `requested` with nobody offering.
   private readonly searchTimeoutSeconds: number;
   private readonly logger = new Logger(RidesService.name);
-  // R-5 (documented limitation): offer/search timers are in-memory per
-  // process. A restart is covered by the bootstrap re-arm + stale sweeps, but
-  // >1 backend instance would each hold their own timers — move to a
-  // Redis-backed delayed job (BullMQ or key-expiry) before scaling out.
-  private readonly offerTimeouts = new Map<string, NodeJS.Timeout>();
-  private readonly searchTimeouts = new Map<string, NodeJS.Timeout>();
   private staleSweepTimer: NodeJS.Timeout | null = null;
+  // R-5: polls the shared `ride:timers` zset (see RIDE_TIMERS_KEY).
+  private timerSweepTimer: NodeJS.Timeout | null = null;
 
   constructor(
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
@@ -63,6 +71,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly config: ConfigService,
     private readonly promosService: PromosService,
     private readonly routes: RouteDistanceService,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {
     this.requestTimeoutSeconds = this.config.get<number>('RIDE_REQUEST_TIMEOUT_SECONDS') ?? 15;
     this.searchTimeoutSeconds = this.config.get<number>('RIDE_SEARCH_TIMEOUT_SECONDS') ?? 90;
@@ -80,7 +89,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         if (ride.driverId && ride.offerExpiresAt && ride.offerExpiresAt.getTime() > now) {
           const remainingMs = ride.offerExpiresAt.getTime() - now;
           this.logger.log(`Re-arming offer timeout for ride ${ride.id} (${remainingMs}ms remaining)`);
-          this.scheduleOfferTimeout(ride.id, ride.driverId, remainingMs);
+          await this.scheduleOfferTimeout(ride.id, remainingMs);
         } else {
           // Expired during server downtime
           if (ride.driverId) {
@@ -130,6 +139,21 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (typeof this.staleSweepTimer.unref === 'function') {
       this.staleSweepTimer.unref();
     }
+
+    // R-5: fire offer/search timers that came due while this instance was
+    // down (they persisted in Redis), then keep polling every 5 s. The
+    // ZREM claim keeps concurrent instances from double-firing.
+    this.sweepDueTimers().catch((err) => {
+      this.logger.error('Startup timer sweep failed', err as Error);
+    });
+    this.timerSweepTimer = setInterval(() => {
+      this.sweepDueTimers().catch((err) => {
+        this.logger.error('Timer sweep failed', err as Error);
+      });
+    }, TIMER_SWEEP_MS);
+    if (typeof this.timerSweepTimer.unref === 'function') {
+      this.timerSweepTimer.unref();
+    }
   }
 
   onModuleDestroy(): void {
@@ -137,14 +161,12 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       clearInterval(this.staleSweepTimer);
       this.staleSweepTimer = null;
     }
-    for (const timer of this.offerTimeouts.values()) {
-      clearTimeout(timer);
+    if (this.timerSweepTimer) {
+      clearInterval(this.timerSweepTimer);
+      this.timerSweepTimer = null;
     }
-    this.offerTimeouts.clear();
-    for (const timer of this.searchTimeouts.values()) {
-      clearTimeout(timer);
-    }
-    this.searchTimeouts.clear();
+    // Redis timers are intentionally NOT deleted: they belong to the shared
+    // `ride:timers` set (other instances still need them; a restart re-arms).
   }
 
   // Auto-cancels rides abandoned mid-flow: matched/driver_en_route untouched
@@ -187,8 +209,8 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
           },
         );
         if (!result.affected) continue;
-        this.clearOfferTimeout(ride.id);
-        this.clearSearchTimeout(ride.id);
+        await this.clearOfferTimeout(ride.id);
+        await this.clearSearchTimeout(ride.id);
         ride.status = 'cancelled';
         ride.cancelledBy = 'system';
         ride.cancellationReason = reason;
@@ -216,11 +238,147 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     return ride ? this.toRiderView(ride) : null;
   }
 
-  private clearOfferTimeout(rideId: string): void {
-    const timer = this.offerTimeouts.get(rideId);
-    if (timer) {
-      clearTimeout(timer);
-      this.offerTimeouts.delete(rideId);
+  // ── R-5: Redis-backed offer/search timers ────────────────────────────────
+  // Members of the `ride:timers` zset (RIDE_TIMERS_KEY): `offer:<rideId>` /
+  // `search:<rideId>`, score = due epoch-ms. Arming is a plain ZADD (re-arm
+  // overwrites the score), clearing is a ZREM, and firing happens in
+  // sweepDueTimers() below — never in a per-process setTimeout.
+
+  private async armTimer(kind: 'offer' | 'search', rideId: string, timeoutMs: number): Promise<void> {
+    try {
+      await this.redis.zadd(RIDE_TIMERS_KEY, Date.now() + timeoutMs, `${kind}:${rideId}`);
+    } catch (err) {
+      // Booking must not fail because Redis blipped — sweepStaleRides() is
+      // the safety net for a timer that never made it to the zset.
+      this.logger.error(`Failed to arm ${kind} timer for ride ${rideId}: ${(err as Error).message}`);
+    }
+  }
+
+  private async clearTimer(kind: 'offer' | 'search', rideId: string): Promise<void> {
+    try {
+      await this.redis.zrem(RIDE_TIMERS_KEY, `${kind}:${rideId}`);
+    } catch (err) {
+      this.logger.warn(`Failed to clear ${kind} timer for ride ${rideId}: ${(err as Error).message}`);
+    }
+  }
+
+  private clearOfferTimeout(rideId: string): Promise<void> {
+    return this.clearTimer('offer', rideId);
+  }
+
+  private clearSearchTimeout(rideId: string): Promise<void> {
+    return this.clearTimer('search', rideId);
+  }
+
+  /**
+   * Drops every timer for a ride. Public for admin-side cancels (suspend
+   * force, admin ride cancel) so an offered driver never stays reserved
+   * after the ride is gone — same discipline as the R-2 fix.
+   */
+  async clearPendingTimers(rideId: string): Promise<void> {
+    await Promise.all([this.clearOfferTimeout(rideId), this.clearSearchTimeout(rideId)]);
+  }
+
+  /**
+   * Poll the shared timer set and fire everything that is due. Each entry is
+   * claimed with an atomic ZREM first: when two instances sweep the same
+   * member concurrently, exactly one gets `1` back and only that one runs the
+   * handler — the loser skips it. Handlers themselves are idempotent
+   * (conditional updates / pessimistic locks), so a late duplicate is a no-op.
+   * `sweepStaleRides()` remains the safety net for anything a timer misses.
+   */
+  async sweepDueTimers(nowMs = Date.now()): Promise<number> {
+    let due: string[] = [];
+    try {
+      due = await this.redis.zrangebyscore(RIDE_TIMERS_KEY, 0, nowMs);
+    } catch (err) {
+      this.logger.error(`Timer sweep failed: ${(err as Error).message}`);
+      return 0;
+    }
+    let fired = 0;
+    for (const member of due) {
+      try {
+        const won = await this.redis.zrem(RIDE_TIMERS_KEY, member); // atomic claim
+        if (won !== 1) continue; // another instance got there first
+        const sep = member.indexOf(':');
+        const kind = member.slice(0, sep);
+        const rideId = member.slice(sep + 1);
+        if (kind === 'offer') {
+          await this.fireOfferTimeout(rideId);
+        } else if (kind === 'search') {
+          await this.fireSearchTimeout(rideId);
+        }
+        fired += 1;
+      } catch (err) {
+        this.logger.error(`Timer handler failed for ${member}: ${(err as Error).message}`);
+      }
+    }
+    return fired;
+  }
+
+  // R-1: without this, a "no drivers nearby" ride stays `requested` forever —
+  // the stale sweep skips that status and the rider is locked out of booking.
+  // Only cancels a ride that is still requested AND unassigned (a driver who
+  // appeared meanwhile wins).
+  private scheduleSearchTimeout(rideId: string, timeoutMs: number): Promise<void> {
+    return this.armTimer('search', rideId, timeoutMs);
+  }
+
+  private scheduleOfferTimeout(rideId: string, timeoutMs: number): Promise<void> {
+    return this.armTimer('offer', rideId, timeoutMs);
+  }
+
+  /** Fires once after the search window (claimed from `ride:timers`). */
+  private async fireSearchTimeout(rideId: string): Promise<void> {
+    try {
+      const ride = await this.rides.findOne({ where: { id: rideId } });
+      if (!ride || ride.status !== 'requested' || ride.driverId) return;
+      const result = await this.rides.update(
+        { id: rideId, status: 'requested', driverId: IsNull() },
+        {
+          status: 'cancelled',
+          cancelledBy: 'system',
+          cancellationReason: 'no_drivers_available',
+          cancelledAt: new Date(),
+        },
+      );
+      if (!result.affected) return;
+      ride.status = 'cancelled';
+      ride.cancelledBy = 'system';
+      ride.cancellationReason = 'no_drivers_available';
+      ride.cancelledAt = new Date();
+      this.logger.warn(`Ride ${rideId} search timed out after ${this.searchTimeoutSeconds}s (no drivers)`);
+      this.pushStatus(ride);
+    } catch (err) {
+      this.logger.error(`Search timeout failed for ride ${rideId}`, err as Error);
+    }
+  }
+
+  /** Releases the offered driver and re-matches (claimed from `ride:timers`). */
+  private async fireOfferTimeout(rideId: string): Promise<void> {
+    try {
+      const ride = await this.rides.findOne({ where: { id: rideId } });
+      if (!ride || ride.status !== 'requested' || !ride.driverId) return;
+      const driverId = ride.driverId;
+      this.logger.warn(`Offer timed out for ride ${rideId} with driver ${driverId}`);
+      await this.drivers.setAvailability(driverId, true);
+      ride.driverId = null;
+      ride.declinedDriverIds = [...(ride.declinedDriverIds || []), driverId];
+      await this.rides.save(ride);
+
+      if (ride.declinedDriverIds.length >= 3) {
+        ride.status = 'cancelled';
+        ride.cancellationReason = 'no_drivers_available';
+        ride.cancelledBy = 'system';
+        ride.cancelledAt = new Date();
+        await this.rides.save(ride);
+        this.pushStatus(ride);
+        this.logger.warn(`Ride ${rideId} cancelled after 3 failed/expired driver offers`);
+      } else {
+        await this.matchNearestDriver(ride);
+      }
+    } catch (err) {
+      this.logger.error(`Error in offer timeout handler for ride ${rideId}`, err as Error);
     }
   }
 
@@ -260,93 +418,6 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     } finally {
       await queryRunner.release().catch(() => {});
     }
-  }
-
-  private clearSearchTimeout(rideId: string): void {
-    const timer = this.searchTimeouts.get(rideId);
-    if (timer) {
-      clearTimeout(timer);
-      this.searchTimeouts.delete(rideId);
-    }
-  }
-
-  /**
-   * Drops every in-memory timer for a ride. Public for admin-side cancels
-   * (suspend force, admin ride cancel) so an offered driver never stays
-   * reserved after the ride is gone — same discipline as the R-2 fix.
-   */
-  clearPendingTimers(rideId: string): void {
-    this.clearOfferTimeout(rideId);
-    this.clearSearchTimeout(rideId);
-  }
-
-  // R-1: without this, a "no drivers nearby" ride stays `requested` forever —
-  // the stale sweep skips that status and the rider is locked out of booking.
-  // Fires once after the search window; only cancels a ride that is still
-  // requested AND unassigned (a driver who appeared meanwhile wins).
-  private scheduleSearchTimeout(rideId: string, timeoutMs: number): void {
-    this.clearSearchTimeout(rideId);
-    const timer = setTimeout(async () => {
-      this.searchTimeouts.delete(rideId);
-      try {
-        const ride = await this.rides.findOne({ where: { id: rideId } });
-        if (!ride || ride.status !== 'requested' || ride.driverId) return;
-        const result = await this.rides.update(
-          { id: rideId, status: 'requested', driverId: IsNull() },
-          {
-            status: 'cancelled',
-            cancelledBy: 'system',
-            cancellationReason: 'no_drivers_available',
-            cancelledAt: new Date(),
-          },
-        );
-        if (!result.affected) return;
-        ride.status = 'cancelled';
-        ride.cancelledBy = 'system';
-        ride.cancellationReason = 'no_drivers_available';
-        ride.cancelledAt = new Date();
-        this.logger.warn(`Ride ${rideId} search timed out after ${this.searchTimeoutSeconds}s (no drivers)`);
-        this.pushStatus(ride);
-      } catch (err) {
-        this.logger.error(`Search timeout failed for ride ${rideId}`, err as Error);
-      }
-    }, timeoutMs);
-    if (typeof timer.unref === 'function') timer.unref();
-    this.searchTimeouts.set(rideId, timer);
-  }
-
-  private scheduleOfferTimeout(rideId: string, driverId: string, timeoutMs: number): void {
-    this.clearOfferTimeout(rideId);
-    const timer = setTimeout(async () => {
-      this.offerTimeouts.delete(rideId);
-      try {
-        const ride = await this.rides.findOne({ where: { id: rideId } });
-        if (!ride || ride.status !== 'requested' || ride.driverId !== driverId) {
-          return;
-        }
-        this.logger.warn(`Offer timed out for ride ${rideId} with driver ${driverId}`);
-        await this.drivers.setAvailability(driverId, true);
-        ride.driverId = null;
-        ride.declinedDriverIds = [...(ride.declinedDriverIds || []), driverId];
-        await this.rides.save(ride);
-
-        if (ride.declinedDriverIds.length >= 3) {
-          ride.status = 'cancelled';
-          ride.cancellationReason = 'no_drivers_available';
-          ride.cancelledBy = 'system';
-          ride.cancelledAt = new Date();
-          await this.rides.save(ride);
-          this.pushStatus(ride);
-          this.logger.warn(`Ride ${rideId} cancelled after 3 failed/expired driver offers`);
-        } else {
-          await this.matchNearestDriver(ride);
-        }
-      } catch (err) {
-        this.logger.error(`Error in offer timeout handler for ride ${rideId}`, err as Error);
-      }
-    }, timeoutMs);
-
-    this.offerTimeouts.set(rideId, timer);
   }
 
   // POST /rides — create + trigger nearest-driver matching.
@@ -437,7 +508,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     ride: RideEntity,
     allowUpgrade = false,
   ): Promise<{ status: 'offered' | 'no_drivers'; candidates: number }> {
-    this.clearOfferTimeout(ride.id);
+    await this.clearOfferTimeout(ride.id);
 
     const declinedSet = new Set(ride.declinedDriverIds || []);
     // Unified accounts: never offer a rider their own driver profile.
@@ -499,20 +570,20 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         ride.cancellationReason = 'no_drivers_available';
         ride.cancelledBy = 'system';
         ride.cancelledAt = new Date();
-        this.clearSearchTimeout(ride.id);
+        await this.clearSearchTimeout(ride.id);
         await this.rides.save(ride);
         this.pushStatus(ride);
       } else {
         // R-1: nobody is nearby — arm (or re-arm) the search window so the
         // rider isn't locked into `requested` forever.
-        this.scheduleSearchTimeout(ride.id, this.searchTimeoutSeconds * 1000);
+        await this.scheduleSearchTimeout(ride.id, this.searchTimeoutSeconds * 1000);
       }
       return { status: 'no_drivers', candidates: 0 };
     }
 
     // A driver is being offered: the search window no longer applies — the
     // 15 s offer timer takes over from here.
-    this.clearSearchTimeout(ride.id);
+    await this.clearSearchTimeout(ride.id);
     const nearest = candidates[0];
     await this.drivers.setAvailability(nearest.driverId, false);
     const now = new Date();
@@ -540,7 +611,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       offerExpiresAt: expiresAt.toISOString(),
     });
 
-    this.scheduleOfferTimeout(ride.id, nearest.driverId, this.requestTimeoutSeconds * 1000);
+    await this.scheduleOfferTimeout(ride.id, this.requestTimeoutSeconds * 1000);
 
     return { status: 'offered', candidates: candidates.length };
   }
@@ -597,7 +668,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       ride.matchedAt = new Date();
       await queryRunner.manager.save(ride);
       await queryRunner.commitTransaction();
-      this.clearOfferTimeout(rideId);
+      await this.clearOfferTimeout(rideId);
 
       // Reload with relations so the driver view carries riderName.
       const updated = await this.getOrThrow(rideId);
@@ -627,7 +698,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       return ride;
     });
 
-    this.clearOfferTimeout(rideId);
+    await this.clearOfferTimeout(rideId);
     await this.drivers.setAvailability(driver.id, true);
     await this.matchNearestDriver(locked);
     const updated = await this.getOrThrow(rideId);
@@ -845,8 +916,8 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       }
 
       // Ownership + status both checked: we own this transition now.
-      this.clearOfferTimeout(rideId);
-      this.clearSearchTimeout(rideId);
+      await this.clearOfferTimeout(rideId);
+      await this.clearSearchTimeout(rideId);
 
       ride.status = 'cancelled';
       ride.cancellationReason = dto.reason;

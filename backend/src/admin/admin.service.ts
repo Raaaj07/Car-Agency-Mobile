@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -400,9 +400,9 @@ export class AdminService implements OnApplicationBootstrap {
       },
     );
     if (!result.affected) return;
-    // We own this transition now — only now drop the in-memory timers so an
-    // offered driver isn't left reserved (same discipline as R-2).
-    this.ridesSvc.clearPendingTimers(ride.id);
+    // We own this transition now — only now drop the shared Redis timers so
+    // an offered driver isn't left reserved (same discipline as R-2).
+    await this.ridesSvc.clearPendingTimers(ride.id);
     ride.status = 'cancelled';
     ride.cancelledBy = 'admin';
     ride.cancellationReason = reason.slice(0, 200);
