@@ -1,0 +1,28 @@
+#!/bin/sh
+# S-1 secrets guard — refuse to commit keystores or env files.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# The only allowed exception is `.env.example` (variable names, no values).
+# CI runs the same check in .github/workflows/secrets-guard.yml.
+# Rotation checklist for leaked material: see ADMIN.md, section "S-1".
+
+set -eu
+
+leaked="$(git ls-files \
+  | grep -E '(^|/)([^/]*\.jks|[^/]*\.keystore|[^/]*\.p12|[^/]*\.p8|[^/]*\.key|[^/]*\.pem|\.env|\.env\..*)$' \
+  | grep -vE '(^|/)\.env\.example$' \
+  || true)"
+
+if [ -n "$leaked" ]; then
+  {
+    echo "pre-commit: refusing to commit secret-like files:"
+    printf '%s\n' "$leaked"
+    echo "Remove them from the index (git rm --cached <file>), keep the real files"
+    echo "outside the repo, and rotate the affected keys — see ADMIN.md (S-1)."
+  } >&2
+  exit 1
+fi
+
+exit 0
