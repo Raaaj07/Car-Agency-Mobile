@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { X, Check } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
@@ -25,12 +25,24 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline }
   const [seconds, setSeconds] = useState<number>(activeRide?.expiresInSeconds ?? 15);
 
   useEffect(() => {
-    setSeconds(activeRide?.expiresInSeconds ?? 15);
+    // Async boundary — sync setState directly in the effect trips
+    // react-hooks/set-state-in-effect; a microtask is invisible next to the
+    // 1-second countdown ticks below. Resets when a new offer arrives.
+    Promise.resolve().then(() => setSeconds(activeRide?.expiresInSeconds ?? 15));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset keyed on offer id, not every field change
   }, [activeRide?.id]);
+
+  // Always-fresh callback for the countdown (exhaustive-deps): adding
+  // onDecline to the interval's deps would restart the timer on every parent
+  // re-render, so the effect reads a ref instead.
+  const onDeclineRef = useRef(onDecline);
+  useEffect(() => {
+    onDeclineRef.current = onDecline;
+  });
 
   useEffect(() => {
     if (seconds <= 0) {
-      onDecline();
+      onDeclineRef.current();
       return;
     }
     const timer = setInterval(() => setSeconds((prev) => prev - 1), 1000);

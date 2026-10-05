@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { XCircle, RefreshCw, ShieldCheck } from 'lucide-react-native';
-import { colors, radii, typography, shadows } from '../../theme/theme';
+import { colors, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { useRideStore } from '../../store/rideStore';

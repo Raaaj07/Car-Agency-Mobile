@@ -1,2 +1,21 @@
 node_modules
+
+# Secrets — never track env files or signing material (S-1).
+# Enforced by .github/workflows/secret-guard.yml (`git ls-files '*.jks' '*.env*'` must be empty).
 .env
+.env.*
+!.env.example
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Build outputs / generated artifacts (zip & repo hygiene, spec §5.3)
+dist/
+.expo/
+.claude/
+uploads/
+*.log
+*.tsbuildinfo
+.DS_Store

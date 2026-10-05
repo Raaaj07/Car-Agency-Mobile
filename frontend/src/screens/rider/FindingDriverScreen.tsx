@@ -101,7 +101,7 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
       hasResolved = true;
       stopPolling();
     };
-  }, [activeRide?.id, onDriverFound, onRideCancelled, setActiveRide]);
+  }, [activeRide, onDriverFound, onRideCancelled, setActiveRide]);
 
   // Nearby online/available drivers around the pickup point — shown as dots
   // on the map. Polled separately so a failure here never interrupts the
@@ -129,7 +129,7 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
       isMounted = false;
       clearInterval(timer);
     };
-  }, [pickupCoords?.lat, pickupCoords?.lng, activeRide?.vehicleType]);
+  }, [pickupCoords, activeRide?.vehicleType]);
 
   // Road route preview between pickup and dropoff.
   useEffect(() => {
@@ -143,7 +143,7 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
     return () => {
       isMounted = false;
     };
-  }, [pickupCoords?.lat, pickupCoords?.lng, dropoffCoords?.lat, dropoffCoords?.lng]);
+  }, [pickupCoords, dropoffCoords]);
 
   return (
     <View style={styles.container}>

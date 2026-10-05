@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { CreditCard, Tag, ShieldCheck, ChevronRight, Check } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';

@@ -49,8 +49,12 @@ export function useRideSocket(rideId: string | undefined, handlers: RideSocketHa
   const socket = useSocket();
 
   // Keep the latest handlers available without re-subscribing on every render.
+  // Synced in an effect: writing .current during render trips react-hooks/refs,
+  // and socket events are async so they can never observe the one-commit lag.
   const handlersRef = useRef(handlers);
-  handlersRef.current = handlers;
+  useEffect(() => {
+    handlersRef.current = handlers;
+  }, [handlers]);
 
   useEffect(() => {
     if (!socket || !rideId) return;

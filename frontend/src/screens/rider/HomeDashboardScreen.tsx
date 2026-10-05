@@ -99,8 +99,10 @@ export const HomeDashboardScreen: React.FC<Props> = ({
 
   const [currentSnap, setCurrentSnap] = useState<SnapPoint>('default');
 
-  // Animated top address pill opacity (fades out when sheet expands)
-  const pillOpacity = useRef(new Animated.Value(1)).current;
+  // Animated top address pill opacity (fades out when sheet expands).
+  // Lazy useState instead of useRef(...).current — reading a fresh ref's
+  // .current during render trips react-hooks/refs; created once either way.
+  const [pillOpacity] = useState(() => new Animated.Value(1));
 
   const handleSnapChange = useCallback(
     (snap: SnapPoint) => {
@@ -120,7 +122,10 @@ export const HomeDashboardScreen: React.FC<Props> = ({
     initialGpsAppliedRef.current = true;
     const { latitude, longitude } = gpsCoords;
     if (!pickupCoords) {
-      setIsResolvingAddress(true);
+      // Async boundary — sync setState directly in the effect trips
+      // react-hooks/set-state-in-effect. Lands before reverseGeocode's
+      // .finally clears it (microtasks flush before any network promise).
+      Promise.resolve().then(() => setIsResolvingAddress(true));
       reverseGeocode(latitude, longitude)
         .then((addr) => {
           if (addr) {

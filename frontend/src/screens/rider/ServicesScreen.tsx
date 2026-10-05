@@ -4,9 +4,9 @@ import { Car, Zap, MapPinned, Clock } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, typography, radii, shadows } from '../../theme/theme';
-import { RiderTabParamList } from '../../navigation/types';
+import { MainTabParamList } from '../../navigation/types';
 
-type NavProp = NativeStackNavigationProp<RiderTabParamList>;
+type NavProp = NativeStackNavigationProp<MainTabParamList>;
 
 const SERVICES = [
   { id: 'local', label: 'Local Ride', icon: Car, blurb: 'Quick trips around the city' },

@@ -35,8 +35,6 @@ async function saveSecure(key: string, value: string | null) {
 
 interface AuthState {
   language: string;
-  // Legacy client-chosen role, kept for compat; server user.role is truth.
-  role: 'rider' | 'driver' | 'admin' | null;
   phone: string;
   user: User | null;
   isAuthenticated: boolean;
@@ -62,7 +60,6 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>((set) => ({
   language: 'en',
-  role: null,
   phone: '',
   user: null,
   isAuthenticated: false,
@@ -93,7 +90,6 @@ export const useAuthStore = create<AuthState>((set) => ({
       accessToken: tokens?.accessToken ?? state.accessToken,
       refreshToken: tokens?.refreshToken ?? state.refreshToken,
       user: userData,
-      role,
       activeMode: mode,
       justLoggedIn: true,
     }));
@@ -118,7 +114,6 @@ export const useAuthStore = create<AuthState>((set) => ({
       const nextStatus = (patch as Partial<User>).driverStatus;
       return {
         user: state.user ? { ...state.user, ...patch } : state.user,
-        role: (patch.role as AuthState['role']) ?? state.role,
         // Non-approved users can never sit in driver mode.
         ...(nextStatus !== undefined && nextStatus !== 'approved' ? { activeMode: 'rider' as const } : {}),
       };
@@ -146,7 +141,6 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({
       isAuthenticated: false,
       user: null,
-      role: null,
       accessToken: null,
       refreshToken: null,
       developmentOtp: null,
@@ -188,7 +182,6 @@ export const useAuthStore = create<AuthState>((set) => ({
         set({
           isAuthenticated: true,
           user: me,
-          role,
           activeMode: me.driverStatus === 'approved' && mode === 'driver' ? 'driver' : 'rider',
         });
         connectSocket(access, role);

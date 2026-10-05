@@ -1,5 +1,21 @@
 # AUDIT.md — Vazhi (CarAgencyMobile), Phase 0 (read-only)
 
+> **STATUS UPDATE — 2026-10-05, Admin Dashboard Overhaul + Bug Fix Pass.**
+> This document is the *as-found* Phase-0 baseline (2026-10-02). Line references
+> below describe the code at that time. Resolution status of its findings:
+>
+> - **Fixed (earlier hardening pass)**: B1 (`profileComplete` gate), B2/N2 (client role removed from flow/DTOs), B3 (`ApprovedDriverGuard`),
+>   B5 (SecureStore persistence + `restoreSession` + splash), B6 (rotating hashed refresh + `POST /auth/logout`), B7 (prod boot refusal for `OTP_DEV_MODE`),
+>   B9 (socket `ride:join` membership, `driver:location` approved+ownership check, `?token=` removed, CORS from `CORS_ORIGIN`),
+>   B10 `accept()` (transaction + pessimistic lock), B11 (DB-backed approval), B12 (`DB_SSL_REJECT_UNAUTHORIZED`, prod synchronize refusal), B14 (`AGENTS.md` rewritten for React Navigation),
+>   N1 (JWT strategy DB lookup), N3 (active-ride guards, one-review guard), N4 (application lifecycle `pending` default + admin writers), N5 (register banner deleted, `activeMode` gating).
+> - **Fixed (Admin Dashboard Overhaul pass, this repo's Phases 1–6)**: remaining B10 races (`decline`/`start`/`verifyPickupOtp`/`complete` in `withRideLock`,
+>   timer cleared post-commit), N6 (Redis `quit()` on shutdown, geo heartbeat ZSET + 90 s ghost sweep, logged GEOSEARCH failures), N7 (seed refuses production),
+>   plus the spec bug list A-1…A-16, S-1 (guard added), P-1/P-2, R-1…R-7, AU-1…AU-3, D-1…D-4, PR-1 (copy), M-1, T-1 — see `CHANGES.md`.
+> - **Owner action pending**: B15/S-1 key rotation (see `ADMIN.md` — files themselves untouched by design).
+> - **Accepted/deferred**: in-memory offer timers single-instance (documented, R-5; Redis/BullMQ when scaling out), seed `Math.random` plates (non-security; seed already prod-blocked),
+>   local-disk uploads (swap to S3/R2 before production), B8 (email `email_verified` check on Google link — open), legacy `users.role='driver'` values (normalize in a future migration).
+
 Date: 2026-10-02. Code as found in working tree (includes earlier hardening + unified-tabs work).
 Rule: no source changes in this phase; this file is the only write.
 Legend: blocker = flow broken or security hole; major = wrong behavior / data risk; minor = hygiene.

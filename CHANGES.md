@@ -3,6 +3,42 @@
 Phases 1–6 implemented in one pass (no approval gates per owner request).
 Deviations from the prompt are noted inline with justification.
 
+---
+
+## Admin Dashboard Overhaul + Bug Fix Pass (2026-10-05)
+
+Second pass, seven phases, one commit per phase (`d7e5d14` → `6fd5de0` → `76307d2` → `91e5bd9` → `ec479c1` → cleanup commit).
+Full bug list with per-ID status lives in the final delivery report; summary:
+
+- **Phase 1 (P0 safety/money)** — `A-1` (suspend-vs-active-ride 409 + force-cancel), `A-2` (approve idempotence/review history), `A-3` (reject reason 5–300 + re-apply),
+  `R-1` (no-drivers-found timeout), `R-2` (cancel ownership + timer survives), `R-3` (booking guards kept honest), `P-1` (payment idempotency + amount match),
+  `P-2` (payment ownership), `AU-1/AU-2` (OTP/payments dev-mode fail-closed, prod boot refusal), `T-1` (first backend tests), `A-*` audit-era gaps.
+  Migration `1791200000000-AdminSafetyAndPaymentTracking.ts`.
+- **Phase 2 (admin backend)** — audit table + write-through (`approve/reject/suspend/reinstate/ride_cancel/payment_resolve/upi_update`), overview stats, driver/ride lists+detail+actions,
+  `admins` socket room + `admin:application:new`, IST helpers (`R-6`). Migration `1791200001000-AdminAuditLogs.ts`.
+- **Phase 3–4 (admin frontend)** — typed `api/admin.ts`, IST/INR formatters, hooks, 16 `components/admin/*`, admin-mode `BottomTabBar`, new 4-tab `AdminNavigator`
+  (Overview → Drivers(+detail) → Rides(+detail) → Account); old `AdminTabNavigator`/`AdminApplications*` deleted. `A-11` live badge + toast, `A-14` admin socket role, `M-1`.
+- **Phase 5 (remaining P1)** — `R-4` all ride transitions in `withRideLock` (pessimistic + txn; OTP counters commit before the throw), `R-5` documented single-instance timers,
+  `R-7` distance clamp 1.5× + `distanceOutlier` flag in admin ride detail, `D-1` payee `upiVpa` on driver profile (validated, audited, shown in admin detail; QR reads profile first),
+  `D-2` deprecated `verificationStatus` columns dropped, `D-3` geo heartbeat ZSET + 90 s ghost sweep + Redis `quit()` on shutdown, `D-4` background location heartbeat
+  (`expo-task-manager` + foreground service; requires a new native build), `AU-3` socket reads the live token (auth callback + refresh nudge), `PR-1` promo copy aligned to `VAZHI20` (₹20).
+  Migration `1791200002000-AddDriverUpiVpaAndDropVerificationColumns.ts`.
+- **Phase 6 (cleanup/docs)** — frontend lint **0 errors / 0 warnings** (was 44/47): all `react-hooks/refs` + `set-state-in-effect` fixed without behavior change,
+  unused imports removed, duplicate imports merged, exhaustive-deps reviewed (handler-ref patterns for `onDecline`/`onGoogleToken`; store-object deps elsewhere),
+  legacy `authStore.role` + `types.ts` `RiderTabParamList`/`DriverTabParamList`/`RiderMain`/`DriverMain` removed, `S-1` guard added
+  (root `.gitignore` hardening + `.github/workflows/secret-guard.yml`), `ADMIN.md` created, `AUDIT.md` status banner added.
+
+**Migrations pending for the owner (never run automatically):**
+
+```bash
+cd backend && npm run migration:run   # 1791200000000, 1791200001000, 1791200002000
+```
+
+Verification: backend `npx tsc --noEmit` + `npm run build` + `npx jest` (61 tests / 7 suites) PASS;
+frontend `npx tsc --noEmit` PASS, `npx expo lint` 0 errors / 0 warnings.
+
+---
+
 ## What changed (by area)
 
 ### Backend — auth foundation (Phase 1)

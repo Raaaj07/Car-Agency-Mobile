@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, ViewStyle } from 'react-native';
-import { MapPin, Navigation, Car, Shield } from 'lucide-react-native';
+import { MapPin, Navigation, Car } from 'lucide-react-native';
 import { colors, radii, typography } from '../../theme/theme';
 
 interface MapPlaceholderProps {

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform } from 'react-native';
 import { Phone, ShieldCheck } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
@@ -30,13 +30,21 @@ export const SignInScreen: React.FC<Props> = ({
     scopes: ['openid', 'profile', 'email'],
   });
 
+  // Always-fresh callback for the response effect (exhaustive-deps): adding
+  // onGoogleToken to the deps would re-submit the same token on every parent
+  // re-render, so the effect reads a ref instead.
+  const onGoogleTokenRef = useRef(onGoogleToken);
+  useEffect(() => {
+    onGoogleTokenRef.current = onGoogleToken;
+  });
+
   useEffect(() => {
     if (response?.type === 'success') {
       // Depending on how the response is shaped, the token can land in
       // either place — check both so we're not silently missing it.
       const idToken = response.authentication?.idToken ?? (response.params as any)?.id_token;
       if (idToken) {
-        onGoogleToken(idToken);
+        onGoogleTokenRef.current(idToken);
       } else {
         console.log('Google auth succeeded but no idToken found. Full response:', JSON.stringify(response));
       }

@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { create as axiosCreate, isAxiosError } from 'axios';
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, tokenManager } from '../lib/tokenManager';
@@ -16,7 +16,7 @@ if (!process.env.EXPO_PUBLIC_API_URL && __DEV__) {
 
 export const API_URL = rawUrl.replace(/\/$/, '');
 
-export const api = axios.create({
+export const api = axiosCreate({
   baseURL: API_URL,
   timeout: 15_000,
   headers: { 'Content-Type': 'application/json' },
@@ -30,7 +30,7 @@ api.interceptors.request.use((config) => {
 
 // 401 -> try refresh token once, then retry original request.
 let isRefreshing = false;
-let refreshQueue: Array<(token: string | null) => void> = [];
+let refreshQueue: ((token: string | null) => void)[] = [];
 
 api.interceptors.response.use(
   (res) => res,
@@ -103,7 +103,7 @@ api.interceptors.response.use(
 );
 
 export function getApiError(error: unknown): string {
-  if (axios.isAxiosError(error)) {
+  if (isAxiosError(error)) {
     const data = error.response?.data as { message?: unknown; error?: string; statusCode?: number } | undefined;
     const message = data?.message;
     if (Array.isArray(message)) return message.join('\n');

@@ -187,7 +187,7 @@ export const RealMapView: React.FC<Props> = ({
     } catch {
       // safe ignore
     }
-  }, [mode, mapReady, pickup?.lat, pickup?.lng, dropoff?.lat, dropoff?.lng, route?.length, bottomPadding, driverPosition?.lat, driverPosition?.lng]);
+  }, [mode, mapReady, pickup, dropoff, route, bottomPadding, driverPosition]);
 
   // Picker mode smooth camera focus
   useEffect(() => {
@@ -219,7 +219,7 @@ export const RealMapView: React.FC<Props> = ({
     } catch {
       // safe ignore
     }
-  }, [mode, mapReady, flyTo, pickup?.lat, pickup?.lng, dropoff]);
+  }, [mode, mapReady, flyTo, pickup, dropoff]);
 
   // Imperative camera recenter when recenterTo.nonce changes
   useEffect(() => {

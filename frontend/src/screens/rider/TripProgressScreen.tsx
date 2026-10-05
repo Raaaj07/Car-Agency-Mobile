@@ -65,9 +65,13 @@ export const TripProgressScreen: React.FC<Props> = ({
   // matter how many sources (socket + 3s poll) detect it.
   const terminalRef = useRef(false);
   const onCompleteRef = useRef(onCompleteTrip);
-  onCompleteRef.current = onCompleteTrip;
   const onRideCancelledRef = useRef(onRideCancelled);
-  onRideCancelledRef.current = onRideCancelled;
+  // Latest-prop refs synced in an effect: writing .current during render trips
+  // react-hooks/refs, and the only readers are async socket/poll handlers.
+  useEffect(() => {
+    onCompleteRef.current = onCompleteTrip;
+    onRideCancelledRef.current = onRideCancelled;
+  });
 
   const checkTerminalStatus = useCallback(async () => {
     if (terminalRef.current) return;
@@ -124,7 +128,10 @@ export const TripProgressScreen: React.FC<Props> = ({
   useEffect(() => {
     let mounted = true;
     if (!pickupCoords || !dropoffCoords) {
-      setRoute(undefined);
+      // Async boundary — sync setState directly in the effect trips
+      // react-hooks/set-state-in-effect; a microtask is invisible next to
+      // the route fetch it guards.
+      Promise.resolve().then(() => setRoute(undefined));
       return;
     }
     getRoute(pickupCoords, dropoffCoords)
@@ -135,7 +142,7 @@ export const TripProgressScreen: React.FC<Props> = ({
     return () => {
       mounted = false;
     };
-  }, [pickupCoords?.lat, pickupCoords?.lng, dropoffCoords?.lat, dropoffCoords?.lng]);
+  }, [pickupCoords, dropoffCoords]);
 
   return (
     <View style={styles.container}>

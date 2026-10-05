@@ -1,8 +1,7 @@
 import React from 'react';
 import { Alert } from 'react-native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { createNativeStackNavigator, NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RiderHomeStackParamList, RootStackParamList } from './types';
-import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useNavigation } from '@react-navigation/native';
 
 import { HomeDashboardScreen } from '../screens/rider/HomeDashboardScreen';
@@ -27,7 +26,6 @@ type RootNavProp = NativeStackNavigationProp<RootStackParamList>;
 
 export const RiderHomeStackNavigator: React.FC = () => {
   const rootNavigation = useNavigation<RootNavProp>();
-  const setDropoff = useRideStore((state) => state.setDropoff);
   const setSelectedVehicle = useRideStore((state) => state.setSelectedVehicle);
   const resetRide = useRideStore((state) => state.resetRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);

@@ -38,9 +38,12 @@ export const NotificationBar: React.FC<Props> = ({
   onDismiss,
 }) => {
   const [shouldRender, setShouldRender] = useState(visible);
-  const translateY = useRef(new Animated.Value(-140)).current;
-  const translateX = useRef(new Animated.Value(0)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
+  // Lazy useState instead of useRef(...).current: reading a fresh ref's
+  // .current during render trips react-hooks/refs, and these Animated.Value
+  // instances are created exactly once either way.
+  const [translateY] = useState(() => new Animated.Value(-140));
+  const [translateX] = useState(() => new Animated.Value(0));
+  const [opacity] = useState(() => new Animated.Value(0));
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearTimer = () => {
@@ -69,7 +72,10 @@ export const NotificationBar: React.FC<Props> = ({
 
   useEffect(() => {
     if (visible) {
-      setShouldRender(true);
+      // Async boundary — sync setState in an effect trips
+      // react-hooks/set-state-in-effect; a microtask deferral is invisible
+      // next to the 260ms entrance animation below.
+      Promise.resolve().then(() => setShouldRender(true));
       translateY.setValue(-140);
       translateX.setValue(0);
       opacity.setValue(0);

@@ -53,7 +53,7 @@ export async function openGoogleMapsNavigation(
 
     // Default universal URL opens Google Maps in app or web browser
     await Linking.openURL(webUrl);
-  } catch (error) {
+  } catch {
     try {
       await Linking.openURL(webUrl);
     } catch {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, TextInput, Text, StyleSheet, ViewStyle, TextStyle, TouchableOpacity } from 'react-native';
+import { View, TextInput, Text, StyleSheet, ViewStyle, TextStyle } from 'react-native';
 import { colors, radii, typography } from '../../theme/theme';
 
 interface InputProps {
@@ -79,7 +79,7 @@ interface OTPInputProps {
 }
 
 export const OTPInput: React.FC<OTPInputProps> = ({ code, setCode, length = 4 }) => {
-  const inputs = React.useRef<Array<TextInput | null>>([]);
+  const inputs = React.useRef<(TextInput | null)[]>([]);
 
   const handleChange = (text: string, index: number) => {
     const newCode = [...code];

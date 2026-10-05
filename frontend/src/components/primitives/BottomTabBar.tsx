@@ -53,7 +53,7 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
         useNativeDriver: true,
       }),
     ]).start();
-  }, [visible]);
+  }, [visible, opacity, translateY]);
 
   const riderTabs: TabItem[] = [
     { id: 'home', label: 'Home', iconName: 'home' },

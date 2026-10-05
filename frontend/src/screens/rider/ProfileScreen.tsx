@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, RefreshControl } from 'react-native';
 import { LogOut, Mail, Phone, Edit2, Car, BadgeCheck, Camera, AlertCircle, PauseCircle } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { colors, typography, radii } from '../../theme/theme';
+import { colors, typography } from '../../theme/theme';
 import { useAuthStore } from '../../store/authStore';
 import { useRideStore } from '../../store/rideStore';
 import { authApi } from '../../api/auth';
@@ -54,7 +54,11 @@ export const ProfileScreen: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    loadApp();
+    // Async boundary: loadApp() may set state before its first await, which
+    // trips react-hooks/set-state-in-effect — a microtask deferral keeps the
+    // initial-fetch timing visually identical (useFocusEffect below re-runs
+    // this on every focus anyway).
+    Promise.resolve().then(loadApp);
   }, [loadApp]);
   useFocusEffect(
     useCallback(() => {

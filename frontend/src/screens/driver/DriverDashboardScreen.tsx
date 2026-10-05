@@ -44,7 +44,8 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [isOnline, setIsOnline] = useState(false);
   const [isRegistered, setIsRegistered] = useState<boolean | null>(null); // null = still checking
-  const [driverCoords, setDriverCoords] = useState<LatLng | undefined>();
+  // Value is never read (only the setters below trigger re-renders).
+  const [, setDriverCoords] = useState<LatLng | undefined>();
   const [showWelcome, setShowWelcome] = useState(false);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestCoords = useRef<LatLng | undefined>(undefined);

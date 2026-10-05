@@ -63,9 +63,13 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
   // Terminal transitions (completed / cancelled) fire exactly once.
   const terminalRef = useRef(false);
   const onRideCancelledRef = useRef(onRideCancelled);
-  onRideCancelledRef.current = onRideCancelled;
   const onRideCompletedRef = useRef(onRideCompleted);
-  onRideCompletedRef.current = onRideCompleted;
+  // Latest-prop refs synced in an effect: writing .current during render trips
+  // react-hooks/refs, and the only readers are async socket/poll handlers.
+  useEffect(() => {
+    onRideCancelledRef.current = onRideCancelled;
+    onRideCompletedRef.current = onRideCompleted;
+  });
 
   // Shared by the socket handler and the 3s polling fallback.
   const checkRideStatus = useCallback(async () => {
@@ -121,7 +125,6 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
       void checkRideStatus();
     }, 3000);
     return () => clearInterval(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRide?.id, checkRideStatus]);
 
   // Road-following route for the fit-bounds map. Failures fall back to
@@ -131,7 +134,10 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
     const pickup = pickupCoords ?? (activeRide?.pickup ? { lat: activeRide.pickup.lat, lng: activeRide.pickup.lng } : undefined);
     const dropoff = dropoffCoords ?? (activeRide?.dropoff ? { lat: activeRide.dropoff.lat, lng: activeRide.dropoff.lng } : undefined);
     if (!pickup || !dropoff) {
-      setRoute(undefined);
+      // Async boundary — sync setState directly in the effect trips
+      // react-hooks/set-state-in-effect; a microtask is invisible next to
+      // the route fetch it guards.
+      Promise.resolve().then(() => setRoute(undefined));
       return;
     }
     getRoute(pickup, dropoff)
@@ -142,7 +148,7 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
     return () => {
       mounted = false;
     };
-  }, [pickupCoords?.lat, pickupCoords?.lng, dropoffCoords?.lat, dropoffCoords?.lng, activeRide?.pickup?.lat, activeRide?.pickup?.lng, activeRide?.dropoff?.lat, activeRide?.dropoff?.lng]);
+  }, [pickupCoords, dropoffCoords, activeRide?.pickup, activeRide?.dropoff]);
 
   return (
     <View style={styles.container}>

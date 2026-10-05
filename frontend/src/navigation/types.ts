@@ -24,14 +24,6 @@ export type RiderHomeStackParamList = {
   RideCompleted: undefined;
 };
 
-// Rider Tab Types (legacy — kept for RiderTabNavigator until removed)
-export type RiderTabParamList = {
-  HomeTab: NavigatorScreenParams<RiderHomeStackParamList>;
-  ServicesTab: undefined;
-  MyRidesTab: undefined;
-  ProfileTab: undefined;
-};
-
 // Rider-mode tabs: booking only. No driver UI is registered in this tree.
 export type MainTabParamList = {
   HomeTab: NavigatorScreenParams<RiderHomeStackParamList>;
@@ -48,23 +40,12 @@ export type DriverMainTabParamList = {
   ProfileTab: undefined;
 };
 
-// Driver Tab Types
-export type DriverTabParamList = {
-  DashboardTab: NavigatorScreenParams<DriverDashboardStackParamList>;
-  TripsTab: undefined;
-  EarningsTab: undefined;
-  AccountTab: undefined;
-};
-
 // Root Stack Types — single unified app (rider booking + driver mode coexist).
 export type RootStackParamList = {
   Onboarding: NavigatorScreenParams<OnboardingStackParamList>;
   CompleteProfile: undefined;
   Main: NavigatorScreenParams<MainTabParamList>;
   Admin: NavigatorScreenParams<AdminTabParamList>;
-  // Legacy names kept as aliases so deep links / old navigate() calls don't crash.
-  RiderMain?: NavigatorScreenParams<RiderTabParamList>;
-  DriverMain?: NavigatorScreenParams<DriverTabParamList>;
   CancelRideConfirmation: undefined;
   RideCancelled: { reason?: string };
   RideAnnouncementsSettings: undefined;

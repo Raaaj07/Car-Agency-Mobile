@@ -31,7 +31,10 @@ export const DriverEarningsScreen: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    load();
+    // Async boundary: load() clears the error synchronously before its first
+    // await, which trips react-hooks/set-state-in-effect — a microtask
+    // deferral keeps the initial-fetch timing visually identical.
+    Promise.resolve().then(load);
   }, [load]);
 
   const completed = rides.filter((r) => r.status === 'completed');

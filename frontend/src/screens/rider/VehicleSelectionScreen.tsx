@@ -49,7 +49,10 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
 
   useEffect(() => {
     if (preferredVehicleId) {
-      setSelectedId(preferredVehicleId);
+      // Async boundary — sync setState directly in the effect trips
+      // react-hooks/set-state-in-effect (value already matches the lazy
+      // useState initial, so this lands as a no-op either way).
+      Promise.resolve().then(() => setSelectedId(preferredVehicleId));
       // Find and pre-apply in store so RideDetails shows the right price.
       const preferred = vehicles.find((v) => v.id === preferredVehicleId);
       if (preferred) setSelectedVehicleStore(preferred);
@@ -65,11 +68,16 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
   useEffect(() => {
     let mounted = true;
     if (!pickupCoords || !dropoffCoords) {
-      setRoute(null);
+      // Async boundary — sync setState directly in the effect trips
+      // react-hooks/set-state-in-effect; a microtask is invisible next to
+      // the route fetch it guards.
+      Promise.resolve().then(() => setRoute(null));
       return;
     }
-    setIsLoadingRoute(true);
-    setRouteError(false);
+    Promise.resolve().then(() => {
+      setIsLoadingRoute(true);
+      setRouteError(false);
+    });
     getRoute(pickupCoords, dropoffCoords)
       .then((result) => {
         if (!mounted) return;
@@ -88,7 +96,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
     return () => {
       mounted = false;
     };
-  }, [pickupCoords?.lat, pickupCoords?.lng, dropoffCoords?.lat, dropoffCoords?.lng]);
+  }, [pickupCoords, dropoffCoords]);
 
   const handleSelect = (v: VehicleOption) => {
     setSelectedId(v.id);

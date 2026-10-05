@@ -23,7 +23,6 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
   const [driverPosition, setDriverPosition] = useState<LatLng | undefined>();
   const watchSubscription = useRef<Location.LocationSubscription | null>(null);
 
-  const destination: LatLng | undefined = isToPickup ? activeRide?.pickup : activeRide?.dropoff;
   const destinationAddress =
     (isToPickup ? activeRide?.pickup?.address : activeRide?.dropoff?.address) ??
     (isToPickup ? 'Heading to pickup location' : 'Heading to drop-off location');

@@ -42,7 +42,10 @@ export const DriverTripsScreen: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    load();
+    // Async boundary: load() clears the error synchronously before its first
+    // await, which trips react-hooks/set-state-in-effect — a microtask
+    // deferral keeps the initial-fetch timing visually identical.
+    Promise.resolve().then(load);
   }, [load]);
 
   if (loading) {

@@ -68,7 +68,7 @@ export function connectSocket(token: string, role?: 'rider' | 'driver' | 'admin'
       ]);
       // Read role fresh (not the captured login-time value) — user may have
       // become a driver after connecting.
-      const freshRole = role ?? useAuthStore.getState().role;
+      const freshRole = role ?? useAuthStore.getState().user?.role ?? null;
       // Re-join active ride room on reconnect
       const activeRide = useRideStore.getState().activeRide;
       if (activeRide?.id) {

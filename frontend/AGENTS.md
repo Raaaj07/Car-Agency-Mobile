@@ -25,9 +25,18 @@ Run lint and typecheck before declaring any task done.
 
 ## Navigation & Routing
 
-- This repo uses **React Navigation** (NOT Expo Router): `native-stack` + `bottom-tabs` in `src/navigation/*` (`AppNavigator`, `OnboardingNavigator`, `MainTabNavigator`, `RiderHomeStackNavigator`, `DriverDashboardStackNavigator`, `types.ts`). There is no `src/app/` directory. Do not add Expo Router or migrate anything to it.
-- Root gating lives in `AppNavigator`: not authenticated → `Onboarding`; authenticated but `user.profileComplete === false` → `CompleteProfile`; otherwise → `Main` (unified Home/Drive/Trips/Profile tabs). Auth state + session restore live in `src/store/authStore.ts` (secure-store tokens, `hydrated` splash).
+- This repo uses **React Navigation** (NOT Expo Router): `native-stack` + `bottom-tabs` in `src/navigation/*` (`AppNavigator`, `OnboardingNavigator`, `MainTabNavigator`, `RiderHomeStackNavigator`, `DriverDashboardStackNavigator`, `AdminNavigator`, `types.ts`). There is no `src/app/` directory. Do not add Expo Router or migrate anything to it.
+- Root gating lives in `AppNavigator`: not authenticated → `Onboarding`; authenticated but `user.profileComplete === false` → `CompleteProfile`; `user.role === 'admin'` → `Admin` console (4 tabs — Overview / Drivers / Rides / Account — each with its own stack; see `screens/admin/*`); otherwise → `Main` (unified Home/Drive/Trips/Profile tabs). Auth state + session restore live in `src/store/authStore.ts` (secure-store tokens, `hydrated` splash). The legacy `authStore.role` field was removed — `user.role` (server truth) is the only role source.
+- Param lists for every stack live in `src/navigation/types.ts` (rider, driver, admin). Keep them in sync when adding screens.
 - Docs: https://reactnavigation.org/docs/getting-started/
+
+## Driver background location (D-4)
+
+- The driver heartbeat has two layers: a foreground `setInterval` (drives UI + API) and an OS-level background task in `src/lib/locationTask.ts`
+  (`Location.startLocationUpdatesAsync` + `expo-task-manager`, registered globally from `App.tsx`). The task PATCHes `/drivers/location` using SecureStore
+  tokens and refreshes them once on 401; `api/client.ts` adopts SecureStore tokens before its own refresh (refresh tokens are single-use).
+- `app.json` configures this via the `expo-location` plugin (`isIosBackgroundLocationEnabled`, `isAndroidBackgroundLocationEnabled`, `isAndroidForegroundServiceEnabled`).
+  These are **native** changes: they need a dev/EAS build — not testable in Expo Go on Android (no TaskManager there; calls degrade to no-ops).
 
 ## Building with EAS
 
