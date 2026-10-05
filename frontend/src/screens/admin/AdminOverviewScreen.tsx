@@ -20,7 +20,7 @@ import { StatusPill } from '../../components/admin/StatusPill';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
-import { adminApi, AdminOverview } from '../../api/admin';
+import { adminApi, AdminOverview, AuditEntry } from '../../api/admin';
 import { getApiError } from '../../api/client';
 import { useAuthStore } from '../../store/authStore';
 import { useAdminStore } from '../../store/adminStore';
@@ -50,8 +50,9 @@ function SectionTitle({ title, count }: { title: string; count?: number }) {
 /**
  * Admin dashboard (spec §3.2): greeting hero, six tap-through stat cards,
  * "Needs attention" (oldest pending / stuck rides / completed-but-unpaid) and
- * the audit-log activity feed. Refetches on new-application socket events and
- * after any admin mutation.
+ * a "Recent activity" feed from the paginated GET /admin/audit endpoint
+ * (latest 10, target display names, own loading/empty/error states).
+ * Refetches on new-application socket events and after any admin mutation.
  */
 export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
   const user = useAuthStore((s) => s.user);
@@ -63,6 +64,12 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Latest 10 audit entries — separate call so the feed has its own skeleton,
+  // empty state and retry, and shows target display names.
+  const [activity, setActivity] = useState<AuditEntry[] | null>(null);
+  const [activityError, setActivityError] = useState<string | null>(null);
+  const [activityLoading, setActivityLoading] = useState(true);
 
   // Promise callbacks only — direct setState inside the effect body trips
   // react-hooks/set-state-in-effect (A-9 pattern), so the chain is inline.
@@ -88,6 +95,27 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
     };
   }, [newSeq, dataSeq]);
 
+  // Same trigger set as the overview: mount, new-application events, mutations.
+  useEffect(() => {
+    let live = true;
+    adminApi
+      .audit({ page: 1, limit: 10 })
+      .then((page) => {
+        if (!live) return;
+        setActivity(page.items);
+        setActivityError(null);
+      })
+      .catch((err) => {
+        if (live) setActivityError(getApiError(err));
+      })
+      .finally(() => {
+        if (live) setActivityLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [newSeq, dataSeq]);
+
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     adminApi
@@ -97,7 +125,29 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
         setError(null);
       })
       .catch((err) => setError(getApiError(err)))
-      .finally(() => setRefreshing(false));
+      .finally(() => {
+        adminApi
+          .audit({ page: 1, limit: 10 })
+          .then((page) => {
+            setActivity(page.items);
+            setActivityError(null);
+          })
+          .catch((err) => setActivityError(getApiError(err)))
+          .finally(() => setRefreshing(false));
+      });
+  }, []);
+
+  const retryActivity = useCallback(() => {
+    setActivityLoading(true);
+    setActivityError(null);
+    adminApi
+      .audit({ page: 1, limit: 10 })
+      .then((page) => {
+        setActivity(page.items);
+        setActivityError(null);
+      })
+      .catch((err) => setActivityError(getApiError(err)))
+      .finally(() => setActivityLoading(false));
   }, []);
 
   const onRetry = useCallback(() => {
@@ -237,14 +287,18 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
               </>
             )}
 
-            <SectionTitle title="Recent activity" count={data.recentActivity.length} />
-            {data.recentActivity.length === 0 ? (
+            <SectionTitle title="Recent activity" count={activity?.length} />
+            {activityLoading && !activity ? (
+              <SkeletonList count={3} rowHeight={76} />
+            ) : activityError && !activity ? (
+              <ErrorState message={activityError} onRetry={retryActivity} />
+            ) : activity && activity.length === 0 ? (
               <EmptyState
                 title="No activity yet"
                 message="Approvals, suspensions and payment resolutions will show up here."
               />
             ) : (
-              data.recentActivity.map((entry) => (
+              activity?.map((entry) => (
                 <Card
                   key={entry.id}
                   style={styles.activityCard}
@@ -260,6 +314,10 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
                     </Text>
                     <Text style={styles.activityTime}>{timeAgo(entry.createdAt)}</Text>
                   </View>
+                  <Text style={styles.activityTarget} numberOfLines={1}>
+                    {entry.targetType === 'driver' ? 'Driver' : 'Ride'} ·{' '}
+                    {entry.targetName ?? `#${entry.targetId.slice(0, 8)}`}
+                  </Text>
                   <Text style={styles.activityMeta} numberOfLines={2}>
                     {(entry.actorName ?? 'System') +
                       (entry.reason ? ` — ${entry.reason}` : '')}
@@ -339,6 +397,11 @@ const styles = StyleSheet.create({
   activityTime: {
     ...typography.meta,
     color: colors.textMuted,
+  },
+  activityTarget: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    marginTop: 6,
   },
   activityMeta: {
     ...typography.meta,

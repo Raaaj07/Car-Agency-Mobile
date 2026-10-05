@@ -66,7 +66,7 @@ describe('AdminService status machine (A-2, A-3)', () => {
     audit = {
       log: jest.fn().mockResolvedValue(undefined),
       historyForDriver: jest.fn().mockResolvedValue([]),
-      recent: jest.fn().mockResolvedValue([]),
+      list: jest.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 }),
     };
     ridesSvc = { clearPendingTimers: jest.fn() };
     payments = { update: jest.fn().mockResolvedValue({ affected: 1 }) };

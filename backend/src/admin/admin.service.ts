@@ -748,8 +748,6 @@ export class AdminService implements OnApplicationBootstrap {
       .take(5)
       .getMany();
 
-    const recentActivity = await this.audit.recent(10);
-
     return {
       timezone: tz,
       generatedAt: now,
@@ -782,7 +780,8 @@ export class AdminService implements OnApplicationBootstrap {
         })),
         unpaidRides: unpaidRides.map((r) => this.toRideSummary(r)),
       },
-      recentActivity,
+      // The "Recent activity" feed is a dedicated GET /admin/audit call
+      // (richer: target display names, own pagination/retry).
     };
   }
 

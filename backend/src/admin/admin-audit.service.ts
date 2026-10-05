@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { UserEntity } from '../auth/entities/user.entity';
+import { DriverEntity } from '../drivers/entities/driver.entity';
+import { RideEntity } from '../rides/entities/ride.entity';
 import { AdminAuditLogEntity, AuditAction, AuditTargetType } from './entities/admin-audit-log.entity';
 
 export interface AuditEntry {
@@ -20,6 +22,12 @@ export interface AuditRow {
   action: AuditAction;
   targetType: AuditTargetType;
   targetId: string;
+  /**
+   * Display name of the target — driver's name, or the ride's rider name.
+   * Resolved at read time (rows outlive their targets, so it is nullable and
+   * the client falls back to a short id). Phone numbers are never included.
+   */
+  targetName: string | null;
   reason: string | null;
   meta: Record<string, unknown> | null;
   createdAt: Date;
@@ -37,6 +45,8 @@ export class AdminAuditService {
   constructor(
     @InjectRepository(AdminAuditLogEntity) private readonly logs: Repository<AdminAuditLogEntity>,
     @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
+    @InjectRepository(DriverEntity) private readonly drivers: Repository<DriverEntity>,
+    @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
   ) {}
 
   async log(entry: AuditEntry): Promise<void> {
@@ -79,7 +89,7 @@ export class AdminAuditService {
     if (filters?.actorUserId) qb.andWhere('a.actorUserId = :actorUserId', { actorUserId: filters.actorUserId });
     qb.orderBy('a.createdAt', 'DESC').addOrderBy('a.id', 'DESC').skip((pg - 1) * lim).take(lim);
     const [rows, total] = await qb.getManyAndCount();
-    return { items: rows.map(toAuditRow), total, page: pg, limit: lim };
+    return { items: await this.decorateTargets(rows.map(toAuditRow)), total, page: pg, limit: lim };
   }
 
   /** Review history for one driver's detail screen (A-12: survives re-apply). */
@@ -90,16 +100,41 @@ export class AdminAuditService {
       order: { createdAt: 'DESC', id: 'DESC' },
       take: lim,
     });
-    return rows.map(toAuditRow);
+    return this.decorateTargets(rows.map(toAuditRow));
   }
 
-  /** Newest entries for the overview "recent activity" feed. */
-  async recent(limit = 10): Promise<AuditRow[]> {
-    const rows = await this.logs.find({
-      order: { createdAt: 'DESC', id: 'DESC' },
-      take: Math.min(Math.max(limit || 10, 1), 50),
-    });
-    return rows.map(toAuditRow);
+  /**
+   * Resolve driver/ride display names for a page of rows in at most two extra
+   * queries (batched by id). Unknown/deleted targets stay null — the client
+   * falls back to the short id. Never joins phone numbers into the payload.
+   */
+  private async decorateTargets(rows: AuditRow[]): Promise<AuditRow[]> {
+    const driverIds = [...new Set(rows.filter((r) => r.targetType === 'driver').map((r) => r.targetId))];
+    const rideIds = [...new Set(rows.filter((r) => r.targetType === 'ride').map((r) => r.targetId))];
+
+    const driverNames = new Map<string, string | null>();
+    const rideNames = new Map<string, string | null>();
+
+    if (driverIds.length > 0) {
+      const drivers = await this.drivers
+        .find({ where: { id: In(driverIds) }, relations: ['user'] })
+        .catch(() => [] as DriverEntity[]);
+      for (const d of drivers) driverNames.set(d.id, d.user?.name ?? null);
+    }
+    if (rideIds.length > 0) {
+      const rides = await this.rides
+        .find({ where: { id: In(rideIds) }, relations: ['rider'] })
+        .catch(() => [] as RideEntity[]);
+      for (const r of rides) rideNames.set(r.id, r.rider?.name ?? null);
+    }
+
+    for (const row of rows) {
+      row.targetName =
+        row.targetType === 'driver'
+          ? driverNames.get(row.targetId) ?? null
+          : rideNames.get(row.targetId) ?? null;
+    }
+    return rows;
   }
 }
 
@@ -111,6 +146,7 @@ function toAuditRow(r: AdminAuditLogEntity): AuditRow {
     action: r.action,
     targetType: r.targetType,
     targetId: r.targetId,
+    targetName: null, // filled by decorateTargets()
     reason: r.reason,
     meta: r.meta,
     createdAt: r.createdAt,

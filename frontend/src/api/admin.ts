@@ -64,6 +64,8 @@ export interface AuditEntry {
   action: AuditAction;
   targetType: 'driver' | 'ride';
   targetId: string;
+  /** Driver's name or the ride's rider name; null for deleted targets. */
+  targetName: string | null;
   reason: string | null;
   meta: Record<string, unknown> | null;
   createdAt: string;
@@ -174,7 +176,6 @@ export interface AdminOverview {
     }[];
     unpaidRides: AdminRideSummary[];
   };
-  recentActivity: AuditEntry[];
 }
 
 export interface Page<T> {
