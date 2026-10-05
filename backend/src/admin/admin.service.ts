@@ -100,7 +100,11 @@ export class AdminService implements OnApplicationBootstrap {
     // A-10: the queue is ordered by submittedAt (oldest waiter first for the
     // pending list) — `updatedAt` reshuffled whenever anyone touched a row.
     const sort = opts?.sort ?? (status === 'pending' ? 'oldest' : 'newest');
-    qb.orderBy('COALESCE(d."submittedAt", d."createdAt")', sort === 'oldest' ? 'ASC' : 'DESC')
+    // Order by a selected alias, not a raw expression: with skip/take TypeORM
+    // splits order keys on '.', which mangled COALESCE(d."submittedAt", ...)
+    // into a bogus alias ("COALESCE(d" alias was not found).
+    qb.addSelect('COALESCE(d."submittedAt", d."createdAt")', 'queue_at')
+      .orderBy('queue_at', sort === 'oldest' ? 'ASC' : 'DESC')
       .addOrderBy('d.id', 'ASC')
       .skip((pg - 1) * lim)
       .take(lim);
@@ -717,7 +721,8 @@ export class AdminService implements OnApplicationBootstrap {
       .createQueryBuilder('d')
       .leftJoinAndSelect('d.user', 'u')
       .where('d.status = :status', { status: 'pending' })
-      .orderBy('COALESCE(d."submittedAt", d."createdAt")', 'ASC')
+      .addSelect('COALESCE(d."submittedAt", d."createdAt")', 'queue_at')
+      .orderBy('queue_at', 'ASC')
       .addOrderBy('d.id', 'ASC')
       .take(5)
       .getMany();
