@@ -30,10 +30,23 @@ and `AUDIT.md` (as-found baseline).
 cd backend && npm run migration:run
 ```
 
-12 migrations total; all are applied on the dev machine. For a fresh checkout the
-only post-pull migration is `1791300000000-AddPromosTables` (creates `promos` +
-`promo_redemptions` and seeds `VAZHI20` with the original config copy — rider-visible
-promo behaviour is unchanged after running it).
+13 migrations total; all are applied on the dev machine. For a fresh checkout the
+post-pull migrations are `1791300000000-AddPromosTables` (creates `promos` +
+`promo_redemptions` and seeds `VAZHI20` with the original config copy) and
+`1791400000000-AddRideOfferAndOtpColumns` (M-3 fix — see below).
+
+> **⚠ M-2 — fresh-database blocker (owner fix pending):** on a *brand-new*
+> database `migration:run` fails at the legacy auto-generated
+> `SyncSchemaDrift1790972060287` migration (`column ... already exists` — it
+> re-adds columns the backdated `1700000000200/0300/0400` migrations already
+> create). Dev works only because its history recorded that migration before
+> those files existed. Existing migrations must not be edited in this pass, so:
+> the integration suite detects the conflict and pre-marks the migration after
+> proving it redundant, but **`npm run migration:run` on a truly fresh database
+> still needs the owner to make that migration idempotent
+> (`ADD ... IF NOT EXISTS`) or delete its redundant statements**, then verify on
+> a throwaway database. Until then, new environments bootstrap via the test
+> suite's documented repair or a copy of dev's schema.
 
 ## Environment (names only)
 
@@ -55,13 +68,28 @@ promo behaviour is unchanged after running it).
 ## Verification commands
 
 ```bash
-cd backend  && npx tsc --noEmit && npx jest          # 128 tests / 12 suites
+cd backend  && npx tsc --noEmit && npx jest          # unit: 128 tests / 12 suites (no DB needed)
 cd frontend && npx tsc --noEmit && npx eslint src    # 0 errors
 ```
+
+Opt-in integration suite (real Postgres, 11 tests / 3 suites — promos FK/atomicity,
+admin users+CSV with real SQL, entity↔schema fidelity):
+
+```bash
+cd backend
+docker compose -f docker-compose.test.yml up -d --wait   # throwaway Postgres :5433 + Redis :6380
+INTEGRATION=1 npm run test:integration                   # PowerShell: $env:INTEGRATION='1'
+docker compose -f docker-compose.test.yml down -v        # reset all state
+```
+
+No Docker needed: without `TEST_DB_*` overrides the suite reuses `.env` credentials
+against the local server and creates its own `vazhi_test` database (never dev's).
 
 ## Known limitations (accepted)
 
 - Payment + OTP run in dev modes until the owner flips them off (fail-closed in production).
+- Fresh-DB `migration:run` blocker **M-2** (see Migrations above): the chain only runs end-to-end on
+  dev until the owner makes the legacy `SyncSchemaDrift` migration idempotent.
 - `D-4` background location heartbeat needs a new native build (`npx expo run:android|ios` or EAS) and background permission ("allow all the time") on the driver's device.
 - CSV export is capped at 50 000 rows per request; ride-list phone privacy applies to the export too.
 - Device/DB/Redis/payment-sandbox tests in the delivery report's "needs manual verification" list have not been run here.

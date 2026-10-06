@@ -18,6 +18,12 @@
 >   completion clamp + outlier flag), N7 completed (seed is deterministic + idempotent and pins dev drivers in Redis), PR-1 completed
 >   (promos are DB rows with admin CRUD + redemption history), plus document zoom, Overview audit feed, `GET /admin/users`,
 >   `GET /admin/rides/export.csv` and an opt-in integration suite — see `CHANGES.md` status table.
+> - **New (found by the follow-up pass's integration suite, 2026-10-06)**: **M-2** — the legacy auto-generated
+>   `SyncSchemaDrift1790972060287` migration re-adds columns the backdated `1700000000200/0300/0400` migrations
+>   already create, so `migration:run` fails on every fresh database (dev's history predates those files; the test
+>   suite works around it after proving redundancy — **owner fix pending**: make it idempotent or delete it);
+>   **M-3** — `rides.offeredAt`/`offerExpiresAt`/`declinedDriverIds`/`otpAttempts`/`otpLockedUntil` existed only
+>   on dev via `DB_SYNCHRONIZE` drift (**fixed** by new migration `1791400000000`, guarded by an entity↔schema test).
 > - **Owner action pending**: B15/S-1 key rotation (see `ADMIN.md` — files themselves untouched by design).
 > - **Accepted/deferred**: seed `Math.random` plates (non-security; seed already prod-blocked — plate values are now deterministic per index),
 >   local-disk uploads (swap to S3/R2 before production), B8 (email `email_verified` check on Google link — open), legacy `users.role='driver'` values (normalize in a future migration).

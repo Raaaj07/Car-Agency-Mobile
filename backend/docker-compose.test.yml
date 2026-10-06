@@ -1,0 +1,43 @@
+# Throwaway Postgres + Redis for the opt-in integration suite (Task 11).
+#
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   INTEGRATION=1 npm run test:integration      # PowerShell: $env:INTEGRATION='1'
+#   docker compose -f docker-compose.test.yml down -v    # reset all state
+#
+# Ports 5433/6380 (vs dev 5432/6379 in docker-compose.yml) so both stacks can
+# run side by side. TEST_DB_* / TEST_REDIS_* env names override every default;
+# without a compose file the suite falls back to the local server's credentials
+# (from backend/.env) but always its own database (`vazhi_test`), never dev's.
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: vazhi-test-postgres
+    environment:
+      POSTGRES_USER: ${TEST_DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${TEST_DB_DATABASE:-vazhi_test}
+    ports:
+      - '${TEST_DB_PORT:-5433}:5432'
+    volumes:
+      - vazhi_test_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${TEST_DB_USERNAME:-postgres}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: vazhi-test-redis
+    ports:
+      - '${TEST_REDIS_PORT:-6380}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  vazhi_test_pg_data:

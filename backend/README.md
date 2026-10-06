@@ -112,10 +112,24 @@ npx tsc --noEmit         # type-check alongside
   `seed-data` (determinism/idempotence), `csv` (RFC 4180 + formula guard), and
   `src/e2e/happy-path.spec.ts` — an in-process apply → online → book → accept → OTP →
   complete → pay flow with no sockets or network.
-- **Integration tests (real Postgres + Redis)** are opt-in and excluded from the default
-  run: set `INTEGRATION=1` plus the `TEST_DB_*` / `TEST_REDIS_*` env names, with
-  `docker-compose.test.yml` providing the throwaway containers (see `ADMIN.md` /
-  `CHANGES.md` for the exact commands).
+- **Integration tests (real Postgres, real SQL)** are opt-in and excluded from the default run:
+
+  ```bash
+  docker compose -f docker-compose.test.yml up -d --wait   # throwaway Postgres :5433 + Redis :6380
+  INTEGRATION=1 npm run test:integration                   # PowerShell: $env:INTEGRATION='1'
+  docker compose -f docker-compose.test.yml down -v        # reset all state
+  ```
+
+  No Docker needed: without `TEST_DB_*` overrides the suite reuses `.env`
+  credentials against the local server and creates its own `vazhi_test`
+  database (the name never falls back to dev's). 11 tests / 3 suites: promos
+  (real unique index, FK `SET NULL` history, transaction-atomic redemptions),
+  admin users + CSV (escaped ILIKE, grouped counts, phone-free export), and a
+  schema-fidelity check that every entity column exists in the migrated schema.
+  Note: on a *brand-new* database the chain still trips over the legacy
+  `SyncSchemaDrift1790972060287` migration (finding M-2, see `CHANGES.md`);
+  the suite detects it, proves it redundant and works around it —
+  `npm run migration:run` outside the suite needs the owner fix first.
 
 ## API overview
 

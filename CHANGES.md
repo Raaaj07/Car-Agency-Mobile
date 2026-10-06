@@ -148,7 +148,14 @@ Built on top of Phases 1–6 (`d7e5d14` → `bb632aa`). One commit per task grou
 | 8 | PR-1 promos: `promos` + `promo_redemptions` tables, admin CRUD, `AdminPromosScreen` | **Done** | `346e0b3` | Migration seeds `VAZHI20` with the old config copy; async `discountFor`; redemption recorded inside the completion ride-lock tx; 409 on dup code; SET NULL keeps history; `PROMOS_CONFIG` deleted; +24 tests |
 | 9 | Admin extras: `GET /admin/users` + `GET /admin/rides/export.csv` | **Done** | `154c597` | Users: escaped ILIKE search (name/phone/email) + role filter + batched ride counts. CSV: shared filter whitelist, BOM/CRLF + formula-injection guard, no phones, 50k cap, route declared before `rides/:id`; +13 tests + live boot smoke test |
 | 10 | Docs: `ADMIN.md`, `AUDIT.md`, `CHANGES.md` status table, `AGENTS.md`, backend README tests | **Done** | (this commit) | Refreshed to current state; stale "in-memory timers" limitation removed |
-| 11 | Opt-in integration suite + `docker-compose.test.yml` | **In progress** | (next commit) | Runs only when `INTEGRATION=1` + test DB env are set; default `jest` stays unit-only |
+| 11 | Opt-in integration suite + `docker-compose.test.yml` | **Done** | (this commit) | 3 specs / 11 tests behind `INTEGRATION=1` + `jest.integration.config.js` (default `jest` stays unit-only, 128/12); double gate (config ignore + runtime check); throws away only `vazhi_test` (never dev); found + handled M-2/M-3 below |
+
+### New findings (surfaced by the Task 11 suite)
+
+| ID | Severity | Status | Detail |
+|----|----------|--------|--------|
+| **M-2** | High (blocks fresh deploys) | **Owner fix pending — test workaround in place** | The legacy auto-generated `SyncSchemaDrift1790972060287` migration re-`ADD`s columns the backdated `1700000000200/0300/0400` migrations already create (`IF NOT EXISTS`), so `migration:run` fails with `column ... already exists` on **every fresh database** — dev only survives because its history recorded it before those files were backdated in. Editing existing migrations is forbidden in this pass, so `src/integration/db-helpers.ts` detects the conflict, **proves redundancy** (all 18 columns + `drivers.rating` default), pre-marks it executed, re-runs the chain, and mirrors its final statement (avatar comment) so fresh ≡ dev. **Owner fix:** make that migration idempotent (`ADD ... IF NOT EXISTS`) or delete its redundant statements, then verify `migration:run` on a throwaway database. Until fixed, a brand-new *production* database cannot bootstrap via `migration:run` alone. |
+| **M-3** | High (broke fresh INSERTs) | **Fixed — new migration `1791400000000-AddRideOfferAndOtpColumns`** | `rides.offeredAt`, `offerExpiresAt`, `declinedDriverIds`, `otpAttempts`, `otpLockedUntil` existed only on dev via `DB_SYNCHRONIZE=true` drift; no migration ever created them, so a fresh DB failed every ride INSERT (offer timers, declined-driver tracking, OTP lockout). Fixed additively (new migration, `IF NOT EXISTS` — no-op on dev; applied live: dev now at 13 migrations). Guarded forever by the new `schema.integration.spec.ts`, which diffs **every** entity column against the migrated schema. |
 
 ### What changed (high level)
 
@@ -163,7 +170,8 @@ Built on top of Phases 1–6 (`d7e5d14` → `bb632aa`). One commit per task grou
 ### Verification (this pass)
 
 - Backend: `npx tsc --noEmit` 0 errors; `npx jest` **128 tests / 12 suites** green; `npx eslint src` 0 errors (1 pre-existing warning `razorpay-payment.provider.ts:45`).
+- Integration (opt-in): `INTEGRATION=1 npm run test:integration` **11 tests / 3 suites** green — three consecutive ways: already-migrated re-run, full fresh-database run (`CREATE DATABASE` → chain → M-2 repair), and a second fresh DB via `TEST_DB_DATABASE` override (then dropped).
 - Frontend: `npx tsc --noEmit` 0 errors; `npx eslint src` 0 errors / 0 warnings.
-- Live: `npm run migration:run` (AddPromosTables executed, `VAZHI20` row verified); `npm run seed` twice (idempotent);
+- Live: `npm run migration:run` (AddPromosTables + AddRideOfferAndOtpColumns executed — dev at 13 migrations, `VAZHI20` row verified); `npm run seed` twice (idempotent);
   backend booted → both new admin routes mapped and answer 401 unauthenticated, `export.csv` precedes `rides/:id` in the route map.
-- Not verifiable here: device UI (zoom gestures, promo screen on handset), real Mapbox/MSG91/Razorpay calls, multi-instance Redis sweep under load — see delivery report checklist.
+- Not verifiable here: Docker Desktop (absent — `docker-compose.test.yml` untested end-to-end; local Postgres used instead), device UI (zoom gestures, promo screen on handset), real Mapbox/MSG91/Razorpay calls, multi-instance Redis sweep under load — see delivery report checklist.
