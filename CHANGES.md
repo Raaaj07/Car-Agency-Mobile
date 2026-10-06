@@ -127,3 +127,43 @@ Checks: `cd backend && npm run build` PASS; `cd frontend && npx tsc --noEmit` PA
 ## B15 secrets warning
 
 `backend/.env`, `frontend/.env`, and three `.jks` keystores exist in the working folder (gitignored, contents never printed or modified here). If this folder was ever shared, rotate DB, Redis, JWT, MSG91, and Razorpay secrets, and revoke/reissue the upload keystores.
+
+---
+
+## Follow-up pass (11 tasks, 2026-10-06)
+
+Built on top of Phases 1–6 (`d7e5d14` → `bb632aa`). One commit per task group, never pushed.
+
+### Status table
+
+| # | Task | Status | Commit | Notes |
+|---|------|--------|--------|-------|
+| 1 | S-1 secrets guard (pre-commit hook + CI workflow + `.env.example` names + `*.keystore` ignore) | **Done** | `66d9cc0` | `git config core.hooksPath .githooks`; hook rejects tracked `*.jks`/`.env*` |
+| 2 | Overview activity feed from `GET /admin/audit` (`targetName` on backend) | **Done** | `8afcc44` | Overview "Recent activity" = audit rows, batched Driver/Ride name lookups, no phones |
+| 3 | Document viewer pinch/pan/double-tap zoom | **Done** | `7429bbf` | RN `Animated` + RNGH 2.32 `Gesture.*`, scale clamped 1–4, no new libs |
+| 4 | Routed distance everywhere (`RouteDistanceService`, Mapbox + haversine×1.3 fallback) | **Done** | `01a3e51` | Completion clamp `min(max(estimate×1.25, 2), 500)`; outlier flag at `recorded > routed×1.5`; +9 tests |
+| 5 | Redis-backed ride timers (`ride:timers` zset) | **Done** | `a37d010` | `TIMER_SWEEP_MS` (default 5000), atomic `zrem` claim, startup sweep, idempotent fires — replaces in-memory single-instance timers; +4 tests |
+| 6 | Geo cleanup (heartbeat key `driver:lastseen`, 30 s sweep, Postgres offline) | **Done** | `ce129b1` | Sweep forces stale drivers offline in Postgres too; `FakeRedis` extended; +6 tests |
+| 7 | Deterministic idempotent seed | **Done** | `d9e57c2` | `mulberry32(PRNG_SEED + i)` plans, never touches existing rows, admins ensured from `ADMIN_PHONES`, drivers seeded `approved` with pinned Redis geo; smoke-tested live (run 1: 40 created, run 2: 0); +10 tests |
+| 8 | PR-1 promos: `promos` + `promo_redemptions` tables, admin CRUD, `AdminPromosScreen` | **Done** | `346e0b3` | Migration seeds `VAZHI20` with the old config copy; async `discountFor`; redemption recorded inside the completion ride-lock tx; 409 on dup code; SET NULL keeps history; `PROMOS_CONFIG` deleted; +24 tests |
+| 9 | Admin extras: `GET /admin/users` + `GET /admin/rides/export.csv` | **Done** | `154c597` | Users: escaped ILIKE search (name/phone/email) + role filter + batched ride counts. CSV: shared filter whitelist, BOM/CRLF + formula-injection guard, no phones, 50k cap, route declared before `rides/:id`; +13 tests + live boot smoke test |
+| 10 | Docs: `ADMIN.md`, `AUDIT.md`, `CHANGES.md` status table, `AGENTS.md`, backend README tests | **Done** | (this commit) | Refreshed to current state; stale "in-memory timers" limitation removed |
+| 11 | Opt-in integration suite + `docker-compose.test.yml` | **In progress** | (next commit) | Runs only when `INTEGRATION=1` + test DB env are set; default `jest` stays unit-only |
+
+### What changed (high level)
+
+- **Backend**: secrets guard; `targetName` in audit rows; `RouteDistanceService`; Redis `ride:timers`;
+  `driver:lastseen` zset + Postgres-forcing sweep; idempotent `seed-data.ts`; promos tables/entities/
+  DB-backed `PromosService`/`AdminPromosController`; `AdminService.listUsers` + `exportRidesCsv` with shared
+  `ridesFilterQb` and `csv.ts` helpers; spec mocks updated for async `discountFor`.
+- **Frontend**: document zoom; `AdminPromosScreen` + Account stack (`AdminAccountStackParamList`), "Promo codes"
+  row on the Account screen, admin promo API functions.
+- **Repo**: `.githooks/pre-commit`, `.github/workflows/secret-guard.yml`, `.env.example` files (names only).
+
+### Verification (this pass)
+
+- Backend: `npx tsc --noEmit` 0 errors; `npx jest` **128 tests / 12 suites** green; `npx eslint src` 0 errors (1 pre-existing warning `razorpay-payment.provider.ts:45`).
+- Frontend: `npx tsc --noEmit` 0 errors; `npx eslint src` 0 errors / 0 warnings.
+- Live: `npm run migration:run` (AddPromosTables executed, `VAZHI20` row verified); `npm run seed` twice (idempotent);
+  backend booted → both new admin routes mapped and answer 401 unauthenticated, `export.csv` precedes `rides/:id` in the route map.
+- Not verifiable here: device UI (zoom gestures, promo screen on handset), real Mapbox/MSG91/Razorpay calls, multi-instance Redis sweep under load — see delivery report checklist.

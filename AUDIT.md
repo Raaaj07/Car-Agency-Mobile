@@ -12,8 +12,14 @@
 > - **Fixed (Admin Dashboard Overhaul pass, this repo's Phases 1–6)**: remaining B10 races (`decline`/`start`/`verifyPickupOtp`/`complete` in `withRideLock`,
 >   timer cleared post-commit), N6 (Redis `quit()` on shutdown, geo heartbeat ZSET + 90 s ghost sweep, logged GEOSEARCH failures), N7 (seed refuses production),
 >   plus the spec bug list A-1…A-16, S-1 (guard added), P-1/P-2, R-1…R-7, AU-1…AU-3, D-1…D-4, PR-1 (copy), M-1, T-1 — see `CHANGES.md`.
+> - **Fixed (follow-up pass, 2026-10-06)**: S-1 hardened (pre-commit hook + CI workflow, both fail on tracked `*.jks`/`.env*`),
+>   R-5 superseded (offer/search timers moved to a Redis `ride:timers` zset with atomic claims — the "in-memory, single-instance"
+>   limitation below no longer applies), R-7 completed (routed-distance comparison via Mapbox Directions + haversine×1.3 fallback,
+>   completion clamp + outlier flag), N7 completed (seed is deterministic + idempotent and pins dev drivers in Redis), PR-1 completed
+>   (promos are DB rows with admin CRUD + redemption history), plus document zoom, Overview audit feed, `GET /admin/users`,
+>   `GET /admin/rides/export.csv` and an opt-in integration suite — see `CHANGES.md` status table.
 > - **Owner action pending**: B15/S-1 key rotation (see `ADMIN.md` — files themselves untouched by design).
-> - **Accepted/deferred**: in-memory offer timers single-instance (documented, R-5; Redis/BullMQ when scaling out), seed `Math.random` plates (non-security; seed already prod-blocked),
+> - **Accepted/deferred**: seed `Math.random` plates (non-security; seed already prod-blocked — plate values are now deterministic per index),
 >   local-disk uploads (swap to S3/R2 before production), B8 (email `email_verified` check on Google link — open), legacy `users.role='driver'` values (normalize in a future migration).
 
 Date: 2026-10-02. Code as found in working tree (includes earlier hardening + unified-tabs work).

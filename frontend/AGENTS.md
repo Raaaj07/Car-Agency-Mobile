@@ -16,6 +16,7 @@ Use `bunx` instead of `npx` if the project uses bun (`bun.lock` present).
 npx expo install <package>  # ALWAYS use instead of npm/yarn/pnpm/bun add — resolves SDK-compatible versions
 npx expo start              # start the dev server
 npx expo lint               # lint
+npx eslint src              # lint (faster equivalent — what verification/CI uses)
 npx tsc --noEmit            # typecheck
 npx expo-doctor             # diagnose dependency and config issues
 npx expo install --fix      # fix incompatible package versions
@@ -27,6 +28,7 @@ Run lint and typecheck before declaring any task done.
 
 - This repo uses **React Navigation** (NOT Expo Router): `native-stack` + `bottom-tabs` in `src/navigation/*` (`AppNavigator`, `OnboardingNavigator`, `MainTabNavigator`, `RiderHomeStackNavigator`, `DriverDashboardStackNavigator`, `AdminNavigator`, `types.ts`). There is no `src/app/` directory. Do not add Expo Router or migrate anything to it.
 - Root gating lives in `AppNavigator`: not authenticated → `Onboarding`; authenticated but `user.profileComplete === false` → `CompleteProfile`; `user.role === 'admin'` → `Admin` console (4 tabs — Overview / Drivers / Rides / Account — each with its own stack; see `screens/admin/*`); otherwise → `Main` (unified Home/Drive/Trips/Profile tabs). Auth state + session restore live in `src/store/authStore.ts` (secure-store tokens, `hydrated` splash). The legacy `authStore.role` field was removed — `user.role` (server truth) is the only role source.
+- The Account tab is a stack too (`AdminAccountStackParamList`: `AdminAccount` → `AdminPromos`, the promo-code manager); pushed detail screens are added to the tab's `hideBar` list in `AdminNavigator.tsx` so the floating tab bar hides on them. Admin screens surface API failures with `getApiError(err)` from `src/api/client.ts` and load on mount with promise-callback chains (`.then/.catch/.finally` inside `useEffect`) — a direct `setState` in an effect body trips `react-hooks/set-state-in-effect`.
 - Param lists for every stack live in `src/navigation/types.ts` (rider, driver, admin). Keep them in sync when adding screens.
 - Docs: https://reactnavigation.org/docs/getting-started/
 
