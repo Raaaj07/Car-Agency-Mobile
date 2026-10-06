@@ -1,4 +1,4 @@
-import { IsString, Matches } from 'class-validator';
+import { IsOptional, IsString, Matches } from 'class-validator';
 
 export class SendOtpDto {
   // Accepts a bare 10-digit Indian mobile number, matching the
@@ -8,4 +8,12 @@ export class SendOtpDto {
     message: 'phone must be a valid 10-digit mobile number',
   })
   phone!: string;
+
+  /**
+   * LEGACY, IGNORED. Older app builds send `role` with the phone number; see
+   * VerifyOtpDto. Never read by the server.
+   */
+  @IsOptional()
+  @IsString()
+  role?: string;
 }

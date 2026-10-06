@@ -10,4 +10,13 @@ export class UpdateMeDto {
   @IsOptional()
   @IsEmail()
   email?: string;
+
+  /**
+   * LEGACY, IGNORED. Older app builds send `role` when completing the profile;
+   * see VerifyOtpDto. AuthService.updateMe only reads name/email, so a client
+   * can never change its own role through this endpoint.
+   */
+  @IsOptional()
+  @IsString()
+  role?: string;
 }

@@ -49,6 +49,13 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const [showWelcome, setShowWelcome] = useState(false);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestCoords = useRef<LatLng | undefined>(undefined);
+  // Last offer we already surfaced (socket OR polling) so the request screen
+  // is opened exactly once per offer.
+  const lastOfferId = useRef<string | null>(null);
+  const onRideRequestRef = useRef(onRideRequest);
+  useEffect(() => {
+    onRideRequestRef.current = onRideRequest;
+  }, [onRideRequest]);
 
   const socket = useSocket();
   const setActiveRide = useRideStore((state) => state.setActiveRide);
@@ -181,6 +188,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   useEffect(() => {
     if (!socket) return;
     const handleRideRequest = (request: any) => {
+      lastOfferId.current = request.rideId;
       setActiveRide({
         id: request.rideId,
         status: 'requested',
@@ -201,6 +209,37 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
       socket.off('ride:request', handleRideRequest);
     };
   }, [socket, setActiveRide, onRideRequest]);
+
+  // ── Polling fallback for offers ───────────────────────────────────────────
+  // Offers live only 15 s and are pushed once over the socket. If that single
+  // event is missed (socket still connecting, brief network drop, app just
+  // foregrounded) the driver would never see the ride. While online, also ask
+  // the server for the pending offer every 4 s and open the request screen
+  // for any offer the socket did not already deliver.
+  useEffect(() => {
+    if (!isOnline) {
+      lastOfferId.current = null;
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const pending = await ridesApi.getPendingOffer();
+        if (cancelled || !pending?.ride) return;
+        if (pending.ride.id === lastOfferId.current) return;
+        lastOfferId.current = pending.ride.id;
+        setActiveRide({ ...pending.ride, expiresInSeconds: pending.remainingSeconds });
+        onRideRequestRef.current();
+      } catch {
+        // Transient network/auth error — the next tick retries.
+      }
+    };
+    const timer = setInterval(() => void poll(), 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isOnline, setActiveRide]);
 
   // ── Go-online toggle ───────────────────────────────────────────────────────
   const handleToggle = async (nextStatus: boolean) => {

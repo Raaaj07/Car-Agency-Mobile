@@ -15,4 +15,15 @@ export class VerifyOtpDto {
   @IsOptional()
   @IsString()
   name?: string;
+
+  /**
+   * LEGACY, IGNORED. Older app builds (from when onboarding asked the user to
+   * pick rider/driver) still send `role`. The global ValidationPipe uses
+   * forbidNonWhitelisted, so without this field those logins fail with
+   * "property role should not exist". The server NEVER reads it: new users are
+   * always riders, and admin comes only from ADMIN_PHONES (see AuthService).
+   */
+  @IsOptional()
+  @IsString()
+  role?: string;
 }
