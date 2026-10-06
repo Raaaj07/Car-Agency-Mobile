@@ -12,6 +12,7 @@ import { CancelRideDto } from './dto/cancel-ride.dto';
 import { ResolvePaymentDto } from './dto/resolve-payment.dto';
 import { ListApplicationsQueryDto } from './dto/list-applications-query.dto';
 import { ListRidesQueryDto } from './dto/list-rides-query.dto';
+import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { AuditQueryDto } from './dto/audit-query.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -24,6 +25,17 @@ export class AdminController {
   @Get('overview')
   overview() {
     return this.admin.overview();
+  }
+
+  // Task 9: user management list (name/phone/email search, role filter).
+  @Get('users')
+  listUsers(@Query() query: ListUsersQueryDto) {
+    return this.admin.listUsers({
+      q: query.q,
+      role: query.role,
+      page: query.page,
+      limit: query.limit,
+    });
   }
 
   @Get('driver-applications')
@@ -65,6 +77,33 @@ export class AdminController {
       page: query.page,
       limit: query.limit,
     });
+  }
+
+  // Task 9: CSV export of the same filtered set as GET /admin/rides.
+  // Declared before ':id' so "export.csv" never becomes a ride id (same
+  // trick as driver-applications/counts above).
+  @Get('rides/export.csv')
+  exportRidesCsv(
+    @Query() query: ListRidesQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.admin
+      .exportRidesCsv({
+        status: query.status,
+        paymentStatus: query.paymentStatus,
+        from: query.from,
+        to: query.to,
+        q: query.q,
+        driverId: query.driverId,
+        riderId: query.riderId,
+      })
+      .then(({ filename, csv }) => {
+        res.set({
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+        });
+        return csv;
+      });
   }
 
   // Ride timeline + fare + payment rows + audited admin actions.

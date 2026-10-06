@@ -1,8 +1,8 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
-import { UserEntity } from '../auth/entities/user.entity';
+import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
+import { UserEntity, UserRole } from '../auth/entities/user.entity';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
 import { DocumentAccess, StorageService } from '../drivers/storage.service';
@@ -13,8 +13,22 @@ import { RidesService } from '../rides/rides.service';
 import { appTimezone, zonedStartOfDay, zonedStartOfDayAgo } from '../common/timezone';
 import { RouteDistanceService } from '../rides/route-distance.service';
 import { AdminAuditService } from './admin-audit.service';
+import { toCsv } from './csv';
 
 type AppStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+
+/** Shared filter shape for GET /admin/rides and its CSV export (Task 9). */
+type RideListFilters = {
+  status?: string;
+  paymentStatus?: string;
+  from?: string;
+  to?: string;
+  q?: string;
+  driverId?: string;
+  riderId?: string;
+  page?: number;
+  limit?: number;
+};
 
 // Whitelists for comma-separated list filters (Rides console chips).
 const RIDE_STATUS_VALUES: RideStatus[] = [
@@ -26,6 +40,37 @@ const RIDE_STATUS_VALUES: RideStatus[] = [
   'cancelled',
 ];
 const PAYMENT_STATUS_VALUES: PaymentStatus[] = ['pending', 'rider_claimed', 'paid', 'disputed', 'failed'];
+
+// Task 9: CSV export caps one response (rows beyond the cap are excluded —
+// narrow the filters instead of OOM'ing the server).
+const EXPORT_RIDES_CAP = 50_000;
+
+// Column order of GET /admin/rides/export.csv (matches toRideSummary fields
+// plus distanceKm/promoCode/cancellationReason; never phones — same rule as
+// ride lists).
+const RIDE_CSV_HEADERS = [
+  'rideId',
+  'status',
+  'vehicleType',
+  'riderId',
+  'riderName',
+  'driverId',
+  'driverName',
+  'pickupAddress',
+  'dropoffAddress',
+  'distanceKm',
+  'fareTotal',
+  'tipAmount',
+  'promoCode',
+  'paymentStatus',
+  'paymentMethod',
+  'paymentMarkedBy',
+  'createdAt',
+  'completedAt',
+  'cancelledAt',
+  'cancelledBy',
+  'cancellationReason',
+];
 
 /** Ride list/detail never expose raw phone numbers — only this masked form. */
 function maskPhone(phone?: string | null): string {
@@ -544,24 +589,11 @@ export class AdminService implements OnApplicationBootstrap {
     };
   }
 
-  // GET /admin/rides — filters (status/payment/date/search) + pagination.
-  // `status` / `paymentStatus` accept comma-separated groups ("Active" and
-  // "Unpaid" chips). Response exposes names/addresses/fare/payment flags only
-  // — phone numbers are never returned in ride lists (nor matched by `q`).
-  async listRides(filters: {
-    status?: string;
-    paymentStatus?: string;
-    from?: string;
-    to?: string;
-    q?: string;
-    driverId?: string;
-    riderId?: string;
-    page?: number;
-    limit?: number;
-  } = {}) {
-    const lim = Math.min(Math.max(filters.limit || 20, 1), 100); // A-16: clamp once
-    const pg = Math.max(filters.page || 1, 1);
-
+  /**
+   * Shared filter builder: listRides (paged) and exportRidesCsv (all rows up
+   * to the cap) must apply identical whitelists — one definition, no drift.
+   */
+  private ridesFilterQb(filters: RideListFilters) {
     const qb = this.rides
       .createQueryBuilder('r')
       .leftJoinAndSelect('r.rider', 'rider')
@@ -590,11 +622,128 @@ export class AdminService implements OnApplicationBootstrap {
         { q: pattern },
       );
     }
+    return qb;
+  }
 
+  // GET /admin/rides — filters (status/payment/date/search) + pagination.
+  // `status` / `paymentStatus` accept comma-separated groups ("Active" and
+  // "Unpaid" chips). Response exposes names/addresses/fare/payment flags only
+  // — phone numbers are never returned in ride lists (nor matched by `q`).
+  async listRides(filters: RideListFilters = {}) {
+    const lim = Math.min(Math.max(filters.limit || 20, 1), 100); // A-16: clamp once
+    const pg = Math.max(filters.page || 1, 1);
+
+    const qb = this.ridesFilterQb(filters);
     qb.orderBy('r.createdAt', 'DESC').addOrderBy('r.id', 'ASC').skip((pg - 1) * lim).take(lim);
     const [items, total] = await qb.getManyAndCount();
     return {
       items: items.map((r) => this.toRideSummary(r)),
+      total,
+      page: pg,
+      limit: lim,
+    };
+  }
+
+  /**
+   * Task 9: GET /admin/rides/export.csv — the console's export action. Same
+   * filters/whitelists as listRides (ridesFilterQb), all matching rows up to
+   * EXPORT_RIDES_CAP, same whitelist as the ride list: no phones, no raw
+   * entities. Returns the CSV body + an attachment filename; the controller
+   * sets the headers.
+   */
+  async exportRidesCsv(filters: RideListFilters = {}): Promise<{ filename: string; csv: string }> {
+    const qb = this.ridesFilterQb(filters);
+    qb.orderBy('r.createdAt', 'DESC').addOrderBy('r.id', 'ASC').take(EXPORT_RIDES_CAP);
+    const rows = await qb.getMany();
+    const csv = toCsv(
+      RIDE_CSV_HEADERS,
+      rows.map((r) => {
+        const s = this.toRideSummary(r);
+        return [
+          s.id,
+          s.status,
+          s.vehicleType,
+          s.riderId,
+          s.riderName,
+          s.driverId,
+          s.driverName,
+          s.pickupAddress,
+          s.dropoffAddress,
+          Number(r.distanceKm ?? 0),
+          s.fareTotal,
+          s.tipAmount,
+          r.promoCode ?? '',
+          s.paymentStatus,
+          s.paymentMethod,
+          s.paymentMarkedBy,
+          s.createdAt,
+          s.completedAt,
+          s.cancelledAt,
+          s.cancelledBy,
+          r.cancellationReason ?? '',
+        ];
+      }),
+    );
+    return { filename: `vazhi-rides-${new Date().toISOString().slice(0, 10)}.csv`, csv };
+  }
+
+  /**
+   * Task 9: GET /admin/users — user management list (name/phone/email search,
+   * role filter, batched rider trip counts). Unlike ride lists this returns
+   * full phone numbers (same as driver applications): the phone IS the
+   * account identifier admins manage by (ADMIN_PHONES bootstrap, support).
+   */
+  async listUsers(query: { q?: string; role?: string; page?: number; limit?: number } = {}) {
+    const lim = Math.min(Math.max(query.limit || 20, 1), 100);
+    const pg = Math.max(query.page || 1, 1);
+    const q = (query.q ?? '').trim();
+    const roleFilter: FindOptionsWhere<UserEntity> = query.role ? { role: query.role as UserRole } : {};
+
+    let where: FindOptionsWhere<UserEntity> | FindOptionsWhere<UserEntity>[];
+    if (q) {
+      // Escaped ILIKE across the three searchable columns (array = OR).
+      const pattern = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+      where = [
+        { ...roleFilter, name: ILike(pattern) },
+        { ...roleFilter, phone: ILike(pattern) },
+        { ...roleFilter, email: ILike(pattern) },
+      ];
+    } else {
+      where = roleFilter;
+    }
+
+    const [users, total] = await this.users.findAndCount({
+      where,
+      order: { createdAt: 'DESC' },
+      skip: (pg - 1) * lim,
+      take: lim,
+    });
+
+    // One grouped query for the page's riders (not N+1).
+    const ids = users.map((u) => u.id);
+    const rideCounts = new Map<string, number>();
+    if (ids.length > 0) {
+      const raw = await this.rides
+        .createQueryBuilder('r')
+        .select('r."riderId"', 'userId')
+        .addSelect('COUNT(*)::int', 'rideCount')
+        .where('r."riderId" IN (:...ids)', { ids })
+        .groupBy('r."riderId"')
+        .getRawMany<{ userId: string; rideCount: string | number }>();
+      for (const row of raw) rideCounts.set(row.userId, Number(row.rideCount));
+    }
+
+    return {
+      items: users.map((u) => ({
+        id: u.id,
+        name: u.name,
+        phone: u.phone ?? null,
+        email: u.email ?? null,
+        role: (u.role ?? 'rider') as UserRole,
+        isActive: u.isActive,
+        createdAt: u.createdAt,
+        rideCount: rideCounts.get(u.id) ?? 0,
+      })),
       total,
       page: pg,
       limit: lim,

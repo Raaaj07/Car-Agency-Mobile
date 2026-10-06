@@ -424,3 +424,202 @@ describe('AdminService status machine (A-2, A-3)', () => {
     });
   });
 });
+
+/**
+ * Task 9: GET /admin/users (search / role / batched ride counts) and
+ * GET /admin/rides/export.csv (same filters as the console list, RFC 4180
+ * CSV with the formula guard, phones never exported).
+ */
+describe('AdminService users list + rides CSV export (Task 9)', () => {
+  let service: AdminService;
+  let users: Record<string, jest.Mock>;
+  let rides: Record<string, jest.Mock>;
+  let qb: Record<string, jest.Mock>;
+
+  const CSV_HEADER =
+    'rideId,status,vehicleType,riderId,riderName,driverId,driverName,pickupAddress,dropoffAddress,' +
+    'distanceKm,fareTotal,tipAmount,promoCode,paymentStatus,paymentMethod,paymentMarkedBy,' +
+    'createdAt,completedAt,cancelledAt,cancelledBy,cancellationReason';
+
+  const makeQb = () => {
+    const chain: Record<string, jest.Mock> = {};
+    for (const method of [
+      'leftJoinAndSelect',
+      'andWhere',
+      'select',
+      'addSelect',
+      'where',
+      'groupBy',
+      'orderBy',
+      'addOrderBy',
+      'skip',
+      'take',
+    ]) {
+      chain[method] = jest.fn(() => chain);
+    }
+    chain.getMany = jest.fn().mockResolvedValue([]);
+    chain.getManyAndCount = jest.fn().mockResolvedValue([[], 0]);
+    chain.getRawMany = jest.fn().mockResolvedValue([]);
+    return chain;
+  };
+
+  beforeEach(() => {
+    qb = makeQb();
+    users = { findAndCount: jest.fn().mockResolvedValue([[], 0]) };
+    rides = { createQueryBuilder: jest.fn(() => qb) };
+
+    service = new AdminService(
+      users as unknown as Repository<UserEntity>,
+      {} as unknown as Repository<DriverEntity>,
+      rides as unknown as Repository<RideEntity>,
+      {} as unknown as Repository<PaymentEntity>,
+      {} as unknown as GeoService,
+      {} as unknown as StorageService,
+      {} as unknown as RidesGateway,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      {} as unknown as AdminAuditService,
+      {} as unknown as RidesService,
+      { routedKm: jest.fn().mockResolvedValue(10) } as unknown as RouteDistanceService,
+    );
+  });
+
+  describe('listUsers', () => {
+    it('returns a page with batched ride counts and null roles defaulting to rider', async () => {
+      const createdAt = new Date('2026-01-01T00:00:00Z');
+      users.findAndCount.mockResolvedValue([
+        [
+          { id: 'u1', name: 'Asha', phone: '9876543210', email: null, role: 'rider', isActive: true, createdAt },
+          { id: 'u2', name: 'Kumar', phone: null, email: 'k@example.com', role: null, isActive: false, createdAt },
+        ],
+        42,
+      ]);
+      qb.getRawMany.mockResolvedValue([{ userId: 'u1', rideCount: '7' }]);
+
+      const page = await service.listUsers({ page: 2, limit: 10 });
+
+      expect(page).toMatchObject({ total: 42, page: 2, limit: 10 });
+      expect(page.items[0]).toEqual({
+        id: 'u1',
+        name: 'Asha',
+        phone: '9876543210',
+        email: null,
+        role: 'rider',
+        isActive: true,
+        createdAt,
+        rideCount: 7, // raw COUNT(*)::int string coerced to a number
+      });
+      expect(page.items[1]).toEqual(
+        expect.objectContaining({ id: 'u2', role: 'rider', phone: null, rideCount: 0 }),
+      );
+      expect(users.findAndCount).toHaveBeenCalledWith({
+        where: {},
+        order: { createdAt: 'DESC' },
+        skip: 10,
+        take: 10,
+      });
+      // One grouped query for the whole page — no N+1.
+      expect(qb.where).toHaveBeenCalledWith('r."riderId" IN (:...ids)', { ids: ['u1', 'u2'] });
+      expect(qb.getRawMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('searches name/phone/email with escaped LIKE patterns + role filter', async () => {
+      users.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.listUsers({ q: '50%_x', role: 'admin' });
+
+      const arg = users.findAndCount.mock.calls[0][0] as {
+        where: Array<{ name?: { value: string }; phone?: unknown; email?: unknown; role?: string }>;
+      };
+      expect(arg.where).toHaveLength(3); // OR across the three columns
+      expect(arg.where[0].name?.value).toBe('%50\\%\\_x%'); // % and _ escaped
+      expect(arg.where[1].phone).toBeDefined();
+      expect(arg.where[2].email).toBeDefined();
+      for (const clause of arg.where) expect(clause.role).toBe('admin');
+      expect(qb.getRawMany).not.toHaveBeenCalled(); // empty page, no count query
+    });
+  });
+
+  describe('exportRidesCsv', () => {
+    const rideFixture = () => ({
+      id: 'ride-1',
+      status: 'completed',
+      vehicleType: 'sedan',
+      riderId: 'r1',
+      // Phone present on the relation — must NOT reach the CSV (ride-list rule).
+      rider: { name: 'Asha, Kumar', phone: '9876543210' },
+      driverId: 'd1',
+      driver: { user: { name: 'Vijay "V"' } },
+      pickup: { address: '12 MG Road, Salem' },
+      dropoff: { address: 'Central Bus Stand' },
+      distanceKm: '12.50',
+      fareBreakdown: { total: 250 },
+      tipAmount: 10,
+      promoCode: 'VAZHI20',
+      paymentStatus: 'paid',
+      paymentMethod: 'cash',
+      paymentMarkedBy: 'driver',
+      createdAt: new Date('2026-02-01T10:00:00Z'),
+      completedAt: new Date('2026-02-01T10:25:00Z'),
+      cancelledAt: null,
+      cancelledBy: null,
+      cancellationReason: null,
+    });
+
+    it('exports filtered rides with shared filters, escaped cells and no phones', async () => {
+      qb.getMany.mockResolvedValue([rideFixture()]);
+
+      const { filename, csv } = await service.exportRidesCsv({ status: 'completed', q: 'asha' });
+
+      expect(filename).toMatch(/^vazhi-rides-\d{4}-\d{2}-\d{2}\.csv$/);
+      expect(csv.startsWith('\uFEFF')).toBe(true); // Excel UTF-8 detection
+      const [header, row] = csv.slice(1).split('\r\n');
+      expect(header).toBe(CSV_HEADER);
+      expect(row).toContain('"12 MG Road, Salem"'); // comma → quoted
+      expect(row).toContain('Vijay ""V"""'); // quotes doubled
+      expect(row).toContain('VAZHI20');
+      expect(row).toContain('250'); // fareTotal from fareBreakdown
+      expect(row).not.toContain('9876543210'); // phones never exported
+
+      // Same whitelist builder as GET /admin/rides + the export cap.
+      expect(qb.andWhere).toHaveBeenCalledWith('r.status IN (:...statuses)', {
+        statuses: ['completed'],
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(expect.stringContaining('ILIKE :q'), {
+        q: '%asha%',
+      });
+      expect(qb.take).toHaveBeenCalledWith(50_000);
+    });
+
+    it('rejects unknown filter values (identical whitelist to the list)', async () => {
+      await expect(service.exportRidesCsv({ status: 'warp' })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(qb.getMany).not.toHaveBeenCalled();
+    });
+
+    it('emits header-only CSV for an empty result', async () => {
+      qb.getMany.mockResolvedValue([]);
+
+      const { csv } = await service.exportRidesCsv();
+
+      expect(csv).toBe(`\uFEFF${CSV_HEADER}\r\n`);
+    });
+  });
+
+  describe('listRides (refactored onto ridesFilterQb)', () => {
+    it('still pages, orders and clamps through the shared builder', async () => {
+      qb.getManyAndCount.mockResolvedValue([[], 5]);
+
+      const page = await service.listRides({ status: 'completed', page: 2, limit: 10 });
+
+      expect(page).toEqual({ items: [], total: 5, page: 2, limit: 10 });
+      expect(qb.andWhere).toHaveBeenCalledWith('r.status IN (:...statuses)', {
+        statuses: ['completed'],
+      });
+      expect(qb.orderBy).toHaveBeenCalledWith('r.createdAt', 'DESC');
+      expect(qb.skip).toHaveBeenCalledWith(10);
+      expect(qb.take).toHaveBeenCalledWith(10);
+      expect(qb.getManyAndCount).toHaveBeenCalledTimes(1);
+    });
+  });
+});
