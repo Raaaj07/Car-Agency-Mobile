@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { FileText } from 'lucide-react-native';
 import {
+  AdminAccountStackParamList,
   AdminDriversStackParamList,
   AdminOverviewStackParamList,
   AdminRidesStackParamList,
@@ -18,6 +19,7 @@ import { AdminDriverDetailScreen } from '../screens/admin/AdminDriverDetailScree
 import { AdminRidesScreen } from '../screens/admin/AdminRidesScreen';
 import { AdminRideDetailScreen } from '../screens/admin/AdminRideDetailScreen';
 import { AdminAccountScreen } from '../screens/admin/AdminAccountScreen';
+import { AdminPromosScreen } from '../screens/admin/AdminPromosScreen';
 import { adminApi } from '../api/admin';
 import { getSocket, subscribeSocket } from '../lib/socket';
 import { useAdminStore } from '../store/adminStore';
@@ -26,6 +28,7 @@ import { colors } from '../theme/theme';
 const OverviewStack = createNativeStackNavigator<AdminOverviewStackParamList>();
 const DriversStack = createNativeStackNavigator<AdminDriversStackParamList>();
 const RidesStack = createNativeStackNavigator<AdminRidesStackParamList>();
+const AccountStack = createNativeStackNavigator<AdminAccountStackParamList>();
 const Tab = createBottomTabNavigator<AdminTabParamList>();
 
 const OverviewStackNavigator: React.FC = () => (
@@ -46,6 +49,15 @@ const RidesStackNavigator: React.FC = () => (
     <RidesStack.Screen name="AdminRides" component={AdminRidesScreen} />
     <RidesStack.Screen name="AdminRideDetail" component={AdminRideDetailScreen} />
   </RidesStack.Navigator>
+);
+
+// PR-1 (Task 8): the Account tab became a stack so the Promo codes manager
+// pushes over the profile card like the other detail screens.
+const AccountStackNavigator: React.FC = () => (
+  <AccountStack.Navigator screenOptions={{ headerShown: false }}>
+    <AccountStack.Screen name="AdminAccount" component={AdminAccountScreen} />
+    <AccountStack.Screen name="AdminPromos" component={AdminPromosScreen} />
+  </AccountStack.Navigator>
 );
 
 /**
@@ -104,10 +116,11 @@ export const AdminNavigator: React.FC = () => {
           const activeTabId = routeNames[state.index] ?? 'overview';
           const activeRoute = state.routes[state.index];
           const nested =
-            activeRoute.name === 'drivers' || activeRoute.name === 'rides'
+            activeRoute.name === 'drivers' || activeRoute.name === 'rides' || activeRoute.name === 'account'
               ? getFocusedRouteNameFromRoute(activeRoute) ?? activeRoute.name
               : activeRoute.name;
-          const hideBar = nested === 'AdminDriverDetail' || nested === 'AdminRideDetail';
+          const hideBar =
+            nested === 'AdminDriverDetail' || nested === 'AdminRideDetail' || nested === 'AdminPromos';
           const onTabPress = (id: string) => {
             if (id === 'overview') navigation.navigate('overview');
             else if (id === 'drivers') navigation.navigate('drivers');
@@ -128,7 +141,7 @@ export const AdminNavigator: React.FC = () => {
         <Tab.Screen name="overview" component={OverviewStackNavigator} options={{ title: 'Overview' }} />
         <Tab.Screen name="drivers" component={DriversStackNavigator} options={{ title: 'Drivers' }} />
         <Tab.Screen name="rides" component={RidesStackNavigator} options={{ title: 'Rides' }} />
-        <Tab.Screen name="account" component={AdminAccountScreen} options={{ title: 'Account' }} />
+        <Tab.Screen name="account" component={AccountStackNavigator} options={{ title: 'Account' }} />
       </Tab.Navigator>
 
       <NotificationBar

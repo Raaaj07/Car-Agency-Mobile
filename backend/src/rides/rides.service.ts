@@ -828,12 +828,19 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       const clampAt = Math.min(Math.max(estimateKm * 1.25, 2), 500);
       finalDistanceKm = Math.min(finalDistanceKm, clampAt);
       const numericPrice = computeNumericPrice(ride.vehicleType, finalDistanceKm);
-      const discount = ride.promoCode ? this.promosService.discountFor(ride.promoCode) : 0;
+      // PR-1: discountFor now reads the DB (async) — the code persisted on
+      // the ride is honoured even if the promo was deactivated since.
+      const discount = ride.promoCode ? await this.promosService.discountFor(ride.promoCode) : 0;
       ride.fareBreakdown = computeFareBreakdown(numericPrice, discount);
       ride.distanceKm = finalDistanceKm.toFixed(2);
       ride.status = 'completed';
       ride.completedAt = new Date();
       await manager.save(ride);
+      // PR-1: record the redemption inside the same transaction — the fare,
+      // the redemption row and the cap counter commit (or roll back) together.
+      if (ride.promoCode) {
+        await this.promosService.recordRedemption(ride.promoCode, rideId, ride.riderId, manager);
+      }
       return { driverId: ride.driverId!, dropoff: ride.dropoff };
     });
 

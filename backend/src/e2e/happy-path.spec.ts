@@ -265,7 +265,11 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       geo as unknown as GeoService,
       gateway as unknown as RidesGateway,
       config,
-      { resolveDiscount: jest.fn().mockResolvedValue(0), discountFor: jest.fn().mockReturnValue(0) } as unknown as PromosService,
+      {
+        resolveDiscount: jest.fn().mockResolvedValue(0),
+        discountFor: jest.fn().mockResolvedValue(0),
+        recordRedemption: jest.fn().mockResolvedValue(undefined),
+      } as unknown as PromosService,
       { routedKm: jest.fn().mockResolvedValue(10) } as unknown as RouteDistanceService,
       fakeRedis as unknown as Redis,
     );

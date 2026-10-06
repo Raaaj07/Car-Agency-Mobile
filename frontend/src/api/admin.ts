@@ -237,6 +237,38 @@ export interface AdminFileResponse {
   expiresAt?: string | null;
 }
 
+/** PR-1 (Task 8): a promo row from GET /admin/promos. */
+export interface AdminPromo {
+  id: string;
+  code: string;
+  title: string | null;
+  subtitle: string | null;
+  cta: string | null;
+  discountAmount: number;
+  firstRideOnly: boolean;
+  active: boolean;
+  validFrom: string | null;
+  validTo: string | null;
+  maxRedemptions: number | null;
+  redemptionCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Create/update body — omitted optional fields are unchanged; null clears. */
+export interface AdminPromoInput {
+  code: string;
+  discountAmount: number;
+  title?: string | null;
+  subtitle?: string | null;
+  cta?: string | null;
+  firstRideOnly?: boolean;
+  active?: boolean;
+  validFrom?: string | null;
+  validTo?: string | null;
+  maxRedemptions?: number | null;
+}
+
 export const adminApi = {
   // ── Dashboard ──
   overview: async () => (await api.get<AdminOverview>('/admin/overview')).data,
@@ -335,4 +367,12 @@ export const adminApi = {
         `/admin/driver-applications/${applicationId}/documents`,
       )
     ).data,
+
+  // ── Promo codes (PR-1) ──
+  listPromos: async () => (await api.get<AdminPromo[]>('/admin/promos')).data,
+  createPromo: async (input: AdminPromoInput) =>
+    (await api.post<AdminPromo>('/admin/promos', input)).data,
+  updatePromo: async (id: string, input: AdminPromoInput) =>
+    (await api.patch<AdminPromo>(`/admin/promos/${id}`, input)).data,
+  deletePromo: async (id: string) => (await api.delete<{ id: string }>(`/admin/promos/${id}`)).data,
 };

@@ -1,7 +1,9 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import Constants from 'expo-constants';
-import { LogOut, ShieldCheck } from 'lucide-react-native';
+import { ChevronRight, LogOut, ShieldCheck, Ticket } from 'lucide-react-native';
+import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { AdminAccountStackParamList } from '../../navigation/types';
 import { AdminHeader } from '../../components/admin/AdminHeader';
 import { Avatar } from '../../components/primitives/Avatar';
 import { Button } from '../../components/primitives/Button';
@@ -12,7 +14,9 @@ import { confirmAction } from '../../components/admin/ConfirmDialog';
 import { useAuthStore } from '../../store/authStore';
 import { useAdminStore } from '../../store/adminStore';
 import { useRideStore } from '../../store/rideStore';
-import { colors, typography } from '../../theme/theme';
+import { colors, radii, typography } from '../../theme/theme';
+
+type Props = NativeStackScreenProps<AdminAccountStackParamList, 'AdminAccount'>;
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
@@ -29,7 +33,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
  * Admin "Account" tab (spec §3.2): identity card, app/build info and sign-out
  * (with a native confirm, mirroring the rider/driver profile screens).
  */
-export const AdminAccountScreen: React.FC = () => {
+export const AdminAccountScreen: React.FC<Props> = ({ navigation }) => {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const resetRide = useRideStore((s) => s.resetRide);
@@ -71,6 +75,25 @@ export const AdminAccountScreen: React.FC = () => {
           <View style={styles.divider} />
           <InfoRow label="Role" value={user?.role ?? 'admin'} />
           {user?.email ? <InfoRow label="Email" value={user.email} /> : null}
+        </Card>
+
+        <Card style={styles.card}>
+          {/* PR-1 (Task 8): entry point to the promo-code manager. */}
+          <TouchableOpacity
+            style={styles.navRow}
+            onPress={() => navigation.navigate('AdminPromos')}
+            accessibilityRole="button"
+            accessibilityLabel="Promo codes"
+          >
+            <View style={styles.navIcon}>
+              <Ticket size={18} color={colors.accent} />
+            </View>
+            <View style={styles.navText}>
+              <Text style={styles.navTitle}>Promo codes</Text>
+              <Text style={styles.navSub}>Create and manage rider discounts</Text>
+            </View>
+            <ChevronRight size={18} color={colors.textMuted} />
+          </TouchableOpacity>
         </Card>
 
         <Card style={styles.card}>
@@ -150,6 +173,33 @@ const styles = StyleSheet.create({
   },
   logout: {
     marginTop: 8,
+  },
+  navRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  navIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navText: {
+    flex: 1,
+  },
+  navTitle: {
+    ...typography.bodyBold,
+    fontSize: 15,
+  },
+  navSub: {
+    ...typography.meta,
+    color: colors.textMuted,
+    marginTop: 2,
   },
   footnote: {
     ...typography.meta,

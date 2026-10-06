@@ -62,16 +62,22 @@ export type DriverDashboardStackParamList = {
 };
 
 // Admin tabs (visible only when user.role === 'admin') — Phase 4 console:
-// Overview + Drivers (applications) + Rides + Account, each list with its own
-// stack so detail screens push over the list and hide the floating tab bar.
+// Overview + Drivers (applications) + Rides + Account, each with its own
+// stack so detail screens push over the list and hide the floating tab bar
+// (Account's stack holds the profile + the Promo codes manager).
 export type AdminTabParamList = {
   overview: NavigatorScreenParams<AdminOverviewStackParamList>;
   drivers: NavigatorScreenParams<AdminDriversStackParamList>;
   rides: NavigatorScreenParams<AdminRidesStackParamList>;
-  account: undefined;
+  account: NavigatorScreenParams<AdminAccountStackParamList>;
 };
 
 // ── Admin console stacks ──
+export type AdminAccountStackParamList = {
+  AdminAccount: undefined;
+  AdminPromos: undefined;
+};
+
 export type AdminOverviewStackParamList = {
   AdminOverview: undefined;
 };

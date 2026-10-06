@@ -61,7 +61,11 @@ describe('RidesService phase-1 fixes', () => {
       { removeDriver: jest.fn().mockResolvedValue(undefined), upsertDriverLocation: jest.fn().mockResolvedValue(undefined) } as unknown as GeoService,
       gateway as unknown as RidesGateway,
       { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
-      { discountFor: jest.fn().mockReturnValue(0), resolveDiscount: jest.fn().mockResolvedValue(0) } as unknown as PromosService,
+      {
+        discountFor: jest.fn().mockResolvedValue(0),
+        resolveDiscount: jest.fn().mockResolvedValue(0),
+        recordRedemption: jest.fn().mockResolvedValue(undefined),
+      } as unknown as PromosService,
       // R-7: routed distance — tests use a fixed estimate (no HTTP).
       { routedKm: jest.fn().mockResolvedValue(5) } as unknown as RouteDistanceService,
       fake as unknown as Redis,
