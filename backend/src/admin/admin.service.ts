@@ -41,9 +41,10 @@ const RIDE_STATUS_VALUES: RideStatus[] = [
 ];
 const PAYMENT_STATUS_VALUES: PaymentStatus[] = ['pending', 'rider_claimed', 'paid', 'disputed', 'failed'];
 
-// Task 9: CSV export caps one response (rows beyond the cap are excluded —
-// narrow the filters instead of OOM'ing the server).
-const EXPORT_RIDES_CAP = 50_000;
+// Task 9: CSV export caps one response at 5 000 rows (rows beyond the cap
+// are excluded and flagged via X-Export-Truncated — narrow the filters
+// instead of building an unbounded string in memory).
+const EXPORT_RIDES_CAP = 5_000;
 
 // Column order of GET /admin/rides/export.csv (matches toRideSummary fields
 // plus distanceKm/promoCode/cancellationReason; never phones — same rule as
@@ -651,10 +652,15 @@ export class AdminService implements OnApplicationBootstrap {
    * entities. Returns the CSV body + an attachment filename; the controller
    * sets the headers.
    */
-  async exportRidesCsv(filters: RideListFilters = {}): Promise<{ filename: string; csv: string }> {
+  async exportRidesCsv(
+    filters: RideListFilters = {},
+  ): Promise<{ filename: string; csv: string; truncated: boolean }> {
     const qb = this.ridesFilterQb(filters);
-    qb.orderBy('r.createdAt', 'DESC').addOrderBy('r.id', 'ASC').take(EXPORT_RIDES_CAP);
-    const rows = await qb.getMany();
+    // One extra row tells us whether the cap cut the result short.
+    qb.orderBy('r.createdAt', 'DESC').addOrderBy('r.id', 'ASC').take(EXPORT_RIDES_CAP + 1);
+    const fetched = await qb.getMany();
+    const truncated = fetched.length > EXPORT_RIDES_CAP;
+    const rows = truncated ? fetched.slice(0, EXPORT_RIDES_CAP) : fetched;
     const csv = toCsv(
       RIDE_CSV_HEADERS,
       rows.map((r) => {
@@ -684,7 +690,11 @@ export class AdminService implements OnApplicationBootstrap {
         ];
       }),
     );
-    return { filename: `vazhi-rides-${new Date().toISOString().slice(0, 10)}.csv`, csv };
+    return {
+      filename: `vazhi-rides-${new Date().toISOString().slice(0, 10)}.csv`,
+      csv,
+      truncated,
+    };
   }
 
   /**

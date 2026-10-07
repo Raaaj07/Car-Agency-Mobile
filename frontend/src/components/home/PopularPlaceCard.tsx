@@ -1,9 +1,10 @@
 import React, { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { ArrowRight } from 'lucide-react-native';
+import { ArrowRight, MapPin } from 'lucide-react-native';
 import { colors, radii, shadows } from '../../theme/theme';
 import { PlaceImage } from './PlaceImage';
 import { PlaceItem } from '../../api/places';
+import { formatDistance } from '../../utils/distance';
 
 interface Props {
   place: PlaceItem;
@@ -12,13 +13,16 @@ interface Props {
 }
 
 export const PopularPlaceCard: React.FC<Props> = memo(({ place, onPress, cardWidth = 160 }) => {
+  // "2.3 km" from the rider's current location; null (hidden) when unknown.
+  const distance = formatDistance(place.distanceKm);
+
   return (
     <TouchableOpacity
       style={[styles.card, { width: cardWidth }]}
       onPress={() => onPress(place)}
       activeOpacity={0.85}
       accessibilityRole="button"
-      accessibilityLabel={`Go to ${place.title}`}
+      accessibilityLabel={`Go to ${place.title}${distance ? `, ${distance} away` : ''}`}
     >
       <View style={styles.titleRow}>
         <Text style={styles.title} numberOfLines={1}>
@@ -28,6 +32,14 @@ export const PopularPlaceCard: React.FC<Props> = memo(({ place, onPress, cardWid
           <ArrowRight size={14} color="#FFFFFF" />
         </View>
       </View>
+      {distance ? (
+        <View style={styles.distanceRow}>
+          <MapPin size={12} color={colors.textSecondary} />
+          <Text style={styles.distanceText} numberOfLines={1}>
+            {distance} away
+          </Text>
+        </View>
+      ) : null}
       <PlaceImage uri={place.imageUrl} width="100%" height={100} borderRadius={16} />
     </TouchableOpacity>
   );
@@ -64,5 +76,17 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  distanceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: -4,
+  },
+  distanceText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
   },
 });

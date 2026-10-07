@@ -23,6 +23,7 @@ import { useRideStore } from '../../store/rideStore';
 import { usePlacesStore } from '../../store/placesStore';
 import { useCurrentLocation } from '../../hooks/useCurrentLocation';
 import { PlaceItem } from '../../api/places';
+import { haversineKm } from '../../utils/distance';
 import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 
 import { PickupPin } from '../../components/home/PickupPin';
@@ -43,6 +44,10 @@ interface Props {
 
 let pointSeq = 0;
 
+// Re-fetch "Near You" / "Popular" once the rider has moved this far (km) from
+// where the current suggestions were computed.
+const SUGGESTION_REFRESH_KM = 1;
+
 export const HomeDashboardScreen: React.FC<Props> = ({
   onSearchPress,
   onSelectVehicle,
@@ -59,12 +64,27 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   const setDropoff = useRideStore((state) => state.setDropoff);
   const setPreferredVehicle = useRideStore((state) => state.setPreferredVehicle);
 
-  const { recent, saved, nearby, quickPicks, popular, cityHighlights, promos, error, fetchAll } =
-    usePlacesStore();
+  const {
+    recent,
+    saved,
+    nearby,
+    quickPicks,
+    popular,
+    cityHighlights,
+    promos,
+    error,
+    fetchAll,
+    suggestionsCoords,
+  } = usePlacesStore();
   const toggleSaved = usePlacesStore((state) => state.toggleSaved);
 
   // ── GPS Hook (Phase 0d & A4.5) ──────────────────────────────────────────────
-  const { coords: gpsCoords, status: locationStatus, openSettings } = useCurrentLocation();
+  const {
+    coords: gpsCoords,
+    status: locationStatus,
+    openSettings,
+    refresh: refreshLocation,
+  } = useCurrentLocation();
 
   // Map state
   const [recenterNonce, setRecenterNonce] = useState(1);
@@ -140,8 +160,20 @@ export const HomeDashboardScreen: React.FC<Props> = ({
         })
         .finally(() => setIsResolvingAddress(false));
     }
-    void fetchAll({ lat: latitude, lng: longitude });
-  }, [gpsCoords, fetchAll, pickupCoords, setPickup]);
+  }, [gpsCoords, pickupCoords, setPickup]);
+
+  // ── Location-based suggestions (Near You + Popular) ─────────────────────────────────────
+  // Keyed on the rider's REAL (GPS) position, not the draggable pickup pin:
+  // fetch on the first fix, then again whenever they have moved more than
+  // SUGGESTION_REFRESH_KM from where the current lists were computed (the
+  // GPS hook re-reads on screen focus and on the locate button). The server
+  // returns both lists nearest-first with a distance on every card.
+  useEffect(() => {
+    if (!gpsCoords) return;
+    const here = { lat: gpsCoords.latitude, lng: gpsCoords.longitude };
+    if (suggestionsCoords && haversineKm(suggestionsCoords, here) < SUGGESTION_REFRESH_KM) return;
+    void fetchAll(here, true);
+  }, [gpsCoords, suggestionsCoords, fetchAll]);
 
   // ── Driver Polling (A4.3, C7 capped at 15) ──────────────────────────────────
   useFocusEffect(
@@ -238,6 +270,9 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   const handleRecenter = useCallback(() => {
     if (gpsCoords) {
       setRecenterNonce((prev) => prev + 1);
+      // Re-read the GPS too: if the rider has moved, Near You / Popular
+      // re-fetch for the new spot (see the suggestions effect above).
+      refreshLocation();
       // The recenter flight is programmatic (its idle events are ignored),
       // so resolve the GPS address directly — the pill must match the map.
       const seq = ++pointSeq;
@@ -255,7 +290,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
           if (seq === pointSeq) setIsResolvingAddress(false);
         });
     }
-  }, [gpsCoords, setPickup]);
+  }, [gpsCoords, setPickup, refreshLocation]);
 
   // Layout math for grid items
   const gridWidth = windowWidth - 40;
@@ -308,6 +343,12 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   recent.slice(0, 2).forEach((r) => {
     chipItems.push({ key: `recent-${r.id}`, icon: 'recent', label: r.title, place: r });
   });
+
+  // Popular places: nearest 8, minus anything already shown under "Near You"
+  // (when Near You falls back to curated spots the same places would repeat).
+  const nearbyIds = new Set(nearby.map((n) => n.id));
+  const popularNearby = popular.filter((p) => !nearbyIds.has(p.id)).slice(0, 8);
+  const hasLiveLocation = locationStatus === 'granted';
 
   // Check emulator API_URL fallback diagnostic (A0.2)
   const showApiWarning =
@@ -569,11 +610,14 @@ export const HomeDashboardScreen: React.FC<Props> = ({
             </View>
           </View>
 
-          {/* Section: Near You (live, location-based) */}
+          {/* Section: Near You (live, location-based, nearest first) */}
           {nearby.length > 0 && (
             <View style={styles.section}>
               <View style={styles.sectionHeaderRow}>
                 <Text style={styles.sectionTitle}>Near You</Text>
+                <Text style={styles.sectionSubtitle}>
+                  {hasLiveLocation ? 'Closest to your location' : 'Closest first'}
+                </Text>
               </View>
               <FlatList
                 data={nearby}
@@ -588,14 +632,17 @@ export const HomeDashboardScreen: React.FC<Props> = ({
             </View>
           )}
 
-          {/* Section: Popular Places */}
-          {popular.length > 0 && (
+          {/* Section: Popular places, nearest first */}
+          {popularNearby.length > 0 && (
             <View style={styles.section}>
               <View style={styles.sectionHeaderRow}>
-                <Text style={styles.sectionTitle}>Popular Places</Text>
+                <Text style={styles.sectionTitle}>
+                  {hasLiveLocation ? 'Popular near you' : 'Popular Places'}
+                </Text>
+                <Text style={styles.sectionSubtitle}>Nearest first</Text>
               </View>
               <FlatList
-                data={popular}
+                data={popularNearby}
                 keyExtractor={(item) => item.id}
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -821,6 +868,11 @@ const styles = StyleSheet.create({
   sectionTitle: {
     ...typography.subheading,
     fontSize: 17,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
   },
   viewAllBtn: {
     flexDirection: 'row',

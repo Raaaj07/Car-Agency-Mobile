@@ -21,6 +21,16 @@ const CURATED_PLACES: PlaceConfigItem[] = [
   ...PLACES_CONFIG.cityHighlights,
 ];
 
+// When Google returns nothing (no API key / outage) "Near You" falls back to
+// the curated places within this radius so the rider still gets suggestions.
+const NEARBY_FALLBACK_MAX_KM = 25;
+const NEARBY_MAX_ITEMS = 10;
+
+/** Straight-line distance rounded to 0.1 km (what the app displays). */
+function distanceKmBetween(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  return Math.round(haversineKm(a, b) * 10) / 10;
+}
+
 @Injectable()
 export class PlacesService {
   constructor(
@@ -54,16 +64,19 @@ export class PlacesService {
   }
 
   /**
-   * Live nearby suggestions: famous / frequently-visited places around the
-   * rider (tourist spots, colleges, hospitals, transit, malls, food),
-   * ranked by Google popularity. Empty when the key is missing or Google
-   * has nothing — the home screen simply hides the section.
+   * Live nearby suggestions around the rider's CURRENT location: famous /
+   * frequently-visited places (tourist spots, colleges, hospitals, transit,
+   * malls, food). Returned NEAREST FIRST, each with `distanceKm`. When Google
+   * has nothing (missing key / outage) it falls back to the curated places
+   * within NEARBY_FALLBACK_MAX_KM, so the home screen is not left empty.
    */
   async getNearby(lat: number, lng: number, radiusM?: number): Promise<PlaceItemDto[]> {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    const ref = { lat, lng };
     const hits = await this.googlePhotos.searchNearby(lat, lng, radiusM);
-    return Promise.all(
-      hits.map(async (h) => {
+    if (hits.length === 0) return this.curatedNear(ref);
+    const items = await Promise.all(
+      hits.map(async (h): Promise<PlaceItemDto> => {
         let imageUrl: string | null = null;
         if (h.photoName) {
           imageUrl = this.photoUrl(`/places/photo/g/${h.googlePlaceId}`);
@@ -85,9 +98,35 @@ export class PlacesService {
           lat: h.lat,
           lng: h.lng,
           imageUrl,
+          distanceKm: distanceKmBetween(ref, h),
         };
       }),
     );
+    // Google ranks by popularity; the rider asked for the NEAREST places.
+    return items.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
+  }
+
+  /** Curated places within NEARBY_FALLBACK_MAX_KM of `ref`, nearest first. */
+  private curatedNear(ref: { lat: number; lng: number }): PlaceItemDto[] {
+    const seen = new Set<string>();
+    return CURATED_PLACES.filter((p) => {
+      if (seen.has(p.id)) return false;
+      seen.add(p.id);
+      return true;
+    })
+      .map((item) => ({ item, km: haversineKm(ref, item) }))
+      .filter((x) => x.km <= NEARBY_FALLBACK_MAX_KM)
+      .sort((a, b) => a.km - b.km)
+      .slice(0, NEARBY_MAX_ITEMS)
+      .map(({ item, km }) => ({
+        id: item.id,
+        title: item.title,
+        subtitle: item.subtitle,
+        lat: item.lat,
+        lng: item.lng,
+        imageUrl: this.buildImageUrl(item),
+        distanceKm: Math.round(km * 10) / 10,
+      }));
   }
 
   async getSaved(userId: string): Promise<SavedPlaceDto[]> {
@@ -206,21 +245,22 @@ export class PlacesService {
     popular: PlaceItemDto[];
     cityHighlights: PlaceItemDto[];
   }> {
+    const ref =
+      lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+
     const build = async (items: PlaceConfigItem[]): Promise<PlaceItemDto[]> => {
-      const mapped: PlaceItemDto[] = await Promise.all(
-        items.map(async (item) => ({
-          id: item.id,
-          title: item.title,
-          subtitle: item.subtitle,
-          lat: item.lat,
-          lng: item.lng,
-          imageUrl: this.buildImageUrl(item),
-        })),
-      );
-      if (lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)) {
-        const ref = { lat, lng };
-        mapped.sort((a, b) => haversineKm(ref, a) - haversineKm(ref, b));
-      }
+      const mapped: PlaceItemDto[] = items.map((item) => ({
+        id: item.id,
+        title: item.title,
+        subtitle: item.subtitle,
+        lat: item.lat,
+        lng: item.lng,
+        imageUrl: this.buildImageUrl(item),
+        // Distance from the rider's current location (only when it is known).
+        ...(ref ? { distanceKm: distanceKmBetween(ref, item) } : {}),
+      }));
+      // Nearest popular place first.
+      if (ref) mapped.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
       return mapped;
     };
 

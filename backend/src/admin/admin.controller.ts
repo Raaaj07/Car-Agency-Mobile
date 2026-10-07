@@ -97,10 +97,12 @@ export class AdminController {
         driverId: query.driverId,
         riderId: query.riderId,
       })
-      .then(({ filename, csv }) => {
+      .then(({ filename, csv, truncated }) => {
         res.set({
           'Content-Type': 'text/csv; charset=utf-8',
           'Content-Disposition': `attachment; filename="${filename}"`,
+          // true when the 5 000-row cap cut the result short: narrow the filters.
+          'X-Export-Truncated': String(truncated),
         });
         return csv;
       });

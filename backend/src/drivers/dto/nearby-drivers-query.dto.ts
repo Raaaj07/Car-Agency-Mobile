@@ -1,5 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsIn, IsLatitude, IsLongitude, IsOptional, IsPositive } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsBoolean, IsIn, IsLatitude, IsLongitude, IsOptional, IsPositive } from 'class-validator';
 import { VehicleType } from '../entities/driver.entity';
 
 export class NearbyDriversQueryDto {
@@ -21,7 +21,10 @@ export class NearbyDriversQueryDto {
   @IsIn(['auto', 'mini', 'sedan', 'suv'])
   vehicleType?: VehicleType;
 
+  // Query strings arrive as text. `@Type(() => Boolean)` made "false" -> true
+  // (Boolean('false') is truthy), so ?groupByType=false grouped anyway.
   @IsOptional()
-  @Type(() => Boolean)
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
   groupByType?: boolean;
 }

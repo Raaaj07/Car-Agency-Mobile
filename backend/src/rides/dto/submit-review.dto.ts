@@ -19,5 +19,8 @@ export class SubmitReviewDto {
   @Type(() => Number)
   @IsInt()
   @Min(0)
+  // Upper bound: the tip feeds the payment amount check and driver earnings, so
+  // an absurd value (typo or abuse) must be rejected, not recorded.
+  @Max(5000)
   tipAmount?: number;
 }

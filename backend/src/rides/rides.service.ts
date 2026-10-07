@@ -16,6 +16,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as crypto from 'crypto';
 import Redis from 'ioredis';
 import { EntityManager, In, IsNull, LessThan, MoreThan, QueryRunner, Repository } from 'typeorm';
+import { PaymentEntity } from '../payments/entities/payment.entity';
 import { REDIS_CLIENT } from '../config/redis.module';
 import { toAvatarUrl } from '../common/avatar-url';
 import { DriversService } from '../drivers/drivers.service';
@@ -903,6 +904,20 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       ride.paymentStatus = 'paid';
       ride.paymentMarkedBy = 'driver';
       await this.rides.save(ride);
+    }
+    // Keep the payment rows consistent with the ride (the admin resolve path
+    // already does this). Without it the cash order stayed 'rider_claimed' /
+    // 'pending' forever, so the admin ride detail showed a PAID ride next to
+    // an unsettled payment. rides.paymentStatus stays the source of truth, so
+    // this is best-effort and never fails the driver's confirmation.
+    try {
+      await this.rides.manager.update(
+        PaymentEntity,
+        { rideId: ride.id, status: In(['pending', 'rider_claimed']) },
+        { status: 'paid' },
+      );
+    } catch (err) {
+      this.logger.warn(`Could not sync payment rows for ride ${ride.id}: ${(err as Error).message}`);
     }
     return this.toDriverView(ride);
   }

@@ -1,4 +1,4 @@
-import { IsDateString, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 /**
@@ -34,14 +34,14 @@ export class ListRidesQueryDto {
   @MaxLength(100)
   q?: string;
 
+  // UUID columns: a malformed value used to reach Postgres and surface as a
+  // 500 ("invalid input syntax for type uuid"); reject it as a 400 instead.
   @IsOptional()
-  @IsString()
-  @MaxLength(64)
+  @IsUUID()
   driverId?: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(64)
+  @IsUUID()
   riderId?: string;
 
   @IsOptional()

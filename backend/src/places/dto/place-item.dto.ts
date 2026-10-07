@@ -7,6 +7,12 @@ export class PlaceItemDto {
   imageUrl!: string | null;
   saved?: boolean;
   savedId?: string | null;
+  /**
+   * Straight-line distance from the rider's current location, in km (1 decimal).
+   * Only present on location-aware lists (/places/nearby, /places/popular
+   * called with lat/lng).
+   */
+  distanceKm?: number | null;
 }
 
 export class SavedPlaceDto {

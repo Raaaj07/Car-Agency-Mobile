@@ -17,6 +17,8 @@ export interface PlaceItem {
   imageUrl: string | null;
   saved?: boolean;
   savedId?: string | null;
+  /** Straight-line km from the rider's current location (location-aware lists only). */
+  distanceKm?: number | null;
 }
 
 export interface SavedPlace {

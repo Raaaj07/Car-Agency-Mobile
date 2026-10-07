@@ -568,8 +568,9 @@ describe('AdminService users list + rides CSV export (Task 9)', () => {
     it('exports filtered rides with shared filters, escaped cells and no phones', async () => {
       qb.getMany.mockResolvedValue([rideFixture()]);
 
-      const { filename, csv } = await service.exportRidesCsv({ status: 'completed', q: 'asha' });
+      const { filename, csv, truncated } = await service.exportRidesCsv({ status: 'completed', q: 'asha' });
 
+      expect(truncated).toBe(false);
       expect(filename).toMatch(/^vazhi-rides-\d{4}-\d{2}-\d{2}\.csv$/);
       expect(csv.startsWith('\uFEFF')).toBe(true); // Excel UTF-8 detection
       const [header, row] = csv.slice(1).split('\r\n');
@@ -587,7 +588,18 @@ describe('AdminService users list + rides CSV export (Task 9)', () => {
       expect(qb.andWhere).toHaveBeenCalledWith(expect.stringContaining('ILIKE :q'), {
         q: '%asha%',
       });
-      expect(qb.take).toHaveBeenCalledWith(50_000);
+      // Cap is 5 000; one extra row is requested to detect truncation.
+      expect(qb.take).toHaveBeenCalledWith(5_001);
+    });
+
+    it('flags truncation and exports exactly the cap when more rows match', async () => {
+      qb.getMany.mockResolvedValue(Array.from({ length: 5_001 }, () => rideFixture()));
+
+      const { csv, truncated } = await service.exportRidesCsv();
+
+      expect(truncated).toBe(true);
+      // header + exactly 5 000 data rows (+ trailing CRLF -> one empty tail item)
+      expect(csv.slice(1).split('\r\n')).toHaveLength(1 + 5_000 + 1);
     });
 
     it('rejects unknown filter values (identical whitelist to the list)', async () => {

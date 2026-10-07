@@ -23,6 +23,8 @@ interface PlacesState {
   loading: boolean;
   error: string | null;
   lastFetchedAt: number | null;
+  /** Rider location the nearby/popular lists were last fetched for (drives re-fetch on movement). */
+  suggestionsCoords: { lat: number; lng: number } | null;
 
   fetchAll: (coords?: { lat: number; lng: number }, force?: boolean) => Promise<void>;
   toggleSaved: (place: PlaceItem) => Promise<void>;
@@ -44,6 +46,7 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
   loading: false,
   error: null,
   lastFetchedAt: null,
+  suggestionsCoords: null,
 
   fetchAll: async (coords, force = false) => {
     const { lastFetchedAt, loading } = get();
@@ -87,6 +90,10 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
     );
     if (allFailed) {
       next.error = 'Couldn\'t load suggestions.';
+    } else if (coords) {
+      // Remember WHERE these suggestions are for, so the home screen only
+      // re-fetches once the rider has actually moved.
+      next.suggestionsCoords = coords;
     }
 
     set(next);
