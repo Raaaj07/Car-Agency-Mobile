@@ -50,6 +50,15 @@ export class RidesController {
     return this.rides.findActiveForRider(user.userId);
   }
 
+  // Driver's in-flight trip (matched / en route / in progress / awaiting
+  // payment confirmation) so the driver app can resume it after a restart or
+  // back-navigation. Two path segments, so it never collides with ':id'.
+  @UseGuards(ApprovedDriverGuard)
+  @Get('driver/active')
+  getDriverActive(@CurrentUser() user: AuthenticatedUser) {
+    return this.rides.findActiveForDriver(user.userId);
+  }
+
   @Get(':id')
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.rides.findById(id, user.userId);

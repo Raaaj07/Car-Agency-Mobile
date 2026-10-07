@@ -15,7 +15,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as crypto from 'crypto';
 import Redis from 'ioredis';
-import { EntityManager, In, IsNull, LessThan, QueryRunner, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, LessThan, MoreThan, QueryRunner, Repository } from 'typeorm';
 import { REDIS_CLIENT } from '../config/redis.module';
 import { toAvatarUrl } from '../common/avatar-url';
 import { DriversService } from '../drivers/drivers.service';
@@ -236,6 +236,32 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       relations: ['rider', 'driver', 'driver.user'],
     });
     return ride ? this.toRiderView(ride) : null;
+  }
+
+  // GET /rides/driver/active — the driver's in-flight trip, or null, so the
+  // driver app can re-enter it after a restart / back-navigation / reconnect.
+  // Covers matched, driver_en_route and in_progress, plus a trip completed in
+  // the last 24 h whose payment the driver has not yet confirmed (so the
+  // "Amount Received" step can be resumed). Never throws for a user with no
+  // driver profile — returns null.
+  async findActiveForDriver(driverUserId: string): Promise<any | null> {
+    const driver = await this.drivers.findByUserId(driverUserId).catch(() => null);
+    if (!driver) return null;
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const ride = await this.rides.findOne({
+      where: [
+        { driverId: driver.id, status: In(['matched', 'driver_en_route', 'in_progress']) },
+        {
+          driverId: driver.id,
+          status: 'completed',
+          paymentStatus: In(['pending', 'rider_claimed', 'failed']),
+          completedAt: MoreThan(dayAgo),
+        },
+      ],
+      order: { updatedAt: 'DESC' },
+      relations: ['rider'],
+    });
+    return ride ? this.toDriverView(ride) : null;
   }
 
   // ── R-5: Redis-backed offer/search timers ────────────────────────────────

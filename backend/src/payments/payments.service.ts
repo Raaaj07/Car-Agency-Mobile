@@ -128,6 +128,16 @@ export class PaymentsService {
     if (!payment) {
       throw new NotFoundException('Payment order not found');
     }
+    // P-1: a cash order is only ever settled by the driver's "Amount Received"
+    // or an admin. Without this guard a rider could POST /payments/verify with
+    // their own `cash_<rideId>` order id and (with the dev provider, which
+    // approves everything) mark the ride paid themselves — or, against
+    // Razorpay, flip the cash order to 'failed'.
+    if (payment.method === 'cash' || payment.providerOrderId?.startsWith('cash_')) {
+      throw new BadRequestException(
+        'Cash payments are confirmed by the driver, not verified through the gateway',
+      );
+    }
     if (ride.paymentStatus === 'disputed') {
       throw new ConflictException('Payment is disputed — an admin must resolve it first');
     }

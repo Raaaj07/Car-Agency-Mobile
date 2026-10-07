@@ -189,5 +189,22 @@ describe('PaymentsService', () => {
         NotFoundException,
       );
     });
+
+    it('refuses to verify a cash order through the gateway (rider cannot self-settle)', async () => {
+      payments.findOne.mockResolvedValue({
+        id: 'pay-1',
+        method: 'cash',
+        providerOrderId: 'cash_r1',
+        amount: 240,
+        status: 'rider_claimed',
+      });
+
+      await expect(service.verify('u1', { rideId: 'r1', orderId: 'cash_r1' })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(provider.verifyPayment).not.toHaveBeenCalled();
+      expect(payments.save).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
   });
 });

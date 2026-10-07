@@ -8,7 +8,7 @@ import { Card } from '../../components/primitives/Card';
 import { Button } from '../../components/primitives/Button';
 import { LatLng } from '../../components/primitives/RealMapView';
 import { driversApi, DriverProfile } from '../../api/drivers';
-import { ridesApi } from '../../api/rides';
+import { ridesApi, Ride } from '../../api/rides';
 import { getApiError } from '../../api/client';
 import { useSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
@@ -39,6 +39,36 @@ function inr(n: number): string {
   return `₹${Math.round(n).toLocaleString('en-IN')}`;
 }
 
+// Where a server-reported in-flight trip should resume. Live trips re-enter
+// the navigation screen for their phase; a completed-but-unpaid trip goes to
+// the payment step.
+type TripTarget =
+  | { screen: 'TurnByTurnNavigation'; phase: 'to_pickup' | 'in_progress' }
+  | { screen: 'DriverPayment' };
+
+function tripTarget(ride: Ride): TripTarget | null {
+  if (ride.status === 'matched' || ride.status === 'driver_en_route') {
+    return { screen: 'TurnByTurnNavigation', phase: 'to_pickup' };
+  }
+  if (ride.status === 'in_progress') return { screen: 'TurnByTurnNavigation', phase: 'in_progress' };
+  if (ride.status === 'completed') return { screen: 'DriverPayment' };
+  return null;
+}
+
+function tripLabel(ride: Ride): string {
+  switch (ride.status) {
+    case 'matched':
+    case 'driver_en_route':
+      return 'Heading to pickup';
+    case 'in_progress':
+      return 'Trip in progress';
+    case 'completed':
+      return 'Collect payment';
+    default:
+      return 'Active ride';
+  }
+}
+
 export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const navigation = useNavigation<any>();
   const [profile, setProfile] = useState<DriverProfile | null>(null);
@@ -47,6 +77,11 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   // Value is never read (only the setters below trigger re-renders).
   const [, setDriverCoords] = useState<LatLng | undefined>();
   const [showWelcome, setShowWelcome] = useState(false);
+  // Driver's in-flight trip as reported by the server (survives app restarts).
+  const [activeTrip, setActiveTrip] = useState<Ride | null>(null);
+  // Auto-enter a live trip only once per mount, otherwise pressing Back from
+  // the trip screen would bounce the driver straight back in.
+  const autoResumed = useRef(false);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestCoords = useRef<LatLng | undefined>(undefined);
   // Last offer we already surfaced (socket OR polling) so the request screen
@@ -93,6 +128,49 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   };
 
   useEffect(loadProfile, []);
+
+  // ── Resume an in-flight trip ───────────────────────────────────────────────
+  // The store only lives in memory, so after a restart / back-navigation the
+  // driver had no way back into an accepted trip. Ask the server instead.
+  const resumeTrip = useCallback(
+    (ride: Ride) => {
+      const target = tripTarget(ride);
+      if (!target) return;
+      setActiveRide(ride);
+      if (target.screen === 'TurnByTurnNavigation') {
+        navigation.navigate('TurnByTurnNavigation', { phase: target.phase });
+      } else {
+        navigation.navigate('DriverPayment');
+      }
+    },
+    [navigation, setActiveRide],
+  );
+
+  const loadActiveTrip = useCallback(async () => {
+    try {
+      const trip = await ridesApi.getDriverActive();
+      setActiveTrip(trip);
+      if (trip && !autoResumed.current && trip.status !== 'completed') {
+        autoResumed.current = true;
+        resumeTrip(trip);
+      }
+    } catch {
+      // Not an approved driver yet / transient network error — no card shown.
+    }
+  }, [resumeTrip]);
+
+  useEffect(() => {
+    // Async boundary — calling a state-setting function synchronously in the
+    // effect body trips react-hooks/set-state-in-effect (same pattern as
+    // setShowWelcome above).
+    Promise.resolve().then(() => loadActiveTrip());
+    // Refresh whenever the dashboard regains focus (e.g. after finishing a
+    // trip or pressing Back from the trip screen).
+    const unsubscribe = navigation.addListener('focus', () => {
+      void loadActiveTrip();
+    });
+    return unsubscribe;
+  }, [navigation, loadActiveTrip]);
 
   // ── Initial GPS fix ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -281,6 +359,10 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   // Online drivers are set offline first; an active trip blocks the switch.
   const switchToRider = async () => {
     const current = useRideStore.getState().activeRide;
+    if (activeTrip && activeTrip.status !== 'completed') {
+      Alert.alert('Trip in progress', 'You cannot switch modes while a trip is active. Complete or cancel it first.');
+      return;
+    }
     if (current && ['matched', 'driver_en_route', 'in_progress'].includes(current.status)) {
       Alert.alert('Trip in progress', 'You cannot switch modes while a trip is active. Complete or cancel it first.');
       return;
@@ -365,6 +447,47 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
             <Text style={styles.statusTitle}>Application under review</Text>
             <Text style={styles.statusSub}>You will be able to go online once approved.</Text>
           </Card>
+        ) : null}
+
+        {/* Active ride — re-enter an accepted trip */}
+        {activeTrip && tripTarget(activeTrip) ? (
+          <>
+            <Text style={styles.sectionTitle}>Your active ride</Text>
+            <View style={[styles.rideCard, styles.activeTripCard]}>
+              <View style={styles.rideTopRow}>
+                <View style={styles.timeChip}>
+                  <Text style={styles.timeChipText}>{tripLabel(activeTrip)}</Text>
+                </View>
+                <Text style={styles.fareText}>{inr(activeTrip.fareBreakdown?.total ?? 0)}</Text>
+              </View>
+              <View style={styles.pointRow}>
+                <View style={[styles.dot, { backgroundColor: colors.success }]} />
+                <Text style={styles.pointVal} numberOfLines={1}>
+                  {activeTrip.pickup?.address ?? 'Pickup location'}
+                </Text>
+              </View>
+              <View style={styles.routeLine} />
+              <View style={styles.pointRow}>
+                <View style={[styles.square, { backgroundColor: colors.accent }]} />
+                <Text style={styles.pointVal} numberOfLines={1}>
+                  {activeTrip.dropoff?.address ?? 'Drop location'}
+                </Text>
+              </View>
+              <View style={styles.rideBottomRow}>
+                <Text style={styles.distanceText}>
+                  {activeTrip.riderName ? `Rider: ${activeTrip.riderName}` : ''}
+                </Text>
+                <TouchableOpacity
+                  style={styles.viewRideBtn}
+                  onPress={() => resumeTrip(activeTrip)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.viewRideText}>Resume ride</Text>
+                  <ChevronRight size={16} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </>
         ) : null}
 
         {/* Available rides */}
@@ -489,4 +612,5 @@ const styles = StyleSheet.create({
   emptyTitle: { ...typography.bodyBold, fontSize: 15, textAlign: 'center' },
   emptySub: { ...typography.meta, fontSize: 13, textAlign: 'center' },
   switchBtn: { marginHorizontal: 20, marginTop: 8 },
+  activeTripCard: { borderWidth: 1.5, borderColor: colors.success },
 });

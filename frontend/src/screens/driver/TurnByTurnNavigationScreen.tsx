@@ -8,15 +8,18 @@ import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
 import { useRideStore } from '../../store/rideStore';
 import { useSocket } from '../../hooks/useSocket';
 import { driversApi } from '../../api/drivers';
+import { ridesApi } from '../../api/rides';
 import { openGoogleMapsNavigation } from '../../utils/maps';
 
 interface Props {
   phase: 'to_pickup' | 'in_progress';
   onPrimaryAction: () => void;
   isSubmitting?: boolean;
+  /** The rider (or system/admin) cancelled this trip while the driver was on it. */
+  onRideCancelled?: () => void;
 }
 
-export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAction, isSubmitting }) => {
+export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAction, isSubmitting, onRideCancelled }) => {
   const isToPickup = phase === 'to_pickup';
   const activeRide = useRideStore((state) => state.activeRide);
   const socket = useSocket();
@@ -59,6 +62,41 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
       mounted = false;
       watchSubscription.current?.remove();
       watchSubscription.current = null;
+    };
+  }, [activeRide?.id, socket]);
+
+  // Rider cancelled mid-trip? The server pushes `ride:status` to the driver's
+  // user room; an 8 s poll covers a missed event (socket reconnecting). Without
+  // this the driver kept driving a dead trip and every action then failed with
+  // "Ride is cancelled".
+  const onCancelledRef = useRef(onRideCancelled);
+  useEffect(() => {
+    onCancelledRef.current = onRideCancelled;
+  });
+  useEffect(() => {
+    const rideId = activeRide?.id;
+    if (!rideId) return;
+    let fired = false;
+    const fire = () => {
+      if (fired) return;
+      fired = true;
+      onCancelledRef.current?.();
+    };
+    const handleStatus = (event: { rideId: string; status: string }) => {
+      if (event.rideId === rideId && event.status === 'cancelled') fire();
+    };
+    socket?.on('ride:status', handleStatus);
+    const poll = setInterval(() => {
+      ridesApi
+        .get(rideId)
+        .then((r) => {
+          if (r.status === 'cancelled') fire();
+        })
+        .catch(() => {});
+    }, 8000);
+    return () => {
+      socket?.off('ride:status', handleStatus);
+      clearInterval(poll);
     };
   }, [activeRide?.id, socket]);
 

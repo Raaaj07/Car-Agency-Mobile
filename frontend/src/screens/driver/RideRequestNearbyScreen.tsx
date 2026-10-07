@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { useIsFocused } from '@react-navigation/native';
 import { X, Check } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -11,6 +12,8 @@ import { useRideStore } from '../../store/rideStore';
 interface Props {
   onAccept: () => void;
   onDecline: () => void;
+  /** Countdown reached 0 with no action: release the offer silently (no error UI). */
+  onExpire: () => void;
 }
 
 const VEHICLE_LABELS: Record<string, string> = {
@@ -20,34 +23,57 @@ const VEHICLE_LABELS: Record<string, string> = {
   suv: 'Premium SUV',
 };
 
-export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline }) => {
+export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline, onExpire }) => {
   const activeRide = useRideStore((state) => state.activeRide);
+  const isFocused = useIsFocused();
   const [seconds, setSeconds] = useState<number>(activeRide?.expiresInSeconds ?? 15);
+  // Set the instant the driver taps Accept/Decline (or the timer expires).
+  // The old countdown kept ticking while the accept request was in flight and
+  // after navigating on, then fired onDecline against an ALREADY-ACCEPTED ride
+  // ("Nothing to decline") and popped the trip screen — the "auto cancel" bug.
+  const handledRef = useRef(false);
 
   useEffect(() => {
     // Async boundary — sync setState directly in the effect trips
     // react-hooks/set-state-in-effect; a microtask is invisible next to the
     // 1-second countdown ticks below. Resets when a new offer arrives.
+    handledRef.current = false;
     Promise.resolve().then(() => setSeconds(activeRide?.expiresInSeconds ?? 15));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset keyed on offer id, not every field change
   }, [activeRide?.id]);
 
-  // Always-fresh callback for the countdown (exhaustive-deps): adding
-  // onDecline to the interval's deps would restart the timer on every parent
-  // re-render, so the effect reads a ref instead.
-  const onDeclineRef = useRef(onDecline);
+  // Always-fresh callbacks for the countdown (exhaustive-deps): adding them
+  // to the interval's deps would restart the timer on every parent re-render,
+  // so the effect reads refs instead.
+  const onExpireRef = useRef(onExpire);
   useEffect(() => {
-    onDeclineRef.current = onDecline;
+    onExpireRef.current = onExpire;
   });
 
   useEffect(() => {
+    // Only count down while this screen is the visible one and the driver has
+    // not acted. A screen left mounted underneath the trip screen must never
+    // fire the expiry.
+    if (!isFocused || handledRef.current) return;
     if (seconds <= 0) {
-      onDeclineRef.current();
+      handledRef.current = true;
+      onExpireRef.current();
       return;
     }
     const timer = setInterval(() => setSeconds((prev) => prev - 1), 1000);
     return () => clearInterval(timer);
-  }, [seconds]);
+  }, [seconds, isFocused]);
+
+  const handleAccept = () => {
+    if (handledRef.current) return;
+    handledRef.current = true;
+    onAccept();
+  };
+  const handleDecline = () => {
+    if (handledRef.current) return;
+    handledRef.current = true;
+    onDecline();
+  };
 
   const vehicleLabel = activeRide?.vehicleType
     ? VEHICLE_LABELS[activeRide.vehicleType] ?? activeRide.vehicleType
@@ -118,7 +144,7 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline }
         <View style={styles.btnRow}>
           <Button
             title="Decline"
-            onPress={onDecline}
+            onPress={handleDecline}
             variant="danger"
             size="large"
             style={styles.declineBtn}
@@ -126,7 +152,7 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline }
           />
           <Button
             title="Accept Ride"
-            onPress={onAccept}
+            onPress={handleAccept}
             variant="success"
             size="large"
             style={styles.acceptBtn}
