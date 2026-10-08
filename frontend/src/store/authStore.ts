@@ -135,6 +135,10 @@ export const useAuthStore = create<AuthState>((set) => ({
     tokenManager.clear();
     void saveSecure(ACCESS_KEY, null);
     void saveSecure(REFRESH_KEY, null);
+    // The persisted Rider/Driver mode belongs to the account that just left.
+    // Left behind, the NEXT approved driver to sign in on this phone would
+    // reopen straight in driver mode (restoreSession reads this key).
+    void saveSecure(MODE_KEY, null);
     import('./rideStore')
       .then((m) => m.useRideStore.getState().resetRide())
       .catch(() => {});

@@ -63,9 +63,7 @@ export class OtpService {
       );
     }
     const count = await this.redis.incr(this.sendCountKey(phone));
-    if (count === 1) {
-      await this.redis.expire(this.sendCountKey(phone), this.sendWindowSeconds);
-    }
+    await this.ensureWindow(this.sendCountKey(phone), count, this.sendWindowSeconds);
     if (count > this.sendMax) {
       throw new HttpException(
         `Too many OTP requests. Try again in ${Math.ceil(this.sendWindowSeconds / 60)} minutes`,
@@ -73,6 +71,19 @@ export class OtpService {
       );
     }
     await this.redis.set(this.sendCooldownKey(phone), '1', 'EX', this.resendCooldownSeconds);
+  }
+
+  /**
+   * INCR and EXPIRE are two separate Redis commands. If the process died
+   * between them the counter was left WITHOUT a TTL and never reset — a phone
+   * number could stay locked out of OTP login permanently. So the window is
+   * applied on the first hit AND repaired whenever a counter is found with no
+   * expiry (TTL -1).
+   */
+  private async ensureWindow(key: string, count: number, seconds: number): Promise<void> {
+    if (count === 1 || (await this.redis.ttl(key)) === -1) {
+      await this.redis.expire(key, seconds);
+    }
   }
 
   generateCode(): string {
@@ -90,9 +101,7 @@ export class OtpService {
 
   async verify(phone: string, code: string): Promise<{ ok: boolean; reason?: string }> {
     const attempts = await this.redis.incr(this.attemptsKey(phone));
-    if (attempts === 1) {
-      await this.redis.expire(this.attemptsKey(phone), this.ttlSeconds);
-    }
+    await this.ensureWindow(this.attemptsKey(phone), attempts, this.ttlSeconds);
     if (attempts > MAX_VERIFY_ATTEMPTS) {
       return { ok: false, reason: 'Too many attempts, request a new OTP' };
     }

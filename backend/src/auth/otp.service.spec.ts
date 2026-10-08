@@ -55,6 +55,16 @@ describe('OtpService', () => {
       expect(redis.expire).toHaveBeenCalledWith('otp:sendcount:9876543210', 600);
       expect(redis.set).toHaveBeenCalledWith('otp:sendcool:9876543210', '1', 'EX', 30);
     });
+
+    it('repairs a send counter that lost its TTL (crash between INCR and EXPIRE)', async () => {
+      // 1st ttl call = cooldown key (none); 2nd = the counter key, found with no expiry.
+      redis.ttl.mockResolvedValueOnce(-2).mockResolvedValueOnce(-1);
+      redis.incr.mockResolvedValueOnce(2); // not the first hit, so only the repair path can set the TTL
+
+      await expect(service.assertCanSend('9876543210')).resolves.toBeUndefined();
+
+      expect(redis.expire).toHaveBeenCalledWith('otp:sendcount:9876543210', 600);
+    });
   });
 
   describe('verify (AU-2)', () => {

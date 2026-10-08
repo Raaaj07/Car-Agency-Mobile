@@ -26,7 +26,10 @@ const tipOptions = ['₹10', '₹20', '₹50', '₹100'];
 export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) => {
   const [rating, setRating] = useState<number>(5);
   const [selectedCompliments, setSelectedCompliments] = useState<string[]>(['Safe Driver 🛡️']);
-  const [selectedTip, setSelectedTip] = useState<string>('₹20');
+  // Tip is OPTIONAL: nothing pre-selected (a pre-selected ₹20 silently added a
+  // tip, and raised the driver's payment QR amount, for riders who just tapped
+  // Submit). Tap a chip again to remove it.
+  const [selectedTip, setSelectedTip] = useState<string | null>(null);
   // Real driver from the completed ride (photo + name + vehicle).
   const driver = useRideStore((state) => state.activeRide?.driver ?? null);
   const driverName = driver?.name?.trim() || 'Your driver';
@@ -101,7 +104,7 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
                 <TouchableOpacity
                   key={tip}
                   style={[styles.tipChip, isSelected && styles.tipChipActive]}
-                  onPress={() => setSelectedTip(tip)}
+                  onPress={() => setSelectedTip(isSelected ? null : tip)}
                 >
                   <Text style={[styles.tipText, isSelected && styles.tipTextActive]}>{tip}</Text>
                 </TouchableOpacity>
@@ -114,7 +117,9 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
       <View style={styles.footer}>
         <Button
           title="Submit Rating & Feedback"
-          onPress={() => onSubmitReview(rating, selectedCompliments, Number(selectedTip.replace('₹', '')))}
+          onPress={() =>
+            onSubmitReview(rating, selectedCompliments, selectedTip ? Number(selectedTip.replace('₹', '')) : 0)
+          }
           variant="primary"
           size="large"
         />

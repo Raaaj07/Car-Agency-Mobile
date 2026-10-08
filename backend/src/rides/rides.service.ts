@@ -894,9 +894,17 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       const clampAt = Math.min(Math.max(estimateKm * 1.25, 2), 500);
       finalDistanceKm = Math.min(finalDistanceKm, clampAt);
       const numericPrice = computeNumericPrice(ride.vehicleType, finalDistanceKm);
-      // PR-1: discountFor now reads the DB (async) — the code persisted on
-      // the ride is honoured even if the promo was deactivated since.
-      const discount = ride.promoCode ? await this.promosService.discountFor(ride.promoCode) : 0;
+      // PR-1: honour the discount recorded ON THE RIDE at booking
+      // (fareBreakdown.discount) — not a fresh promo lookup. Re-reading the
+      // promo meant an admin editing the amount (or deleting the promo) while
+      // the ride was in progress changed the fare the rider had been shown.
+      // The live lookup stays only as a fallback for rides with no stored value.
+      const storedDiscount = Number(ride.fareBreakdown?.discount);
+      const discount = ride.promoCode
+        ? Number.isFinite(storedDiscount)
+          ? storedDiscount
+          : await this.promosService.discountFor(ride.promoCode)
+        : 0;
       ride.fareBreakdown = computeFareBreakdown(numericPrice, discount);
       ride.distanceKm = finalDistanceKm.toFixed(2);
       ride.status = 'completed';
