@@ -19,6 +19,9 @@ export interface PlaceItem {
   savedId?: string | null;
   /** Straight-line km from the rider's current location (location-aware lists only). */
   distanceKm?: number | null;
+  /** Google star rating (0-5); live Google places only. */
+  rating?: number | null;
+  ratingCount?: number | null;
 }
 
 export interface SavedPlace {

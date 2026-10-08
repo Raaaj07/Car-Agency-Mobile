@@ -46,6 +46,11 @@ import { PromosModule } from './promos/promos.module';
         autoLoadEntities: true,
         synchronize: (config.get<string>('DB_SYNCHRONIZE') ?? 'false') === 'true',
         logging: (config.get<string>('DB_LOGGING') ?? 'false') === 'true',
+        // PERF: keep pooled connections alive. Managed Postgres hosts silently
+        // drop idle TCP connections; the next request (e.g. the driver's
+        // "Accept Ride" tap after minutes of waiting) then paid a full
+        // reconnect + SSL handshake, which showed up as a multi-second stall.
+        extra: { keepAlive: true, keepAliveInitialDelayMillis: 10_000 },
         // Only disable cert verification for managed dev DBs; in prod use proper CA.
         ssl:
           (config.get<string>('DB_SSL') ?? 'true') === 'false'

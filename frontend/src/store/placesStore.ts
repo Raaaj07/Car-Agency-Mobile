@@ -2,12 +2,14 @@
  * placesStore – Zustand store for home-screen place data.
  *
  * fetchAll() runs 5 requests with Promise.allSettled so one failure does not
- * blank all sections. Results are cached for 60 s (skip re-fetch unless forced).
+ * blank all sections. Anything that failed is retried ONCE, silently, after a
+ * short delay; the "Tap to retry" error only appears if every request still
+ * failed. Results are cached for 60 s (skip re-fetch unless forced).
  *
  * toggleSaved() does an optimistic update and rolls back on API failure.
  */
 import { create } from 'zustand';
-import { placesApi, PlaceItem, SavedPlace } from '../api/places';
+import { placesApi, PlaceItem, PopularPlacesResponse, SavedPlace } from '../api/places';
 import { promosApi, Promo } from '../api/promos';
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -34,6 +36,7 @@ interface PlacesState {
 // ── Store ────────────────────────────────────────────────────────────────────
 
 const CACHE_TTL_MS = 60_000; // 60 seconds
+const RETRY_DELAY_MS = 1500; // pause before the single silent retry
 
 export const usePlacesStore = create<PlacesState>((set, get) => ({
   recent: [],
@@ -61,18 +64,38 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
 
     set({ loading: true, error: null });
 
-    const [recentRes, savedRes, popularRes, promosRes, nearbyRes] = await Promise.allSettled([
-      placesApi.getRecent(5),
-      placesApi.getSaved(),
-      placesApi.getPopular(coords),
-      promosApi.getActive(),
-      coords ? placesApi.getNearby(coords) : Promise.resolve([] as PlaceItem[]),
-    ]);
+    const tasks: (() => Promise<unknown>)[] = [
+      () => placesApi.getRecent(5),
+      () => placesApi.getSaved(),
+      () => placesApi.getPopular(coords),
+      () => promosApi.getActive(),
+      () => (coords ? placesApi.getNearby(coords) : Promise.resolve([] as PlaceItem[])),
+    ];
+    const results = await Promise.allSettled(tasks.map((t) => t()));
 
-    const next: Partial<PlacesState> = {
-      loading: false,
-      lastFetchedAt: Date.now(),
-    };
+    // One silent retry of whatever failed (no error shown, spinner state unchanged).
+    const failedIdx = results.flatMap((r, i) => (r.status === 'rejected' ? [i] : []));
+    if (failedIdx.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      const again = await Promise.allSettled(failedIdx.map((i) => tasks[i]()));
+      failedIdx.forEach((originalIdx, k) => {
+        results[originalIdx] = again[k];
+      });
+    }
+
+    const [recentRes, savedRes, popularRes, promosRes, nearbyRes] = results as unknown as [
+      PromiseSettledResult<PlaceItem[]>,
+      PromiseSettledResult<SavedPlace[]>,
+      PromiseSettledResult<PopularPlacesResponse>,
+      PromiseSettledResult<Promo[]>,
+      PromiseSettledResult<PlaceItem[]>,
+    ];
+
+    const allFailed = results.every((r) => r.status === 'rejected');
+
+    const next: Partial<PlacesState> = { loading: false };
+    // A total failure must not start the 60 s cache window.
+    if (!allFailed) next.lastFetchedAt = Date.now();
 
     if (recentRes.status === 'fulfilled') next.recent = recentRes.value;
     if (savedRes.status === 'fulfilled') next.saved = savedRes.value;
@@ -84,12 +107,9 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
     if (promosRes.status === 'fulfilled') next.promos = promosRes.value;
     if (nearbyRes.status === 'fulfilled') next.nearby = nearbyRes.value;
 
-    // If all 5 failed, show a generic error.
-    const allFailed = [recentRes, savedRes, popularRes, promosRes, nearbyRes].every(
-      (r) => r.status === 'rejected',
-    );
     if (allFailed) {
-      next.error = 'Couldn\'t load suggestions.';
+      // Both attempts failed for every request: show the manual retry row.
+      next.error = "Couldn't load suggestions.";
     } else if (coords) {
       // Remember WHERE these suggestions are for, so the home screen only
       // re-fetches once the rider has actually moved.

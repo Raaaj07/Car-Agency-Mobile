@@ -10,7 +10,7 @@ import { RealMapView } from '../../components/primitives/RealMapView';
 import { useRideStore } from '../../store/rideStore';
 
 interface Props {
-  onAccept: () => void;
+  onAccept: () => void | Promise<void>;
   onDecline: () => void;
   /** Countdown reached 0 with no action: release the offer silently (no error UI). */
   onExpire: () => void;
@@ -32,13 +32,21 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline, 
   // after navigating on, then fired onDecline against an ALREADY-ACCEPTED ride
   // ("Nothing to decline") and popped the trip screen — the "auto cancel" bug.
   const handledRef = useRef(false);
+  // Instant visual feedback the moment Accept is tapped: the button shows a
+  // spinner and both buttons lock. Without it the screen looked frozen for the
+  // whole network round trip and drivers kept tapping. Never reset: the
+  // navigator leaves this screen on success AND on failure.
+  const [accepting, setAccepting] = useState(false);
 
   useEffect(() => {
     // Async boundary — sync setState directly in the effect trips
     // react-hooks/set-state-in-effect; a microtask is invisible next to the
     // 1-second countdown ticks below. Resets when a new offer arrives.
     handledRef.current = false;
-    Promise.resolve().then(() => setSeconds(activeRide?.expiresInSeconds ?? 15));
+    Promise.resolve().then(() => {
+      setSeconds(activeRide?.expiresInSeconds ?? 15);
+      setAccepting(false);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset keyed on offer id, not every field change
   }, [activeRide?.id]);
 
@@ -67,7 +75,8 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline, 
   const handleAccept = () => {
     if (handledRef.current) return;
     handledRef.current = true;
-    onAccept();
+    setAccepting(true);
+    void onAccept();
   };
   const handleDecline = () => {
     if (handledRef.current) return;
@@ -147,6 +156,7 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline, 
             onPress={handleDecline}
             variant="danger"
             size="large"
+            disabled={accepting}
             style={styles.declineBtn}
             leftIcon={<X size={20} color="#FFFFFF" />}
           />
@@ -155,6 +165,7 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline, 
             onPress={handleAccept}
             variant="success"
             size="large"
+            loading={accepting}
             style={styles.acceptBtn}
             leftIcon={<Check size={20} color="#FFFFFF" />}
           />

@@ -75,6 +75,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
     error,
     fetchAll,
     suggestionsCoords,
+    lastFetchedAt,
   } = usePlacesStore();
   const toggleSaved = usePlacesStore((state) => state.toggleSaved);
 
@@ -92,6 +93,9 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   const [nearbyDriverDots, setNearbyDriverDots] = useState<LatLng[]>([]);
   const [driverCountsByType, setDriverCountsByType] = useState<Record<string, number>>({});
   const initialGpsAppliedRef = useRef(false);
+  // Set once we have loaded the non-location data (recents/saved/promos) for a
+  // rider whose GPS never produced a real fix.
+  const loadedWithoutLocationRef = useRef(false);
 
   // ── Bottom Sheet Snap Points (A1.1, A3.2, A3.3) ──────────────────────────────
   // Header height: handle (14) + searchBarCTA (52) = ~70px
@@ -170,10 +174,22 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   // returns both lists nearest-first with a distance on every card.
   useEffect(() => {
     if (!gpsCoords) return;
+    // Wait for the location request to settle (permission prompt / GPS fix).
+    if (locationStatus === 'loading') return;
+    if (locationStatus !== 'granted') {
+      // Denied / GPS timeout: gpsCoords is only the Salem PLACEHOLDER, not where
+      // the rider is — never build "Near You" from it. Still load everything
+      // that does not need a position (recents, saved, promos) once.
+      if (!loadedWithoutLocationRef.current) {
+        loadedWithoutLocationRef.current = true;
+        void fetchAll(undefined, true);
+      }
+      return;
+    }
     const here = { lat: gpsCoords.latitude, lng: gpsCoords.longitude };
     if (suggestionsCoords && haversineKm(suggestionsCoords, here) < SUGGESTION_REFRESH_KM) return;
     void fetchAll(here, true);
-  }, [gpsCoords, suggestionsCoords, fetchAll]);
+  }, [gpsCoords, locationStatus, suggestionsCoords, fetchAll]);
 
   // ── Driver Polling (A4.3, C7 capped at 15) ──────────────────────────────────
   useFocusEffect(
@@ -344,11 +360,15 @@ export const HomeDashboardScreen: React.FC<Props> = ({
     chipItems.push({ key: `recent-${r.id}`, icon: 'recent', label: r.title, place: r });
   });
 
-  // Popular places: nearest 8, minus anything already shown under "Near You"
-  // (when Near You falls back to curated spots the same places would repeat).
-  const nearbyIds = new Set(nearby.map((n) => n.id));
-  const popularNearby = popular.filter((p) => !nearbyIds.has(p.id)).slice(0, 8);
+  // Popular places: the nearest 8 (already nearest-first from the server).
+  // Deliberately NOT de-duplicated against "Near You": a popular place that is
+  // also close must still appear under Popular.
+  const popularNearby = popular.slice(0, 8);
   const hasLiveLocation = locationStatus === 'granted';
+  // Nothing to show for either list: say so (and why) instead of leaving a
+  // silent blank. `lastFetchedAt` is set once a fetch has completed.
+  const loadedOnce = lastFetchedAt !== null;
+  const noSuggestions = loadedOnce && nearby.length === 0 && popularNearby.length === 0 && !error;
 
   // Check emulator API_URL fallback diagnostic (A0.2)
   const showApiWarning =
@@ -673,6 +693,34 @@ export const HomeDashboardScreen: React.FC<Props> = ({
             </View>
           )}
 
+          {/* Empty state: tell the rider WHY there are no suggestions */}
+          {noSuggestions && (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>
+                {hasLiveLocation ? 'No places found near you yet' : 'Turn on location for places near you'}
+              </Text>
+              <Text style={styles.emptyBody}>
+                {hasLiveLocation
+                  ? 'We could not load nearby places right now. Check your connection and try again.'
+                  : 'Allow location access to see the nearest and most popular places around you.'}
+              </Text>
+              <TouchableOpacity
+                style={styles.emptyBtn}
+                onPress={() => {
+                  if (hasLiveLocation && gpsCoords) {
+                    void fetchAll({ lat: gpsCoords.latitude, lng: gpsCoords.longitude }, true);
+                  } else {
+                    openSettings();
+                  }
+                }}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+              >
+                <Text style={styles.emptyBtnText}>{hasLiveLocation ? 'Refresh' : 'Enable location'}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* Error / Retry Fallback */}
           {!!error && (
             <TouchableOpacity
@@ -925,6 +973,40 @@ const styles = StyleSheet.create({
   errorRetryRow: {
     paddingVertical: 12,
     alignItems: 'center',
+  },
+  emptyCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: radii.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+    gap: 6,
+    ...shadows.card,
+  },
+  emptyTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    textAlign: 'center',
+  },
+  emptyBody: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    textAlign: 'center',
+  },
+  emptyBtn: {
+    marginTop: 8,
+    backgroundColor: colors.accent,
+    borderRadius: radii.pill,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+  },
+  emptyBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
   errorRetryText: {
     fontSize: 13,

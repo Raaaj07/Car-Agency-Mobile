@@ -8,7 +8,6 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { PLACES_CONFIG } from './places.config';
-import { GooglePlacesService } from './google-places.service';
 import { PlaceImageService } from './place-image.service';
 
 // Deliberately NOT guarded: React Native <Image> cannot send the bearer
@@ -22,10 +21,7 @@ const CURATED_BY_ID = new Map(
 
 @Controller('places/photo')
 export class PlacesPhotoController {
-  constructor(
-    private readonly google: GooglePlacesService,
-    private readonly images: PlaceImageService,
-  ) {}
+  constructor(private readonly images: PlaceImageService) {}
 
   // Curated places: Google photo -> curated URL -> Wikimedia search, all
   // downloaded server-side and streamed to the app.
@@ -41,15 +37,16 @@ export class PlacesPhotoController {
     return this.sendPhoto(res, photo);
   }
 
-  // Guard-free photo proxy for live nearby results. The client supplies
-  // only a Google place ID (strictly validated); photo bytes are resolved
-  // and downloaded server-side, so the key never reaches the app.
+  // Guard-free photo proxy for live nearby/popular results. The client
+  // supplies only a Google place ID (strictly validated); bytes are resolved
+  // and downloaded server-side (Google first, Wikimedia as backup), so the
+  // key never reaches the app and the phone never hits Wikimedia directly.
   @Get('g/:googlePlaceId')
   async serveGooglePhoto(
     @Param('googlePlaceId') googlePlaceId: string,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
-    const photo = await this.google.fetchPlacePhotoById(googlePlaceId);
+    const photo = await this.images.getLiveImage(googlePlaceId);
     if (!photo) throw new NotFoundException('No photo available');
     return this.sendPhoto(res, photo);
   }

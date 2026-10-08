@@ -51,20 +51,31 @@ export const DriverDashboardStackNavigator: React.FC = () => {
                 }
                 acceptingRef.current = true;
                 try {
-                  let current = await ridesApi.accept(ride.id);
-                  // The ride is ACCEPTED at this point. markEnRoute is only a
-                  // status nicety (start() also accepts `matched`), so a hiccup
-                  // here must not strand the driver with an accepted ride and
-                  // an error screen.
-                  try {
-                    current = await ridesApi.enRoute(ride.id);
-                  } catch {
-                    // keep the `matched` ride returned by accept()
-                  }
-                  useRideStore.getState().setActiveRide(current);
+                  // Only `accept` gates navigation: it is the one call that can
+                  // legitimately fail (offer expired / taken / cancelled).
+                  const accepted = await ridesApi.accept(ride.id);
+                  useRideStore.getState().setActiveRide(accepted);
                   // replace (not navigate): the request screen must UNMOUNT so
                   // its countdown can never fire a decline on the accepted ride.
                   navigation.replace('TurnByTurnNavigation', { phase: 'to_pickup' });
+
+                  // PERF: markEnRoute is only a status nicety (start() also
+                  // accepts `matched`), so it must NOT block the screen change.
+                  // It used to be awaited right here — a whole extra network round
+                  // trip before the driver saw anything. Fire it in the
+                  // background and fold the result into the store if the driver
+                  // is still on this same ride and nothing newer has landed.
+                  ridesApi
+                    .enRoute(ride.id)
+                    .then((enRoute) => {
+                      const latest = useRideStore.getState().activeRide;
+                      if (latest?.id === enRoute.id && latest.status === 'matched') {
+                        useRideStore.getState().setActiveRide(enRoute);
+                      }
+                    })
+                    .catch(() => {
+                      // keep the `matched` ride returned by accept()
+                    });
                 } catch (error) {
                   // Offer gone (expired / taken / cancelled): drop the stale card.
                   useRideStore.getState().setActiveRide(null);
@@ -116,8 +127,14 @@ export const DriverDashboardStackNavigator: React.FC = () => {
               setIsSubmitting(true);
               try {
                 if ((route.params?.phase ?? 'to_pickup') === 'to_pickup') {
-                  const { ride: started } = await ridesApi.start(ride.id);
-                  useRideStore.getState().setActiveRide(started);
+                  // PERF: after accept the ride is already `driver_en_route`, so
+                  // start() would be a pure no-op round trip. Go straight to the
+                  // OTP screen; only call start() when the server still has the
+                  // ride as `matched` (the background en-route call hasn't landed).
+                  if (ride.status !== 'driver_en_route') {
+                    const { ride: started } = await ridesApi.start(ride.id);
+                    useRideStore.getState().setActiveRide(started);
+                  }
                   navigation.navigate('DriverOtpEntry');
                 } else {
                   const completed = await ridesApi.complete(ride.id);

@@ -670,16 +670,20 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // Pessimistic row lock: concurrent accepts/declines/timeouts serialize on
   // the ride row. Timer cleared only after the transition commits.
   async accept(rideId: string, driverUserId: string): Promise<any> {
+    // PERF: resolve the driver BEFORE opening the transaction so the row lock
+    // is held only for the check + write (it used to span an extra DB query).
+    const driver = await this.drivers.findByUserId(driverUserId);
+
     const queryRunner = this.rides.manager.connection.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
+    let matched!: RideEntity;
     try {
       const ride = await queryRunner.manager.findOne(RideEntity, {
         where: { id: rideId },
         lock: { mode: 'pessimistic_write' },
       });
       if (!ride) throw new NotFoundException('Ride not found');
-      const driver = await this.drivers.findByUserId(driverUserId);
 
       if (ride.status !== 'requested') {
         throw new BadRequestException(`Ride is ${ride.status}, cannot accept`);
@@ -693,20 +697,30 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         ride.pickupOtp = generateOtp();
       }
       ride.matchedAt = new Date();
-      await queryRunner.manager.save(ride);
+      // PERF: a targeted UPDATE (1 round trip). manager.save() first SELECTs
+      // the row again to diff it, which is wasted work under the lock.
+      await queryRunner.manager.update(
+        RideEntity,
+        { id: ride.id },
+        { status: 'matched', pickupOtp: ride.pickupOtp, matchedAt: ride.matchedAt },
+      );
       await queryRunner.commitTransaction();
-      await this.clearOfferTimeout(rideId);
-
-      // Reload with relations so the driver view carries riderName.
-      const updated = await this.getOrThrow(rideId);
-      this.pushStatus(updated);
-      return this.toDriverView(updated);
+      matched = ride;
     } catch (err) {
       await queryRunner.rollbackTransaction().catch(() => {});
       throw err;
     } finally {
+      // Release the pooled connection as soon as the transaction ends — not
+      // after the reload/timer work below.
       await queryRunner.release().catch(() => {});
     }
+
+    // PERF: notify the rider right away (the status payload needs no
+    // relations, and we already know the driver's userId), then run the timer
+    // clear and the response reload in parallel.
+    this.pushStatus(matched, driverUserId);
+    const [, updated] = await Promise.all([this.clearOfferTimeout(rideId), this.loadForDriverView(rideId)]);
+    return this.toDriverView(updated);
   }
 
   // PATCH /rides/:id/decline — driver declines or the 15s timer lapses;
@@ -736,36 +750,61 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // R-4: locked transition — a concurrent cancel can no longer be overwritten
   // by a stale `driver_en_route` write.
   async markEnRoute(rideId: string, driverUserId: string): Promise<any> {
+    // PERF: resolve the driver outside the lock (was done inside it, and again
+    // later by pushStatus) and use a targeted UPDATE instead of save().
+    const driver = await this.drivers.findByUserId(driverUserId);
     await this.withRideLock(rideId, async (ride, manager) => {
-      await this.assertOwningDriver(ride, driverUserId);
+      if (ride.driverId !== driver.id) {
+        throw new ForbiddenException('Not your ride');
+      }
       if (ride.status !== 'matched') {
         throw new BadRequestException(`Ride is ${ride.status}, cannot mark en route`);
       }
       ride.status = 'driver_en_route';
-      await manager.save(ride);
+      await manager.update(RideEntity, { id: ride.id }, { status: 'driver_en_route' });
     });
-    const fresh = await this.getOrThrow(rideId);
-    this.pushStatus(fresh);
+    const fresh = await this.loadForDriverView(rideId);
+    this.pushStatus(fresh, driverUserId);
     return this.toDriverView(fresh);
   }
 
   // PATCH /rides/:id/start — driver has arrived and is ready to collect the
   // pickup OTP from the rider (DriverEnRouteScreen's "Driver Arrived" action).
   async start(rideId: string, driverUserId: string): Promise<{ ride: any; readyForOtp: true }> {
+    const driver = await this.drivers.findByUserId(driverUserId);
+
+    // PERF fast path: the ride is normally ALREADY `driver_en_route` (accept
+    // flow calls markEnRoute), which makes start() a no-op. A plain read is
+    // enough then — no transaction / row lock (3 fewer DB round trips).
+    const current = await this.loadForDriverView(rideId);
+    if (current.driverId !== driver.id) {
+      throw new ForbiddenException('Not your ride');
+    }
+    if (current.status === 'driver_en_route') {
+      return { ride: this.toDriverView(current), readyForOtp: true };
+    }
+    if (current.status !== 'matched') {
+      throw new BadRequestException(`Ride is ${current.status}, cannot start pickup`);
+    }
+
+    // `matched` -> `driver_en_route` still goes through the locked transition
+    // (re-validated under the lock so a concurrent cancel can't be overwritten).
     const mutated = await this.withRideLock(rideId, async (ride, manager) => {
-      await this.assertOwningDriver(ride, driverUserId);
+      if (ride.driverId !== driver.id) {
+        throw new ForbiddenException('Not your ride');
+      }
       if (ride.status !== 'driver_en_route' && ride.status !== 'matched') {
         throw new BadRequestException(`Ride is ${ride.status}, cannot start pickup`);
       }
       if (ride.status === 'matched') {
         ride.status = 'driver_en_route';
-        await manager.save(ride);
+        await manager.update(RideEntity, { id: ride.id }, { status: 'driver_en_route' });
         return true;
       }
       return false;
     });
-    const fresh = await this.getOrThrow(rideId);
-    if (mutated) this.pushStatus(fresh);
+    const fresh = await this.loadForDriverView(rideId);
+    if (mutated) this.pushStatus(fresh, driverUserId);
     return { ride: this.toDriverView(fresh), readyForOtp: true };
   }
 
@@ -871,8 +910,13 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       return { driverId: ride.driverId!, dropoff: ride.dropoff };
     });
 
-    await this.drivers.setAvailability(driverId, true);
-    const driver = await this.drivers.findById(driverId);
+    // PERF: these were four sequential awaits. availability + driver lookup are
+    // independent, so run them together; the status push reuses the known
+    // driver userId (no second lookup) and the reload skips unused joins.
+    const [, driver] = await Promise.all([
+      this.drivers.setAvailability(driverId, true),
+      this.drivers.findById(driverId),
+    ]);
     await this.geo.upsertDriverLocation(
       driver.id,
       driver.vehicleType,
@@ -880,8 +924,8 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       driver.location?.coordinates[0] ?? dropoff?.lng ?? 0,
     );
 
-    const fresh = await this.getOrThrow(rideId);
-    this.pushStatus(fresh);
+    const fresh = await this.loadForDriverView(rideId);
+    this.pushStatus(fresh, driverUserId);
     return this.toDriverView(fresh);
   }
 
@@ -1078,6 +1122,17 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     return ride;
   }
 
+  // PERF: the driver-facing response only needs the rider (first name +
+  // avatar). getOrThrow() also joins driver + driver.user, which the driver
+  // view never reads — a heavier query on every accept/en-route/start.
+  private async loadForDriverView(rideId: string): Promise<RideEntity> {
+    const ride = await this.rides.findOne({ where: { id: rideId }, relations: ['rider'] });
+    if (!ride) {
+      throw new NotFoundException('Ride not found');
+    }
+    return ride;
+  }
+
   private async assertOwningDriver(ride: RideEntity, driverUserId: string): Promise<void> {
     const driver = await this.drivers.findByUserId(driverUserId);
     if (ride.driverId !== driver.id) {
@@ -1085,7 +1140,13 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     }
   }
 
-  private pushStatus(ride: RideEntity): void {
+  // `driverUserId` (optional): callers that already know the driver's user id
+  // pass it so we skip the extra drivers.findById() lookup and emit at once.
+  private pushStatus(ride: RideEntity, driverUserId?: string): void {
+    if (driverUserId) {
+      this.gateway.emitRideStatus(ride.id, ride.riderId, driverUserId, this.toStatusPayload(ride));
+      return;
+    }
     this.drivers
       .findById(ride.driverId ?? '')
       .then((driver) =>

@@ -37,6 +37,7 @@ export const PopularPlaceCard: React.FC<Props> = memo(({ place, onPress, cardWid
           <MapPin size={12} color={colors.textSecondary} />
           <Text style={styles.distanceText} numberOfLines={1}>
             {distance} away
+            {place.rating ? `  ·  ★ ${place.rating.toFixed(1)}` : ''}
           </Text>
         </View>
       ) : null}

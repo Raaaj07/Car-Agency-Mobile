@@ -21,6 +21,10 @@ export interface NearbyPlaceHit {
   lng: number;
   photoName: string | null;
   photoAttribution: string | null;
+  /** Google star rating (0-5). Only requested by the popularity search. */
+  rating: number | null;
+  /** Number of Google ratings behind `rating`. */
+  ratingCount: number | null;
 }
 
 interface MetaCacheEntry {
@@ -34,6 +38,8 @@ interface PhotoCacheEntry {
   contentType: string;
 }
 
+export type NearbyRank = 'distance' | 'popularity';
+
 const SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 const NEARBY_URL = 'https://places.googleapis.com/v1/places:searchNearby';
 const FETCH_TIMEOUT_MS = 8000;
@@ -45,9 +51,23 @@ const PHOTO_TTL_MS = 60 * 60 * 1000;
 const NEARBY_TTL_MS = 60 * 60 * 1000;
 const NEARBY_EMPTY_TTL_MS = 10 * 60 * 1000;
 
-// Place categories worth suggesting: famous spots, colleges, transit,
-// food, worship, green spaces — the places people frequently visit.
-const NEARBY_INCLUDED_TYPES = [
+/** Places API (New) searchNearby accepts a radius of 0-50 000 m. */
+export const MAX_SEARCH_RADIUS_M = 50_000;
+const MIN_SEARCH_RADIUS_M = 500;
+/** Default radius of the distance-ranked ("Near You") search. */
+export const DEFAULT_NEAR_RADIUS_M = 5_000;
+/** searchNearby returns at most 20 places per call. */
+const MAX_RESULTS = 20;
+
+// "Near You": everyday places people actually travel to — transit, campuses,
+// hospitals, food, worship, malls, plus the sights.
+//
+// IMPORTANT: every value must be a Places API (New) "Table A" type. Table B
+// types (e.g. `place_of_worship`, `establishment`, `food`, `health`) can only
+// APPEAR in responses — sending one in `includedTypes` makes Google reject the
+// WHOLE request with HTTP 400, so both home-screen lists came back empty.
+// Places of worship are therefore requested by their Table A types.
+export const NEAR_INCLUDED_TYPES = [
   'tourist_attraction',
   'museum',
   'park',
@@ -59,15 +79,48 @@ const NEARBY_INCLUDED_TYPES = [
   'hospital',
   'transit_station',
   'bus_station',
-  'railway_station',
-  'place_of_worship',
+  'train_station',
+  'hindu_temple',
+  'church',
+  'mosque',
   'restaurant',
   'school',
 ];
 
+// "Popular": destination-worthy places only. Hospitals, schools and bus
+// stops are not "popular places" no matter how many people use them.
+export const POPULAR_INCLUDED_TYPES = [
+  'tourist_attraction',
+  'museum',
+  'park',
+  'zoo',
+  'amusement_park',
+  'stadium',
+  'shopping_mall',
+  'hindu_temple',
+  'church',
+  'mosque',
+  'art_gallery',
+];
+
+const NEAR_FIELD_MASK =
+  'places.id,places.displayName,places.formattedAddress,places.location,' +
+  'places.photos.name,places.photos.authorAttributions';
+// Rating fields are only paid for on the popularity search.
+const POPULAR_FIELD_MASK = `${NEAR_FIELD_MASK},places.rating,places.userRatingCount`;
+
 // Google place IDs are URL-safe; reject anything else before it can reach
 // the photo proxy or the Google API.
 const PLACE_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+
+export function isValidGooglePlaceId(placeId: string): boolean {
+  return PLACE_ID_PATTERN.test(placeId);
+}
+
+// Remember the places we have returned so the guard-free photo proxy can
+// find a Wikimedia backup photo (it needs the title + coordinates) without
+// ever trusting anything the client sends beyond the place ID.
+const KNOWN_HITS_MAX = 2000;
 
 async function fetchWithTimeout(
   url: string,
@@ -80,6 +133,19 @@ async function fetchWithTimeout(
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** First ~200 chars of Google's error body — it names the real cause (key blocked, billing, API disabled). */
+async function errorReason(res: Response): Promise<string> {
+  try {
+    const text = await res.text();
+    const parsed = JSON.parse(text) as { error?: { status?: string; message?: string } };
+    const status = parsed.error?.status ?? '';
+    const message = parsed.error?.message ?? '';
+    return `${status} ${message}`.trim().slice(0, 200);
+  } catch {
+    return '';
   }
 }
 
@@ -107,12 +173,36 @@ function firstPhotoOf(payload: unknown): { name: string; attribution: string | n
   return photoOfPlace(places[0]);
 }
 
+/** Parse one `places[]` entry of a searchNearby response. Null when unusable. */
+function parseHit(p: Record<string, unknown>): NearbyPlaceHit | null {
+  const googlePlaceId = typeof p.id === 'string' ? p.id : '';
+  const displayName = p.displayName as { text?: unknown } | undefined;
+  const title = typeof displayName?.text === 'string' ? displayName.text : '';
+  const location = p.location as { latitude?: unknown; longitude?: unknown } | undefined;
+  const lat = typeof location?.latitude === 'number' ? location.latitude : NaN;
+  const lng = typeof location?.longitude === 'number' ? location.longitude : NaN;
+  if (!googlePlaceId || !title || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const photo = photoOfPlace(p);
+  return {
+    googlePlaceId,
+    title,
+    subtitle: typeof p.formattedAddress === 'string' ? p.formattedAddress : '',
+    lat,
+    lng,
+    photoName: photo?.name ?? null,
+    photoAttribution: photo?.attribution ?? null,
+    rating: typeof p.rating === 'number' ? p.rating : null,
+    ratingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : null,
+  };
+}
+
 @Injectable()
 export class GooglePlacesService {
   private readonly logger = new Logger(GooglePlacesService.name);
   private readonly metaCache = new Map<string, MetaCacheEntry>();
   private readonly photoCache = new Map<string, PhotoCacheEntry>();
   private readonly nearbyCache = new Map<string, { at: number; value: NearbyPlaceHit[] }>();
+  private readonly knownHits = new Map<string, NearbyPlaceHit>();
   private missingKeyWarned = false;
 
   constructor(private readonly config: ConfigService) {}
@@ -122,7 +212,9 @@ export class GooglePlacesService {
     if (!key) {
       if (!this.missingKeyWarned) {
         this.missingKeyWarned = true;
-        this.logger.warn('GOOGLE_PLACES_API_KEY is not set — place photos are disabled.');
+        this.logger.warn(
+          'GOOGLE_PLACES_API_KEY is not set — live nearby places and Google photos are disabled.',
+        );
       }
       return null;
     }
@@ -182,7 +274,9 @@ export class GooglePlacesService {
         FETCH_TIMEOUT_MS,
       );
       if (!res.ok) {
-        this.logger.warn(`Places searchText failed for ${item.id}: HTTP ${res.status}`);
+        this.logger.warn(
+          `Places searchText failed for ${item.id}: HTTP ${res.status} ${await errorReason(res)}`,
+        );
         this.metaCache.set(item.id, { at: Date.now(), value: null });
         return null;
       }
@@ -227,7 +321,7 @@ export class GooglePlacesService {
    * via Place Details. Powers the guard-free /places/photo/g/:id proxy.
    */
   async resolvePhotoByPlaceId(placeId: string): Promise<ResolvedPlacePhoto | null> {
-    if (!PLACE_ID_PATTERN.test(placeId)) return null;
+    if (!isValidGooglePlaceId(placeId)) return null;
     const cacheKey = `g:${placeId}`;
     const cached = this.metaCache.get(cacheKey);
     if (cached) {
@@ -253,7 +347,9 @@ export class GooglePlacesService {
         FETCH_TIMEOUT_MS,
       );
       if (!res.ok) {
-        this.logger.warn(`Places details failed for ${placeId}: HTTP ${res.status}`);
+        this.logger.warn(
+          `Places details failed for ${placeId}: HTTP ${res.status} ${await errorReason(res)}`,
+        );
         this.metaCache.set(cacheKey, { at: Date.now(), value: null });
         return null;
       }
@@ -277,22 +373,67 @@ export class GooglePlacesService {
     }
   }
 
-  /** Photo bytes for a validated Google place ID. Null when unavailable. */
+  /**
+   * Photo bytes for a validated Google place ID. Null when unavailable.
+   * A place we already returned in a search carries its photo reference, so
+   * the common case needs only the media download (no Place Details call).
+   */
   async fetchPlacePhotoById(placeId: string): Promise<FetchedPlacePhoto | null> {
+    if (!isValidGooglePlaceId(placeId)) return null;
+    const known = this.knownHits.get(placeId);
+    if (known?.photoName) {
+      const direct = await this.fetchMedia(known.photoName, placeId);
+      if (direct) return direct;
+    }
     const resolved = await this.resolvePhotoByPlaceId(placeId);
     if (!resolved) return null;
     return this.fetchMedia(resolved.photoName, placeId);
   }
 
+  /** A place previously returned by a nearby search (title + coordinates), if still remembered. */
+  getKnownPlace(placeId: string): NearbyPlaceHit | null {
+    return this.knownHits.get(placeId) ?? null;
+  }
+
   /**
-   * Famous / frequently-visited places near a coordinate, ranked by Google
-   * popularity (tourist spots, colleges, hospitals, transit, malls, food).
+   * "Near You": places closest to a coordinate, NEAREST FIRST (Google's own
+   * distance ranking). Default radius 5 km, up to 50 km.
    * Never throws — returns [] on any failure (incl. missing API key).
    */
-  async searchNearby(lat: number, lng: number, radiusM = 8000): Promise<NearbyPlaceHit[]> {
+  searchNearbyByDistance(
+    lat: number,
+    lng: number,
+    radiusM = DEFAULT_NEAR_RADIUS_M,
+  ): Promise<NearbyPlaceHit[]> {
+    return this.searchNearby('distance', lat, lng, radiusM);
+  }
+
+  /**
+   * "Popular": the places Google ranks as most popular around a coordinate,
+   * WITH ratings (rating + ratingCount). Default radius 50 km (the maximum
+   * Google allows). Order is Google's popularity order — callers re-sort.
+   * Never throws — returns [] on any failure (incl. missing API key).
+   */
+  searchNearbyByPopularity(
+    lat: number,
+    lng: number,
+    radiusM = MAX_SEARCH_RADIUS_M,
+  ): Promise<NearbyPlaceHit[]> {
+    return this.searchNearby('popularity', lat, lng, radiusM);
+  }
+
+  private async searchNearby(
+    rank: NearbyRank,
+    lat: number,
+    lng: number,
+    radiusM: number,
+  ): Promise<NearbyPlaceHit[]> {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
-    const radius = Math.min(Math.max(Math.round(radiusM), 1000), 20000);
-    const cacheKey = `${lat.toFixed(3)},${lng.toFixed(3)},${radius}`;
+    const radius = Math.min(
+      Math.max(Math.round(Number.isFinite(radiusM) ? radiusM : DEFAULT_NEAR_RADIUS_M), MIN_SEARCH_RADIUS_M),
+      MAX_SEARCH_RADIUS_M,
+    );
+    const cacheKey = `${rank}:${lat.toFixed(3)},${lng.toFixed(3)},${radius}`;
     const cached = this.nearbyCache.get(cacheKey);
     if (cached) {
       const ttl = cached.value.length > 0 ? NEARBY_TTL_MS : NEARBY_EMPTY_TTL_MS;
@@ -311,14 +452,12 @@ export class GooglePlacesService {
           headers: {
             'Content-Type': 'application/json',
             'X-Goog-Api-Key': key,
-            'X-Goog-FieldMask':
-              'places.id,places.displayName,places.formattedAddress,places.location,' +
-              'places.photos.name,places.photos.authorAttributions,places.types',
+            'X-Goog-FieldMask': rank === 'popularity' ? POPULAR_FIELD_MASK : NEAR_FIELD_MASK,
           },
           body: JSON.stringify({
-            includedTypes: NEARBY_INCLUDED_TYPES,
-            maxResultCount: 10,
-            rankPreference: 'POPULARITY',
+            includedTypes: rank === 'popularity' ? POPULAR_INCLUDED_TYPES : NEAR_INCLUDED_TYPES,
+            maxResultCount: MAX_RESULTS,
+            rankPreference: rank === 'popularity' ? 'POPULARITY' : 'DISTANCE',
             languageCode: 'en',
             regionCode: 'IN',
             locationRestriction: {
@@ -329,45 +468,37 @@ export class GooglePlacesService {
         FETCH_TIMEOUT_MS,
       );
       if (!res.ok) {
-        this.logger.warn(`Places searchNearby failed (${lat},${lng}): HTTP ${res.status}`);
+        this.logger.warn(
+          `Places searchNearby (${rank}) failed (${lat},${lng}): HTTP ${res.status} ${await errorReason(res)}`,
+        );
         this.nearbyCache.set(cacheKey, { at: Date.now(), value: [] });
         return [];
       }
       const payload = (await res.json()) as { places?: Array<Record<string, unknown>> };
       const hits: NearbyPlaceHit[] = [];
       for (const p of Array.isArray(payload.places) ? payload.places : []) {
-        const googlePlaceId = typeof p.id === 'string' ? p.id : '';
-        const displayName = p.displayName as { text?: unknown } | undefined;
-        const title = typeof displayName?.text === 'string' ? displayName.text : '';
-        const location = p.location as { latitude?: unknown; longitude?: unknown } | undefined;
-        const plat = typeof location?.latitude === 'number' ? location.latitude : NaN;
-        const plng = typeof location?.longitude === 'number' ? location.longitude : NaN;
-        if (!googlePlaceId || !title || !Number.isFinite(plat) || !Number.isFinite(plng)) continue;
-        const photos = Array.isArray(p.photos) ? (p.photos as Array<Record<string, unknown>>) : [];
-        const firstPhoto = photos.length > 0 ? photos[0] : null;
-        const photoName = firstPhoto && typeof firstPhoto.name === 'string' ? firstPhoto.name : null;
-        let photoAttribution: string | null = null;
-        const attributions = firstPhoto?.authorAttributions;
-        if (Array.isArray(attributions) && attributions.length > 0) {
-          const dn = (attributions[0] as { displayName?: unknown }).displayName;
-          if (typeof dn === 'string' && dn) photoAttribution = dn;
-        }
-        hits.push({
-          googlePlaceId,
-          title,
-          subtitle: typeof p.formattedAddress === 'string' ? p.formattedAddress : '',
-          lat: plat,
-          lng: plng,
-          photoName,
-          photoAttribution,
-        });
+        const hit = parseHit(p);
+        if (hit) hits.push(hit);
       }
+      for (const hit of hits) this.remember(hit);
       this.nearbyCache.set(cacheKey, { at: Date.now(), value: hits });
       return hits;
     } catch (err) {
-      this.logger.warn(`Places searchNearby error (${lat},${lng}): ${(err as Error)?.message ?? err}`);
+      this.logger.warn(
+        `Places searchNearby (${rank}) error (${lat},${lng}): ${(err as Error)?.message ?? err}`,
+      );
       this.nearbyCache.set(cacheKey, { at: Date.now(), value: [] });
       return [];
+    }
+  }
+
+  private remember(hit: NearbyPlaceHit): void {
+    // Re-insert so the Map's insertion order doubles as recency order.
+    this.knownHits.delete(hit.googlePlaceId);
+    this.knownHits.set(hit.googlePlaceId, hit);
+    if (this.knownHits.size > KNOWN_HITS_MAX) {
+      const oldest = this.knownHits.keys().next().value;
+      if (oldest !== undefined) this.knownHits.delete(oldest);
     }
   }
 

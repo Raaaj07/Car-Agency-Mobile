@@ -13,6 +13,10 @@ export class PlaceItemDto {
    * called with lat/lng).
    */
   distanceKm?: number | null;
+  /** Google star rating (0-5). Present on live Google places only. */
+  rating?: number | null;
+  /** Number of Google ratings behind `rating`. */
+  ratingCount?: number | null;
 }
 
 export class SavedPlaceDto {

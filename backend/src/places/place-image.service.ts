@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { PlaceConfigItem } from './places.config';
-import { GooglePlacesService } from './google-places.service';
+import { GooglePlacesService, isValidGooglePlaceId } from './google-places.service';
 import { WikimediaService } from './wikimedia.service';
 
 export interface PlaceImageBytes {
@@ -69,7 +69,28 @@ export class PlaceImageService {
    * "resolves" but cannot be downloaded falls through to the next one.
    */
   getCuratedImage(item: PlaceConfigItem): Promise<PlaceImageBytes | null> {
-    const key = `curated:${item.id}`;
+    return this.cached(`curated:${item.id}`, () => this.resolveCurated(item));
+  }
+
+  /**
+   * Image bytes for a LIVE Google place (Near You / Popular), by Google place
+   * ID. Tries, in order:
+   *   1. the Google Places photo
+   *   2. a Wikimedia Commons search using the place's title + coordinates
+   *      (remembered from the search that returned it)
+   * Both are downloaded server-side, so the phone only ever receives bytes
+   * from this backend — never a Google or Wikimedia link.
+   */
+  getLiveImage(googlePlaceId: string): Promise<PlaceImageBytes | null> {
+    if (!isValidGooglePlaceId(googlePlaceId)) return Promise.resolve(null);
+    return this.cached(`live:${googlePlaceId}`, () => this.resolveLive(googlePlaceId));
+  }
+
+  /** Shared cache + in-flight de-duplication for every image lookup. */
+  private cached(
+    key: string,
+    job: () => Promise<PlaceImageBytes | null>,
+  ): Promise<PlaceImageBytes | null> {
     const cached = this.cache.get(key);
     if (cached) {
       const ttl = cached.value ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS;
@@ -79,14 +100,52 @@ export class PlaceImageService {
     const running = this.inflight.get(key);
     if (running) return running;
 
-    const job = this.resolveCurated(item)
+    const started = job()
       .then((value) => {
         this.cache.set(key, { at: Date.now(), value });
         return value;
       })
       .finally(() => this.inflight.delete(key));
-    this.inflight.set(key, job);
-    return job;
+    this.inflight.set(key, started);
+    return started;
+  }
+
+  private async resolveLive(googlePlaceId: string): Promise<PlaceImageBytes | null> {
+    // 1. Google
+    try {
+      const g = await this.google.fetchPlacePhotoById(googlePlaceId);
+      if (g) return g;
+      this.logger.warn(`[${googlePlaceId}] Google photo unavailable, trying Wikimedia`);
+    } catch (err) {
+      this.logger.warn(`[${googlePlaceId}] Google photo error: ${(err as Error)?.message ?? err}`);
+    }
+
+    // 2. Wikimedia backup (needs the place's name + position)
+    const place = this.google.getKnownPlace(googlePlaceId);
+    if (!place) {
+      this.logger.warn(`[${googlePlaceId}] no remembered place details, cannot try Wikimedia`);
+      return null;
+    }
+    try {
+      const w = await this.wiki.findPhoto(
+        `live:${googlePlaceId}`,
+        place.title,
+        place.subtitle,
+        place.lat,
+        place.lng,
+      );
+      if (w?.url) {
+        for (const url of candidateUrls(w.url)) {
+          const img = await this.download(url, googlePlaceId);
+          if (img) return img;
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`[${googlePlaceId}] Wikimedia search error: ${(err as Error)?.message ?? err}`);
+    }
+
+    this.logger.warn(`[${googlePlaceId}] NO image from Google or Wikimedia`);
+    return null;
   }
 
   private async resolveCurated(item: PlaceConfigItem): Promise<PlaceImageBytes | null> {
