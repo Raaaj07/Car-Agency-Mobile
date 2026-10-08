@@ -13,6 +13,8 @@ interface InputProps {
   error?: string;
   helperText?: string;
   keyboardType?: 'default' | 'email-address' | 'numeric' | 'phone-pad';
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  autoCorrect?: boolean;
   maxLength?: number;
   autoFocus?: boolean;
   isPhoneInput?: boolean;
@@ -32,6 +34,8 @@ export const Input: React.FC<InputProps> = ({
   error,
   helperText,
   keyboardType = 'default',
+  autoCapitalize,
+  autoCorrect,
   maxLength,
   autoFocus,
   isPhoneInput = false,
@@ -57,6 +61,8 @@ export const Input: React.FC<InputProps> = ({
           placeholderTextColor={colors.textMuted}
           secureTextEntry={secureTextEntry}
           keyboardType={keyboardType}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={autoCorrect}
           maxLength={maxLength}
           autoFocus={autoFocus}
           style={[styles.input, inputStyle]}

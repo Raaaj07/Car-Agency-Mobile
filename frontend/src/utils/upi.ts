@@ -11,6 +11,12 @@ export function isValidUpiId(vpa: string): boolean {
  * Builds the UPI payment intent encoded into the QR code.
  * `amount` is the exact ride cost (fare total + any tip) so the payer's app
  * pre-fills the correct value and cannot edit the note.
+ *
+ * The payee address (`pa`) is written WITHOUT percent-encoding: a validated
+ * VPA only contains letters, digits and `. _ - @`, all URL-safe, and the NPCI
+ * linking spec / several UPI apps expect a literal `@` — `name%40bank` makes
+ * some of them reject the scan ("invalid QR"). Free text (payee name, note)
+ * is encoded.
  */
 export function buildUpiPaymentUrl(params: {
   vpa: string;
@@ -21,7 +27,7 @@ export function buildUpiPaymentUrl(params: {
   const { vpa, payeeName, amount, note } = params;
   const safeAmount = Number.isFinite(amount) && amount > 0 ? amount : 0;
   const parts = [
-    `pa=${encodeURIComponent(vpa.trim())}`,
+    `pa=${vpa.trim()}`,
     `pn=${encodeURIComponent(payeeName)}`,
     `am=${safeAmount.toFixed(2)}`,
     'cu=INR',

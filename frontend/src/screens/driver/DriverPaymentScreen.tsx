@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Alert } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
-import * as SecureStore from 'expo-secure-store';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { QrCode, CheckCircle2, IndianRupee } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -10,13 +10,9 @@ import { Pill } from '../../components/primitives/Pill';
 import { useRideStore } from '../../store/rideStore';
 import { useAuthStore } from '../../store/authStore';
 import { ridesApi } from '../../api/rides';
-import { driversApi } from '../../api/drivers';
 import { getApiError } from '../../api/client';
 import { buildUpiPaymentUrl, isValidUpiId } from '../../utils/upi';
-
-// D-1: SecureStore is the offline/pre-approval fallback; the profile VPA
-// (driversApi.getMyProfile) is the source of truth the admin can see.
-const UPI_ID_KEY = 'driver_upi_id';
+import { loadPayeeUpi, savePayeeUpi } from '../../lib/payeeUpi';
 
 interface Props {
   onDone: () => void;
@@ -24,11 +20,18 @@ interface Props {
 
 /**
  * Collect Payment (shown right after the driver completes a trip).
- * Auto-generates a GPay/PhonePe/Paytm-compatible UPI QR for the exact ride
- * cost, using the UPI ID the driver enters here. After the rider pays, the
- * driver taps "Amount Received" — that flag is what the admin console shows.
+ *
+ * The QR is derived from two things only: the driver's payee UPI ID and the
+ * exact ride amount (fare + tip). The UPI ID normally comes from the driver's
+ * profile (Profile tab → "Payment UPI ID"), so the QR appears instantly after
+ * every trip. A driver who has not set one yet can enter it here — it is saved
+ * to the profile too, so it only has to be typed once.
+ *
+ * After the rider pays, the driver taps "Amount Received" — that flag is what
+ * the admin console shows.
  */
 export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
+  const navigation = useNavigation<any>();
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const driverName = useAuthStore((state) => state.user?.name);
@@ -42,69 +45,65 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
 
   const [vpaInput, setVpaInput] = useState('');
   const [savedVpa, setSavedVpa] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // Shown under the UPI row: a validation / "saved for this ride only" note.
+  const [vpaNote, setVpaNote] = useState<string | undefined>();
   const [submitting, setSubmitting] = useState(false);
 
-  // Restore the payee UPI ID: profile first (admin-visible, audited), then
-  // whatever this device stored (offline or not yet approved).
-  useEffect(() => {
-    let mounted = true;
-    driversApi
-      .getMyProfile()
-      .then((profile) => profile?.upiVpa?.trim() ?? null)
-      .catch(() => null)
-      .then((serverVpa) => {
-        if (serverVpa) {
-          if (mounted) {
-            setVpaInput(serverVpa);
-            setSavedVpa(serverVpa);
-          }
-          return null;
-        }
-        return SecureStore.getItemAsync(UPI_ID_KEY);
-      })
-      .then((local) => {
-        if (mounted && local) {
-          setVpaInput(local);
-          setSavedVpa(local);
-        }
-      })
-      .catch(() => {
-        // Offline — device-stored payee still generates a working QR.
-      });
-    return () => {
-      mounted = false;
-    };
+  // Restore the payee UPI ID from the profile (server truth, offline cache as
+  // fallback). Runs on every focus, so an ID saved on the Profile tab while
+  // this screen stayed in the stack shows up the moment the driver returns.
+  const loadPayee = useCallback(async () => {
+    const { vpa } = await loadPayeeUpi();
+    if (vpa) {
+      setSavedVpa(vpa);
+      setVpaInput((current) => current || vpa);
+    }
   }, []);
+  useFocusEffect(
+    useCallback(() => {
+      void loadPayee();
+    }, [loadPayee]),
+  );
 
   const inputValid = isValidUpiId(vpaInput);
+  const hasPayee = isValidUpiId(savedVpa);
+  const showEditor = !hasPayee || editing;
 
   const saveVpa = async () => {
     const trimmed = vpaInput.trim();
-    if (!isValidUpiId(trimmed)) return;
+    if (!isValidUpiId(trimmed)) {
+      setVpaNote('Enter a valid UPI ID like name@bank');
+      return;
+    }
+    setSaving(true);
+    setVpaNote(undefined);
+    const result = await savePayeeUpi(trimmed);
+    setSaving(false);
+    if (result.ok) {
+      setSavedVpa(result.vpa);
+      setVpaInput(result.vpa);
+      setEditing(false);
+      return;
+    }
+    // Collecting this fare must never be blocked by a profile-save problem
+    // (offline, not approved yet…): the QR still works for THIS ride from the
+    // local value — but be honest that it is not on the profile.
     setSavedVpa(trimmed);
-    try {
-      await SecureStore.setItemAsync(UPI_ID_KEY, trimmed);
-    } catch {
-      // Non-fatal: QR still works for this session from local state.
-    }
-    // D-1: also persist on the profile so the admin ride detail can verify
-    // what the QR paid to (403 for non-approved drivers — local copy stands).
-    try {
-      await driversApi.setUpiVpa(trimmed);
-    } catch {
-      // Audit/server copy unavailable — collection must not be blocked.
-    }
+    setEditing(false);
+    setVpaNote(`Using this UPI ID for this ride only — it could not be saved to your profile (${result.error}).`);
   };
 
   // QR regenerates automatically whenever the ride amount or the UPI ID
   // changes — it is derived, never hand-built.
   const qrValue =
-    isValidUpiId(savedVpa) && amount > 0
+    hasPayee && amount > 0
       ? buildUpiPaymentUrl({
           vpa: savedVpa,
           payeeName: driverName?.trim() || 'Driver',
           amount,
-          note: `Vazhi ride fare`,
+          note: 'Vazhi ride fare',
         })
       : null;
 
@@ -154,41 +153,81 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
           ) : (
             <View style={styles.qrPlaceholder}>
               <Text style={styles.qrPlaceholderText}>
-                Enter your UPI ID below to generate the payment QR for ₹{amount.toFixed(2)}
+                {!hasPayee
+                  ? `Add your UPI ID below to generate the payment QR for ₹${amount.toFixed(2)}`
+                  : 'The ride amount is not available yet. Go back and reopen this screen.'}
               </Text>
             </View>
           )}
 
-          <Text style={styles.qrHint}>
-            Ask the rider to scan this code with GPay, PhonePe or Paytm — the amount is pre-filled.
-          </Text>
+          {hasPayee ? (
+            <Text style={styles.qrHint}>
+              Ask the rider to scan this code with GPay, PhonePe or Paytm — the amount is pre-filled.
+            </Text>
+          ) : null}
 
-          <View style={styles.vpaRow}>
-            <TextInput
-              style={styles.vpaInput}
-              value={vpaInput}
-              onChangeText={setVpaInput}
-              placeholder="yourname@upi"
-              placeholderTextColor={colors.textMuted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-              returnKeyType="done"
-              onSubmitEditing={saveVpa}
-            />
-            <Button
-              title="Save"
-              onPress={saveVpa}
-              variant="outline"
-              size="small"
-              disabled={!inputValid || vpaInput.trim() === savedVpa}
-            />
-          </View>
-          {savedVpa && inputValid ? (
-            <Text style={styles.payeeText}>Paying to: {savedVpa}</Text>
+          {showEditor ? (
+            <>
+              <View style={styles.vpaRow}>
+                <TextInput
+                  style={styles.vpaInput}
+                  value={vpaInput}
+                  onChangeText={(t) => {
+                    setVpaInput(t);
+                    if (vpaNote) setVpaNote(undefined);
+                  }}
+                  placeholder="yourname@okhdfcbank"
+                  placeholderTextColor={colors.textMuted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  returnKeyType="done"
+                  onSubmitEditing={saveVpa}
+                />
+                <Button
+                  title="Save"
+                  onPress={saveVpa}
+                  variant="outline"
+                  size="small"
+                  loading={saving}
+                  disabled={saving || !inputValid}
+                />
+              </View>
+              {hasPayee ? (
+                <Button
+                  title="Cancel"
+                  variant="ghost"
+                  size="small"
+                  onPress={() => {
+                    setEditing(false);
+                    setVpaInput(savedVpa);
+                    setVpaNote(undefined);
+                  }}
+                />
+              ) : null}
+              <Text style={styles.payeeHint}>
+                Saved to your profile, so you only enter it once. You can change it any time in Profile → Payment UPI ID.
+              </Text>
+            </>
           ) : (
-            <Text style={styles.payeeError}>QR code is generated from your UPI ID and the ride amount.</Text>
+            <View style={styles.payeeRow}>
+              <Text style={styles.payeeText} numberOfLines={1}>
+                Paying to: {savedVpa}
+              </Text>
+              <Button title="Change" variant="ghost" size="small" onPress={() => setEditing(true)} />
+            </View>
           )}
+
+          {vpaNote ? <Text style={styles.payeeError}>{vpaNote}</Text> : null}
+
+          {!hasPayee ? (
+            <Button
+              title="Set it up in Profile"
+              variant="ghost"
+              size="small"
+              onPress={() => navigation.navigate('ProfileTab')}
+            />
+          ) : null}
         </Card>
 
         {/* Amount received confirmation */}
@@ -328,10 +367,23 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     backgroundColor: '#FFFFFF',
   },
+  payeeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    alignSelf: 'stretch',
+    gap: 8,
+  },
   payeeText: {
     ...typography.meta,
     fontSize: 12,
     color: colors.success,
+    flex: 1,
+  },
+  payeeHint: {
+    ...typography.meta,
+    fontSize: 12,
+    color: colors.textMuted,
     alignSelf: 'flex-start',
   },
   payeeError: {

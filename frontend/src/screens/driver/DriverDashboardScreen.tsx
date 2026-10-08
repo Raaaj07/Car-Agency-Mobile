@@ -168,6 +168,14 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     // trip or pressing Back from the trip screen).
     const unsubscribe = navigation.addListener('focus', () => {
       void loadActiveTrip();
+      // Pick up a UPI ID saved on the Profile tab while this screen stayed
+      // mounted (hides the "Add your UPI ID" banner without a restart).
+      driversApi
+        .getMyProfile()
+        .then((p) => {
+          if (p) setProfile(p);
+        })
+        .catch(() => {});
     });
     return unsubscribe;
   }, [navigation, loadActiveTrip]);
@@ -449,6 +457,25 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
           </Card>
         ) : null}
 
+        {/* No payee UPI ID yet: the post-trip payment QR cannot be generated */}
+        {isRegistered && profile && !profile.upiVpa ? (
+          <TouchableOpacity
+            style={styles.upiNudge}
+            activeOpacity={0.85}
+            onPress={() => navigation.navigate('ProfileTab')}
+            accessibilityRole="button"
+            accessibilityLabel="Add your UPI ID in Profile"
+          >
+            <View style={styles.upiNudgeText}>
+              <Text style={styles.upiNudgeTitle}>Add your UPI ID</Text>
+              <Text style={styles.upiNudgeBody}>
+                Riders pay by scanning a QR made from it after each trip. Set it once in Profile.
+              </Text>
+            </View>
+            <ChevronRight size={18} color={colors.warning} />
+          </TouchableOpacity>
+        ) : null}
+
         {/* Active ride — re-enter an accepted trip */}
         {activeTrip && tripTarget(activeTrip) ? (
           <>
@@ -613,4 +640,20 @@ const styles = StyleSheet.create({
   emptySub: { ...typography.meta, fontSize: 13, textAlign: 'center' },
   switchBtn: { marginHorizontal: 20, marginTop: 8 },
   activeTripCard: { borderWidth: 1.5, borderColor: colors.success },
+  upiNudge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 20,
+    marginTop: 8,
+    marginBottom: 8,
+    padding: 14,
+    borderRadius: radii.card,
+    borderWidth: 1,
+    borderColor: colors.warning,
+    backgroundColor: colors.accentLight,
+  },
+  upiNudgeText: { flex: 1, gap: 2 },
+  upiNudgeTitle: { ...typography.bodyBold, fontSize: 14, color: colors.textPrimary },
+  upiNudgeBody: { ...typography.meta, fontSize: 12, color: colors.textMuted },
 });

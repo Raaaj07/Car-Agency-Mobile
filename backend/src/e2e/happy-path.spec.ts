@@ -46,7 +46,7 @@ type QueryRunnerStub = {
   commitTransaction: jest.Mock;
   rollbackTransaction: jest.Mock;
   release: jest.Mock;
-  manager: { findOne: jest.Mock; save: jest.Mock };
+  manager: { findOne: jest.Mock; save: jest.Mock; update: jest.Mock };
 };
 
 const ACTIVE_RIDE_STATUSES = ['requested', 'matched', 'driver_en_route', 'in_progress'];
@@ -76,7 +76,7 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
     create: jest.Mock;
     save: jest.Mock;
     update: jest.Mock;
-    manager: { connection: { createQueryRunner: jest.Mock } };
+    manager: { connection: { createQueryRunner: jest.Mock }; update: jest.Mock };
   };
   let paymentsRepo: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock };
   let geo: Record<string, jest.Mock>;
@@ -184,7 +184,12 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
         if (rideRow && rideRow.id === where.id) Object.assign(rideRow, partial);
         return { affected: 1 };
       }),
-      manager: { connection: { createQueryRunner: jest.fn() } },
+      // `ridesRepo.manager.update` is what markPaymentReceived uses to settle the
+      // payment rows (PaymentEntity) alongside the ride.
+      manager: {
+        connection: { createQueryRunner: jest.fn() },
+        update: jest.fn(async () => ({ affected: 1 })),
+      },
     };
 
     paymentsRepo = {
@@ -204,6 +209,12 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
         save: jest.fn(async (r: RideRow) => {
           rideRow = r;
           return r;
+        }),
+        // accept()/start() write with a targeted UPDATE under the row lock
+        // (PERF) instead of save(); mirror it onto the shared row.
+        update: jest.fn(async (_entity: unknown, where: { id: string }, partial: Partial<RideRow>) => {
+          if (rideRow && rideRow.id === where.id) Object.assign(rideRow, partial);
+          return { affected: 1 };
         }),
       },
     };
@@ -373,6 +384,13 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
     expect(settled.paymentStatus).toBe('paid');
     expect(rideRow?.paymentStatus).toBe('paid');
     expect(rideRow?.paymentMarkedBy).toBe('driver');
+    // The cash payment row is settled together with the ride (no more PAID ride
+    // next to an unsettled `rider_claimed` payment).
+    expect(ridesRepo.manager.update).toHaveBeenCalledWith(
+      PaymentEntity,
+      expect.objectContaining({ rideId: rideRow!.id }),
+      { status: 'paid' },
+    );
 
     // No timers left behind at the end of the lifecycle (R-5: the shared
     // zset is empty — every armed member was cleared or claimed).

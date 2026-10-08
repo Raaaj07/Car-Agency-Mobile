@@ -45,7 +45,7 @@ describe('RidesService phase-1 fixes', () => {
     update: jest.Mock;
     create: jest.Mock;
     count: jest.Mock;
-    manager: { connection: { createQueryRunner: jest.Mock } };
+    manager: { connection: { createQueryRunner: jest.Mock }; update: jest.Mock };
   };
   let drivers: Record<string, jest.Mock>;
   let gateway: Record<string, jest.Mock>;
@@ -104,6 +104,8 @@ describe('RidesService phase-1 fixes', () => {
         connection: {
           createQueryRunner: jest.fn(),
         },
+        // markPaymentReceived settles the PaymentEntity rows through this.
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       },
     };
     drivers = {

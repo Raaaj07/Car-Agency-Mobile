@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, RefreshControl } from 'react-native';
-import { LogOut, Mail, Phone, Edit2, Car, BadgeCheck, Camera, AlertCircle, PauseCircle } from 'lucide-react-native';
+import { LogOut, Mail, Phone, Edit2, Car, BadgeCheck, Camera, AlertCircle, PauseCircle, QrCode } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { colors, typography } from '../../theme/theme';
 import { useAuthStore } from '../../store/authStore';
@@ -14,6 +14,8 @@ import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
 import { connectSocket, disconnectSocket } from '../../lib/socket';
 import { tokenManager } from '../../lib/tokenManager';
+import { savePayeeUpi } from '../../lib/payeeUpi';
+import { isValidUpiId } from '../../utils/upi';
 
 // Single Profile for everyone (Profile tab in BOTH rider and driver
 // mode). The "Driver" section reflects server driverStatus: none →
@@ -38,6 +40,13 @@ export const ProfileScreen: React.FC = () => {
   // Server-truth online flag (fetched with the application) so switching
   // back to Rider can take an online driver offline first.
   const [isDriverOnline, setIsDriverOnline] = useState(false);
+  // Driver's payee UPI ID (what the ride-payment QR pays to). Server truth,
+  // loaded with the driver profile below.
+  const [upiSaved, setUpiSaved] = useState<string | null>(null);
+  const [upiInput, setUpiInput] = useState('');
+  const [upiEditing, setUpiEditing] = useState(false);
+  const [upiSaving, setUpiSaving] = useState(false);
+  const [upiError, setUpiError] = useState<string | undefined>();
 
   const loadApp = useCallback(async () => {
     try {
@@ -48,6 +57,7 @@ export const ProfileScreen: React.FC = () => {
     try {
       const p = await driversApi.getMyProfile();
       setIsDriverOnline(!!p?.isOnline);
+      setUpiSaved(p?.upiVpa?.trim() || null);
     } catch {
       // No driver profile / offline — keep last known value.
     }
@@ -117,6 +127,28 @@ export const ProfileScreen: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleSaveUpi = async () => {
+    setUpiSaving(true);
+    setUpiError(undefined);
+    const result = await savePayeeUpi(upiInput);
+    setUpiSaving(false);
+    if (result.ok) {
+      setUpiSaved(result.vpa);
+      setUpiInput('');
+      setUpiEditing(false);
+    } else {
+      // Shown inline: the ID must really be stored on the profile, otherwise
+      // the payment QR and what admins see could disagree.
+      setUpiError(result.error);
+    }
+  };
+
+  const startUpiEdit = () => {
+    setUpiInput(upiSaved ?? '');
+    setUpiError(undefined);
+    setUpiEditing(true);
   };
 
   const handleLogout = async () => {
@@ -281,6 +313,67 @@ export const ProfileScreen: React.FC = () => {
             onPress={activeMode === 'driver' ? switchToRider : switchToDriver}
             style={styles.editTrigger}
           />
+
+          {/* Payment UPI ID: the ride-payment QR shown after every trip is
+              generated from this ID + the exact fare. */}
+          <View style={styles.sectionDivider} />
+          <View style={styles.cardTitleRow}>
+            <QrCode size={18} color={colors.primary} />
+            <Text style={styles.cardTitle}>Payment UPI ID</Text>
+          </View>
+
+          {upiSaved && !upiEditing ? (
+            <>
+              <Text style={styles.upiValue} selectable>{upiSaved}</Text>
+              <Text style={styles.metaLine}>
+                After each trip, riders scan a QR that pays the fare to this UPI ID.
+              </Text>
+              <Button title="Change UPI ID" variant="outline" onPress={startUpiEdit} style={styles.editTrigger} />
+            </>
+          ) : (
+            <>
+              {!upiSaved && (
+                <Text style={styles.upiWarning}>
+                  Add your UPI ID, or the payment QR can&apos;t be generated after a trip.
+                </Text>
+              )}
+              <Input
+                label="UPI ID"
+                value={upiInput}
+                onChangeText={(t) => {
+                  setUpiInput(t);
+                  if (upiError) setUpiError(undefined);
+                }}
+                placeholder="yourname@okhdfcbank"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                error={upiError}
+                helperText="Found in GPay / PhonePe / Paytm under your profile, e.g. name@okaxis"
+                style={styles.upiInput}
+              />
+              <View style={styles.editRow}>
+                {upiSaved ? (
+                  <Button
+                    title="Cancel"
+                    variant="outline"
+                    onPress={() => {
+                      setUpiEditing(false);
+                      setUpiError(undefined);
+                    }}
+                    style={styles.editBtn}
+                  />
+                ) : null}
+                <Button
+                  title="Save UPI ID"
+                  onPress={handleSaveUpi}
+                  loading={upiSaving}
+                  disabled={upiSaving || !isValidUpiId(upiInput) || upiInput.trim() === upiSaved}
+                  style={styles.editBtn}
+                />
+              </View>
+            </>
+          )}
         </Card>
       )}
 
@@ -333,5 +426,9 @@ const styles = StyleSheet.create({
   cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   cardTitle: { ...typography.cardTitle, fontSize: 16, flex: 1 },
   metaLine: { ...typography.meta, marginTop: 4 },
+  sectionDivider: { height: 1, backgroundColor: colors.borderLight, marginTop: 16, marginBottom: 14 },
+  upiValue: { ...typography.bodyBold, fontSize: 16, color: colors.primary, marginTop: 2 },
+  upiWarning: { ...typography.meta, color: colors.warning, marginBottom: 10 },
+  upiInput: { marginBottom: 0 },
   logoutBtn: { marginTop: 8 },
 });
