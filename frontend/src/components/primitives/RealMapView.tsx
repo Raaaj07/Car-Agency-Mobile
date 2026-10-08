@@ -35,6 +35,12 @@ interface Props {
   bottomPadding?: number;
   showUserLocation?: boolean;
   recenterTo?: { lat: number; lng: number; nonce: number };
+  /**
+   * Tracking/navigation modes normally lock the camera onto the driver.
+   * Set false to instead keep driver + pickup + dropoff (+ route) all in
+   * frame — used by the rider's "driver is coming" screen.
+   */
+  followDriver?: boolean;
 }
 
 export const RealMapView: React.FC<Props> = ({
@@ -56,6 +62,7 @@ export const RealMapView: React.FC<Props> = ({
   bottomPadding = 0,
   showUserLocation = false,
   recenterTo,
+  followDriver = true,
 }) => {
   const cameraRef = useRef<Camera>(null);
   const isMountedRef = useRef(true);
@@ -115,7 +122,7 @@ export const RealMapView: React.FC<Props> = ({
 
   // Tracking / navigation mode camera
   useEffect(() => {
-    if ((mode === 'tracking' || mode === 'navigation') && driverPosition && cameraRef.current && isMountedRef.current) {
+    if ((mode === 'tracking' || mode === 'navigation') && followDriver && driverPosition && cameraRef.current && isMountedRef.current) {
       try {
         cameraRef.current.setCamera({
           centerCoordinate: [driverPosition.lng, driverPosition.lat],
@@ -127,7 +134,7 @@ export const RealMapView: React.FC<Props> = ({
         // safe ignore
       }
     }
-  }, [driverPosition, mode]);
+  }, [driverPosition, mode, followDriver]);
 
   // Fit bounds when both pickup & dropoff exist (booking + tracking before
   // live driver position). Includes the full route geometry so curved roads
@@ -139,7 +146,7 @@ export const RealMapView: React.FC<Props> = ({
     if (!pickup || !dropoff) return;
     // In live tracking modes the camera follows the driver once a live
     // position exists; only fit endpoints while there is none.
-    if ((mode === 'tracking' || mode === 'navigation') && driverPosition) return;
+    if ((mode === 'tracking' || mode === 'navigation') && followDriver && driverPosition) return;
 
     const lats: number[] = [pickup.lat, dropoff.lat];
     const lngs: number[] = [pickup.lng, dropoff.lng];
@@ -153,7 +160,7 @@ export const RealMapView: React.FC<Props> = ({
         }
       }
     }
-    if (mode === 'picker' && driverPosition) {
+    if ((mode === 'picker' || !followDriver) && driverPosition) {
       lngs.push(driverPosition.lng);
       lats.push(driverPosition.lat);
     }
@@ -167,7 +174,10 @@ export const RealMapView: React.FC<Props> = ({
     const right = 50;
     const left = 50;
     const bottom = 70 + bottomPadding;
-    const key = `${mode}|${minLat.toFixed(5)},${minLng.toFixed(5)}|${maxLat.toFixed(5)},${maxLng.toFixed(5)}|${top},${right},${bottom},${left}|${route?.length ?? 0}`;
+    // When the driver is part of the frame (followDriver=false) quantise the
+    // key to ~100 m so every small GPS update doesn't re-animate the camera.
+    const keyDigits = followDriver ? 5 : 3;
+    const key = `${mode}|${minLat.toFixed(keyDigits)},${minLng.toFixed(keyDigits)}|${maxLat.toFixed(keyDigits)},${maxLng.toFixed(keyDigits)}|${top},${right},${bottom},${left}|${route?.length ?? 0}`;
     if (fitKeyRef.current === key) return;
     fitKeyRef.current = key;
 
@@ -187,7 +197,7 @@ export const RealMapView: React.FC<Props> = ({
     } catch {
       // safe ignore
     }
-  }, [mode, mapReady, pickup, dropoff, route, bottomPadding, driverPosition]);
+  }, [mode, mapReady, pickup, dropoff, route, bottomPadding, driverPosition, followDriver]);
 
   // Picker mode smooth camera focus
   useEffect(() => {

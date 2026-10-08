@@ -50,6 +50,8 @@ export interface RideDriverInfo {
   vehicleModel?: string | null;
   plateNumber?: string | null;
   vehicleType?: string | null;
+  /** Driver's last known position while heading to pickup (null otherwise). */
+  location?: { lat: number; lng: number } | null;
   /** Profile photo: https Cloudinary URL or API-relative /users/<id>/avatar. */
   avatar?: string | null;
 }

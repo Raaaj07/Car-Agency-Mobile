@@ -1202,12 +1202,29 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (!driver) return null;
     const name: string | undefined = driver.user?.name ?? driver.name ?? undefined;
     const ratingNum = Number(driver.rating);
+    // Last known position so the rider's map can place the driver immediately
+    // (live updates then arrive over the socket). Only shared while the driver
+    // is heading to the pickup — never before assignment or after the trip
+    // starts. Accepts the raw GeoJSON point AND an already-whitelisted
+    // {lat,lng} (this view can be built twice, see create()).
+    let location: { lat: number; lng: number } | null = null;
+    if (ride.status === 'matched' || ride.status === 'driver_en_route') {
+      const loc: any = driver.location;
+      if (Array.isArray(loc?.coordinates) && loc.coordinates.length === 2) {
+        const lng = Number(loc.coordinates[0]);
+        const lat = Number(loc.coordinates[1]);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) location = { lat, lng };
+      } else if (Number.isFinite(loc?.lat) && Number.isFinite(loc?.lng)) {
+        location = { lat: loc.lat, lng: loc.lng };
+      }
+    }
     return {
       name: name && name.trim() ? name : 'Driver',
       rating: Number.isFinite(ratingNum) ? ratingNum : null,
       vehicleModel: driver.carModel ?? driver.vehicleModel ?? null,
       plateNumber: driver.plateNumber ?? null,
       vehicleType: driver.vehicleType ?? ride.vehicleType ?? null,
+      location,
       // Profile photo (Cloudinary https URL, or API-relative local endpoint).
       // Falls back to an already-whitelisted avatar when the view is built
       // twice, so a second pass never wipes it.

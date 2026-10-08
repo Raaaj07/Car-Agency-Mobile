@@ -185,7 +185,15 @@ export const RiderHomeStackNavigator: React.FC = () => {
 
       <Stack.Screen name="YouGotTheRide">
         {({ navigation }) => (
-          <YouGotTheRideScreen onTrackDriver={() => navigation.navigate('DriverEnRoute')} />
+          <YouGotTheRideScreen
+            onTrackDriver={() => navigation.navigate('DriverEnRoute')}
+            onRideCancelled={(reason) => {
+              // Driver cancelled (or the system did) right after matching —
+              // land on the outcome screen instead of a dead live map.
+              resetRide();
+              rootNavigation.navigate('RideCancelled', { reason });
+            }}
+          />
         )}
       </Stack.Screen>
 

@@ -48,7 +48,7 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
   const [route, setRoute] = useState<[number, number][] | undefined>(undefined);
   const [driverPosition, setDriverPosition] = useState<
     { lat: number; lng: number } | undefined
-  >();
+  >(() => (driverInfo?.location ? { lat: driverInfo.location.lat, lng: driverInfo.location.lng } : undefined));
   // Measured bottom-sheet height so the map can pad the fit above it.
   const [sheetHeight, setSheetHeight] = useState(0);
 
