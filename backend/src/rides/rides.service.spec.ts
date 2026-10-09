@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { FakeRedis } from '../test/fake-redis';
 import { RIDE_TIMERS_KEY, RidesService } from './rides.service';
 import { RideEntity } from './entities/ride.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
 import { RidesGateway } from './gateway/rides.gateway';
@@ -266,6 +267,93 @@ describe('RidesService phase-1 fixes', () => {
       ).rejects.toThrow(BadRequestException);
       expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
       expect(queryRunner.manager.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('SEC-3: no free rides by cancelling mid-trip', () => {
+    const inProgressRide = (overrides: Record<string, unknown> = {}) =>
+      requestedRide({
+        driverId: 'drv-1',
+        status: 'in_progress',
+        ...overrides,
+      });
+
+    it('a rider cannot cancel a trip that is already in progress (409)', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(inProgressRide({ riderId: 'owner' }));
+      // The ride has a driver: cancel() asks whether the caller ALSO owns it.
+      drivers.findByUserId.mockResolvedValue(null);
+
+      await expect(
+        service.cancel('r1', 'owner', 'rider', { reason: 'arrived, not paying' }),
+      ).rejects.toThrow(ConflictException);
+
+      // Nothing committed: the ride stays in_progress and the driver's
+      // complete() keeps working — the free-ride path is gone.
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+    });
+
+    it('a driver may end an in-progress trip only with a stated reason', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(inProgressRide({ riderId: 'owner' }));
+      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'driver-u' });
+
+      await expect(
+        service.cancel('r1', 'driver-u', 'driver', { reason: '   ' }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+    });
+
+    it('a driver in-progress cancel commits TOGETHER with its review flag', async () => {
+      const ride = inProgressRide({ riderId: 'owner' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'driver-u' });
+      rides.findOne.mockResolvedValue(ride); // response reload
+
+      const result = await service.cancel('r1', 'driver-u', 'driver', {
+        reason: 'engine trouble mid-trip',
+      });
+
+      // The audit row is saved through the SAME transaction as the cancel:
+      // no flag, no commit.
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        AdminAuditLogEntity,
+        expect.objectContaining({
+          action: 'ride_cancel',
+          targetType: 'ride',
+          targetId: 'r1',
+          actorUserId: 'driver-u',
+          reason: 'engine trouble mid-trip',
+          meta: expect.objectContaining({
+            flaggedForReview: true,
+            fromStatus: 'in_progress',
+            cancelledBy: 'driver',
+          }),
+        }),
+      );
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'cancelled', cancelledBy: 'driver' }),
+      );
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      expect(result.status).toBe('cancelled');
+    });
+
+    it('a rider cancel of a NOT-yet-started trip is still allowed', async () => {
+      const ride = inProgressRide({ riderId: 'owner', status: 'driver_en_route' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      rides.findOne.mockResolvedValue(ride); // response reload sees the saved state
+      drivers.findByUserId.mockResolvedValue(null); // caller is not the driver
+
+      const result = await service.cancel('r1', 'owner', 'rider', { reason: 'changed plans' });
+
+      expect(result.status).toBe('cancelled');
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      expect(queryRunner.manager.save).not.toHaveBeenCalledWith(
+        AdminAuditLogEntity,
+        expect.anything(),
+      );
     });
   });
 

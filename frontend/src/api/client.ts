@@ -123,3 +123,13 @@ export function getApiError(error: unknown): string {
   }
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.';
 }
+
+/**
+ * HTTP status of a failed API call when the server actually responded
+ * (undefined for network/timeout failures). SEC-3: lets callers tell a
+ * refused state transition (409) apart from a generic failure without
+ * string-matching localized messages.
+ */
+export function getApiStatus(error: unknown): number | undefined {
+  return isAxiosError(error) ? error.response?.status : undefined;
+}

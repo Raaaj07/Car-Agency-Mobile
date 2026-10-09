@@ -17,6 +17,7 @@ import * as crypto from 'crypto';
 import Redis from 'ioredis';
 import { EntityManager, In, IsNull, LessThan, MoreThan, QueryRunner, Repository } from 'typeorm';
 import { PaymentEntity } from '../payments/entities/payment.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { REDIS_CLIENT } from '../config/redis.module';
 import { toAvatarUrl } from '../common/avatar-url';
 import { DriversService } from '../drivers/drivers.service';
@@ -978,7 +979,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // Unified accounts: ownership is inferred from the ride itself, not the
   // (possibly stale) JWT role claim. Rider-side cancel works when
   // ride.riderId matches; driver-side when the caller's driver profile owns
-  // ride.driverId. Either party may cancel an assigned ride.
+  // ride.driverId. Either party may cancel an assigned ride — except once it
+  // is in_progress (SEC-3 below: the rider is locked out, the driver needs a
+  // reason and gets flagged for admin review).
   //
   // R-2: the ride row is locked and ownership is verified BEFORE any timer is
   // touched — previously a foreign caller got a 403 but the offer timer had
@@ -1015,6 +1018,26 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         throw new BadRequestException(`Ride is already ${ride.status}`);
       }
 
+      // SEC-3: free-ride bug — a rider could cancel AT the destination once
+      // in_progress, paying nothing while the driver's complete() then failed
+      // ("Ride is already cancelled"). The rider can no longer end an underway
+      // trip through this endpoint; the driver ends it (or support intervenes
+      // via the admin cancel, which is unchanged).
+      let flaggedForReview = false;
+      if (ride.status === 'in_progress') {
+        if (effectiveRole === 'rider') {
+          throw new ConflictException(
+            'This trip is already in progress — ask the driver to end the trip, or contact support to cancel.',
+          );
+        }
+        // Drivers may end an in-progress trip, but only with a stated reason,
+        // and the cancel is flagged for admin review (audit row below).
+        if (!dto.reason?.trim()) {
+          throw new BadRequestException('A reason is required to cancel a trip in progress');
+        }
+        flaggedForReview = true;
+      }
+
       // Ownership + status both checked: we own this transition now.
       await this.clearOfferTimeout(rideId);
       await this.clearSearchTimeout(rideId);
@@ -1024,6 +1047,19 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       ride.cancelledBy = effectiveRole;
       ride.cancelledAt = new Date();
       await queryRunner.manager.save(ride);
+      if (flaggedForReview) {
+        // Written INSIDE the transaction: a mid-trip driver cancel without a
+        // review trail must not be able to commit — the flag IS the control.
+        await queryRunner.manager.save(AdminAuditLogEntity, {
+          actorUserId: userId,
+          actorName: null,
+          action: 'ride_cancel',
+          targetType: 'ride',
+          targetId: rideId,
+          reason: dto.reason,
+          meta: { cancelledBy: effectiveRole, fromStatus: 'in_progress', flaggedForReview: true },
+        });
+      }
       await queryRunner.commitTransaction();
     } catch (err) {
       await queryRunner.rollbackTransaction().catch(() => {});

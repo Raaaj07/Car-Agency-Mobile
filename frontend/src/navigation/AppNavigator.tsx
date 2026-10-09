@@ -17,7 +17,7 @@ import { useAuthStore } from '../store/authStore';
 import { useRideStore } from '../store/rideStore';
 import { ridesApi } from '../api/rides';
 import { authApi } from '../api/auth';
-import { getApiError } from '../api/client';
+import { getApiError, getApiStatus } from '../api/client';
 import { colors } from '../theme/theme';
 import { Button } from '../components/primitives/Button';
 
@@ -134,7 +134,14 @@ export const AppNavigator: React.FC = () => {
                         useRideStore.getState().resetRide();
                         navigation.navigate('RideCancelled', { reason });
                       } catch (error) {
-                        Alert.alert('Cancellation failed', getApiError(error));
+                        // SEC-3: a mid-trip cancel is refused with 409 — say what
+                        // to do instead (ask the driver / support) and keep the
+                        // active ride intact so the trip view stays usable.
+                        if (getApiStatus(error) === 409) {
+                          Alert.alert('Cannot cancel now', getApiError(error));
+                        } else {
+                          Alert.alert('Cancellation failed', getApiError(error));
+                        }
                       }
                     }}
                   />
