@@ -52,7 +52,9 @@ post-pull migrations are `1791300000000-AddPromosTables` (creates `promos` +
 
 - Backend: `ADMIN_PHONES`, `UPLOAD_DIR`, `MAX_UPLOAD_MB`, `STORAGE_DRIVER` (`local`|`cloudinary`, needs `CLOUDINARY_*` for deploys), `CORS_ORIGIN`,
   `DB_SSL_REJECT_UNAUTHORIZED`, `OTP_DEV_MODE`, `PAYMENTS_DEV_MODE` (both **refuse to boot in production when `true`**),
-  `TIMER_SWEEP_MS` (ride-offer/search timer sweep interval, default 5000), `PRNG_SEED` (deterministic dev seed).
+  `TIMER_SWEEP_MS` (ride-offer/search timer sweep interval, default 5000), `PRNG_SEED` (deterministic dev seed),
+  `TRUST_PROXY` (default `false`; set `true` **only** behind a reverse proxy so rate limiting sees real client IPs —
+  never enable when the app port is directly reachable, or clients could spoof `X-Forwarded-For` to bypass throttles).
 - Frontend: `EXPO_PUBLIC_API_URL` (must end in `/api/v1`), plus the Google/Mapbox keys already in use.
 
 ## Owner security checklist (S-1)
@@ -65,10 +67,31 @@ post-pull migrations are `1791300000000-AddPromosTables` (creates `promos` +
   JWT, MSG91, Razorpay and Cloudinary secrets. This pass never touched those files — rotation is owner-only.
 - Before real users: set `OTP_DEV_MODE=false` and `PAYMENTS_DEV_MODE=false`, and move uploads to `STORAGE_DRIVER=cloudinary` (local disk dies on ephemeral hosts).
 
+## Security hardening (2026-10-09)
+
+- **Default-deny auth**: `JwtAuthGuard` is a global `APP_GUARD` (registered after `ThrottlerGuard`).
+  Every route requires a bearer token unless its handler/controller is explicitly `@Public()`.
+  The complete public surface: `POST /auth/otp/send`, `POST /auth/otp/verify`, `POST /auth/refresh`,
+  `POST /auth/google`, `POST /auth/apple`, `GET /users/:id/avatar`, `GET /places/photo/*`.
+  A new controller added without a guard is now **401, not open**. `RolesGuard` /
+  `ApprovedDriverGuard` keep running per-route on top of it.
+- **Throttles**: global 300 req/min/IP; OTP send 10/10min and verify 30/5min per IP (on top of
+  per-phone caps); `refresh`/`google`/`apple` 30/5min; both public photo routes 120/min/IP
+  (each cache miss is a billable server-side Google/Wikimedia fetch). Rate limits key on client
+  IP: correct behind a proxy only with `TRUST_PROXY=true` (see Environment).
+- **Dependencies**: `npm audit --omit=dev` went 13 (3 high) → 5 via npm `overrides`
+  (multer 2.4.0, qs 6.16.0, body-parser 1.20.8, lodash 4.18.1, file-type 21.x, uuid 11.1.1).
+  The 5 remaining are all the one `@nestjs/core` advisory fixed only in **Nest 12** (major
+  upgrade — owner decision) plus its transitive spread; re-check with `npm audit --omit=dev`.
+- **Container**: `backend/.dockerignore` keeps `.env*`, keystores and keys out of the build
+  context; the runtime image installs with `npm ci` and runs as the unprivileged `node` user.
+  Rebuild + smoke after pulling (`docker compose build`) — Docker is absent on the dev machine,
+  so these changes were verified by inspection only.
+
 ## Verification commands
 
 ```bash
-cd backend  && npx tsc --noEmit && npx jest          # unit: 128 tests / 12 suites (no DB needed)
+cd backend  && npx tsc --noEmit && npx jest          # unit: 146 tests / 14 suites (no DB needed)
 cd frontend && npx tsc --noEmit && npx eslint src    # 0 errors
 ```
 

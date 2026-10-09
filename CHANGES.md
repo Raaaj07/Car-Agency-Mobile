@@ -175,3 +175,53 @@ Built on top of Phases 1–6 (`d7e5d14` → `bb632aa`). One commit per task grou
 - Live: `npm run migration:run` (AddPromosTables + AddRideOfferAndOtpColumns executed — dev at 13 migrations, `VAZHI20` row verified); `npm run seed` twice (idempotent);
   backend booted → both new admin routes mapped and answer 401 unauthenticated, `export.csv` precedes `rides/:id` in the route map.
 - Not verifiable here: Docker Desktop (absent — `docker-compose.test.yml` untested end-to-end; local Postgres used instead), device UI (zoom gestures, promo screen on handset), real Mapbox/MSG91/Razorpay calls, multi-instance Redis sweep under load — see delivery report checklist.
+
+---
+
+## Security hardening pass (2026-10-09)
+
+Directive: raise the data-privacy/security posture — project data safe, APIs protected against
+unauthorized access or manipulation. Built on the 11-task follow-up pass (`f58a92f`); one commit
+per group, never pushed.
+
+### Status table
+
+| # | Group | Status | Commit | Notes |
+|---|-------|--------|--------|-------|
+| 1 | SEC-1 default-deny auth + SEC-3 auth throttles | **Done** | `af660de` | `JwtAuthGuard` registered as a global `APP_GUARD` (after `ThrottlerGuard`); `@Public()` only on OTP send/verify, refresh, Google/Apple sign-in, avatar stream and the places-photo proxy; redundant per-route `JwtAuthGuard` decorators removed so the JWT strategy runs exactly once per request; `refresh`/`google`/`apple` got `@Throttle 30/5min` (were only under the global 300/min) |
+| 2 | SEC-4 photo-proxy throttle, SEC-7 avatar uuid pipe, social-token 500s | **Done** | `a52e7a2` | Both public photo routes throttled 120 req/min/IP (public + server-side billable fetch = cost-amplification risk); `ParseUUIDPipe` on `GET /users/:id/avatar` (a non-uuid reached Postgres and surfaced as an unhandled 500); malformed Google/Apple tokens now 400 `Invalid … token` instead of an unhandled 500 with a full stack trace in logs |
+| 3 | SEC-5 `TRUST_PROXY` | **Done** | `91a4c95` | New optional env (`boolean string`, default `false`) — sets Express `trust proxy` to exactly 1 hop so throttling keys on real client IPs behind a proxy; off by default so direct connections cannot spoof `X-Forwarded-For` to bypass limits |
+| 4 | SEC-2 dependency vulnerabilities | **Done** | `2bb7084` | npm `overrides`: `multer ^2.4.0` (4 DoS advisories on the upload path), `qs ^6.16.0`, `body-parser ^1.20.6`, `lodash ^4.18.1` (`_.template` injection), `file-type ^21.3.1` (ASF loop + ZIP bomb; only reachable via Nest's optional `FileTypeValidator`, which this codebase never uses), `uuid ^11.1.1`; unused direct `uuid` + `@types/uuid` removed; lockfile also picked up dev-only `babel-plugin-istanbul`/`handlebars` patches |
+| 5 | SEC-6 container hardening | **Done** | `d5c240d` | New `backend/.dockerignore` (`.env*`, `*.jjs`/`*.jks`, `*.pem`/`*.key`, node_modules, uploads, dist out of the build context — the build stage's `COPY . .` previously baked them into image layers); Dockerfile switched to `npm ci`, runtime drops to unprivileged `USER node` with a writable `/app/uploads` |
+| 6 | Docs | **Done** | (this commit) | `ADMIN.md` security section + `TRUST_PROXY` + refreshed test counts; this record |
+
+### Verification (this pass)
+
+- Backend: `npx tsc --noEmit` 0 errors; `npx jest` **146 tests / 14 suites** green after every group;
+  `npx eslint src` 0 errors (1 pre-existing warning `razorpay-payment.provider.ts:45`).
+- Integration: `INTEGRATION=1 npm run test:integration` **11 tests / 3 suites** green re-run after the dependency overrides (TypeORM/uuid tree changed underneath).
+- Live smoke (backend on `:3199`, real DB/Redis): no token → 401 on `auth/me`, `admin/users`,
+  `places/saved`, `payments/create-order`, `rides`, `drivers/nearby`; valid OTP token → 200 on
+  `auth/me`, `places/saved`, `rides`; `@Public` surface reachable (otp/send 200, refresh reaches
+  the service, photo allow-list 404, avatar 400-not-401); garbage social tokens 400 (observed the
+  pre-fix 500 + stack); malformed avatar uuid 400; **multer 2.4.0**: real multipart avatar upload
+  → 200 with Cloudinary URL.
+- Rate limiting, both directions: default → 8 valid OTP sends from one IP with rotating
+  `X-Forwarded-For` get **429 on #8** (spoofed header ignored); `TRUST_PROXY=true` → 11 valid
+  sends with rotating XFF all **200** (limit is 10) and a fresh XFF starts a fresh bucket
+  (`X-RateLimit-Remaining: 9`).
+- `npm audit --omit=dev`: **13 (1 low, 9 moderate, 3 high) → 5 (0 high, 0 low)**.
+
+### Residual / deferred
+
+- The 5 remaining prod advisories are one `@nestjs/core` finding (GHSA-36xv-jgw5-4q75) fixed only
+  in **Nest 12**, spread transitively to `@nestjs/{platform-express,platform-socket.io,typeorm,websockets}` —
+  a major framework upgrade; owner decision, re-audit after upgrading.
+- Guard-based throttling cannot see requests rejected before the router: malformed-JSON bodies
+  (body-parser 400) and unknown paths (404) bypass every route guard. Cost per request is tiny
+  (≤100 kB parse / instant 404), so the accepted mitigation is edge rate limiting
+  (CDN/platform load balancer/nginx), not more app code.
+- Container changes (`Dockerfile`, `.dockerignore`) are inspection-only here — no Docker Desktop
+  on the dev machine. Owner: `docker compose build` + boot + upload smoke after pulling.
+  Pre-existing, untouched: compose's `npm run migration:run` needs `ts-node` (a devDependency)
+  that the prod image never installed — already the case before this pass.
