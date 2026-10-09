@@ -28,7 +28,9 @@ import { CompleteRideDto } from './dto/complete-ride.dto';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { SubmitReviewDto } from './dto/submit-review.dto';
 import { VerifyPickupOtpDto } from './dto/verify-pickup-otp.dto';
-import { RideEntity } from './entities/ride.entity';
+import { RideEntity, ACTIVE_RIDE_STATUSES } from './entities/ride.entity';
+// Re-export: the booking pre-check and findActiveForRider() consume this.
+export { ACTIVE_RIDE_STATUSES };
 import { computeFareBreakdown, computeNumericPrice } from './fare-catalog';
 import { RouteDistanceService } from './route-distance.service';
 import { RidesGateway } from './gateway/rides.gateway';
@@ -41,10 +43,6 @@ function generateOtp(length = 4): string {
   const max = 10 ** length;
   return crypto.randomInt(0, max).toString().padStart(length, '0');
 }
-
-// Single source of truth for "rider is locked out of booking" statuses.
-// Used by create() and findActiveForRider() so they can never drift apart.
-export const ACTIVE_RIDE_STATUSES = ['requested', 'matched', 'driver_en_route', 'in_progress'] as const;
 
 // R-5: offer/search timers live in a Redis sorted set so they survive
 // restarts and are shared by every backend instance. Member format
@@ -411,6 +409,29 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   /**
+   * SEC-9: run `fn` in its own transaction — commit on success, rollback and
+   * rethrow on any throw. Extracted from withRideLock so a booking that must
+   * validate a promo row lock (promos assertBookable) and INSERT the ride
+   * atomically reuses the same plumbing. Callers do side effects AFTER this
+   * returns (the commit has happened), per the withRideLock contract.
+   */
+  private async withTransaction<T>(fn: (manager: EntityManager) => Promise<T>): Promise<T> {
+    const queryRunner: QueryRunner = this.rides.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      const result = await fn(queryRunner.manager);
+      await queryRunner.commitTransaction();
+      return result;
+    } catch (err) {
+      await queryRunner.rollbackTransaction().catch(() => {});
+      throw err;
+    } finally {
+      await queryRunner.release().catch(() => {});
+    }
+  }
+
+  /**
    * R-4: run a ride transition under a pessimistic row lock inside a
    * transaction (same discipline as accept()/cancel()), so a concurrent
    * decline/timeout/cancel/complete cannot interleave and double-release a
@@ -428,24 +449,14 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     rideId: string,
     fn: (ride: RideEntity, manager: EntityManager) => Promise<T>,
   ): Promise<T> {
-    const queryRunner: QueryRunner = this.rides.manager.connection.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-    try {
-      const ride = await queryRunner.manager.findOne(RideEntity, {
+    return this.withTransaction(async (manager) => {
+      const ride = await manager.findOne(RideEntity, {
         where: { id: rideId },
         lock: { mode: 'pessimistic_write' },
       });
       if (!ride) throw new NotFoundException('Ride not found');
-      const result = await fn(ride, queryRunner.manager);
-      await queryRunner.commitTransaction();
-      return result;
-    } catch (err) {
-      await queryRunner.rollbackTransaction().catch(() => {});
-      throw err;
-    } finally {
-      await queryRunner.release().catch(() => {});
-    }
+      return fn(ride, manager);
+    });
   }
 
   // POST /rides — create + trigger nearest-driver matching.
@@ -466,38 +477,57 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     // straight-line x1.3 fallback) — straight-line under-counts detours.
     const distanceKm = await this.routes.routedKm(dto.pickup, dto.dropoff);
     const numericPrice = computeNumericPrice(dto.vehicleType, distanceKm);
-    const discount = dto.promoCode ? await this.promosService.resolveDiscount(dto.promoCode, riderId) : 0;
-    const fareBreakdown = computeFareBreakdown(numericPrice, discount);
-    const pickupOtp = generateOtp();
+    // SEC-9: store the code normalised (trim + upper) — the cap accounting
+    // counts in-flight rides by exact code equality, and every lookup
+    // (discountFor/recordRedemption) normalises before hitting the DB anyway.
+    const promoCode = dto.promoCode ? dto.promoCode.trim().toUpperCase() : null;
 
-    let ride = this.rides.create({
-      riderId,
-      status: 'requested',
-      vehicleType: dto.vehicleType,
-      pickup: dto.pickup,
-      dropoff: dto.dropoff,
-      promoCode: dto.promoCode ?? null,
-      fareBreakdown,
-      distanceKm: distanceKm.toFixed(2),
-      paymentMethod: dto.paymentMethod ?? 'upi',
-      paymentStatus: 'pending',
-      pickupOtp,
-      declinedDriverIds: [],
-      otpAttempts: 0,
-    });
-    try {
-      ride = await this.rides.save(ride);
-    } catch (err) {
-      // SEC-4: two concurrent POST /rides both passed the count() pre-check
-      // above — the partial unique index UQ_rides_active_per_rider rejects
-      // the second INSERT (Postgres 23505). The database is the only place
-      // this race can be closed; map its violation onto the same friendly
-      // message the pre-check uses. Anything else still surfaces as-is.
-      const e = err as { code?: string; driverError?: { code?: string } };
-      if (e.code === '23505' || e.driverError?.code === '23505') {
-        throw new BadRequestException('You already have an active ride. Cancel or complete it first.');
+    const makeRide = (discount: number): RideEntity =>
+      this.rides.create({
+        riderId,
+        status: 'requested',
+        vehicleType: dto.vehicleType,
+        pickup: dto.pickup,
+        dropoff: dto.dropoff,
+        promoCode,
+        fareBreakdown: computeFareBreakdown(numericPrice, discount),
+        distanceKm: distanceKm.toFixed(2),
+        paymentMethod: dto.paymentMethod ?? 'upi',
+        paymentStatus: 'pending',
+        pickupOtp: generateOtp(),
+        declinedDriverIds: [],
+        otpAttempts: 0,
+      });
+
+    const persist = async (ride: RideEntity, em?: EntityManager): Promise<RideEntity> => {
+      try {
+        return em ? await em.save(ride) : await this.rides.save(ride);
+      } catch (err) {
+        // SEC-4: two concurrent POST /rides both passed the count() pre-check
+        // above — the partial unique index UQ_rides_active_per_rider rejects
+        // the second INSERT (Postgres 23505). The database is the only place
+        // this race can be closed; map its violation onto the same friendly
+        // message the pre-check uses. Anything else still surfaces as-is.
+        const e = err as { code?: string; driverError?: { code?: string } };
+        if (e.code === '23505' || e.driverError?.code === '23505') {
+          throw new BadRequestException('You already have an active ride. Cancel or complete it first.');
+        }
+        throw err;
       }
-      throw err;
+    };
+
+    let ride: RideEntity;
+    if (promoCode) {
+      // SEC-9: the promo cap check and the ride INSERT commit together while
+      // the promo row is locked FOR UPDATE (promos assertBookable) —
+      // concurrent bookings of the same code serialize on that lock instead
+      // of all reading a stale counter, so the cap cannot be raced past.
+      ride = await this.withTransaction(async (em) => {
+        const discount = await this.promosService.assertBookable(em, promoCode, riderId);
+        return persist(makeRide(discount), em);
+      });
+    } else {
+      ride = await persist(makeRide(0));
     }
 
     let matchResult: { status: 'offered' | 'no_drivers'; candidates: number } = {
@@ -1112,27 +1142,38 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // Matches ReviewRideScreen's onSubmitReview (rating + compliments + tip).
   // One review per ride: a second submit is rejected so ratings/totalTrips
   // cannot be farmed by re-reviewing.
+  // SEC-9: the whole check-write-apply runs under the ride row lock. Before,
+  // two concurrent submits both read rating == null and both wrote — the
+  // ride row kept only the last save, but BOTH applyRating calls landed,
+  // rolling the same trip into the driver's running average twice
+  // (totalTrips + 2). The lock serializes them: the loser re-reads the
+  // committed row and gets the 409.
   async submitReview(rideId: string, riderId: string, dto: SubmitReviewDto): Promise<any> {
-    const ride = await this.getOrThrow(rideId);
-    if (ride.riderId !== riderId) {
-      throw new ForbiddenException('Not your ride');
-    }
-    if (ride.status !== 'completed') {
-      throw new BadRequestException('Can only review a completed ride');
-    }
-    if (ride.rating != null) {
-      throw new ConflictException('This ride has already been reviewed');
-    }
+    await this.withRideLock(rideId, async (ride, manager) => {
+      if (ride.riderId !== riderId) {
+        throw new ForbiddenException('Not your ride');
+      }
+      if (ride.status !== 'completed') {
+        throw new BadRequestException('Can only review a completed ride');
+      }
+      if (ride.rating != null) {
+        throw new ConflictException('This ride has already been reviewed');
+      }
 
-    ride.rating = dto.rating;
-    ride.compliments = dto.compliments ?? [];
-    ride.tipAmount = dto.tipAmount ?? 0;
-    await this.rides.save(ride);
+      ride.rating = dto.rating;
+      ride.compliments = dto.compliments ?? [];
+      ride.tipAmount = dto.tipAmount ?? 0;
+      await manager.save(ride);
 
-    if (ride.driverId) {
-      await this.drivers.applyRating(ride.driverId, dto.rating);
-    }
-    return this.toRiderView(ride);
+      if (ride.driverId) {
+        // Same transaction: the driver aggregate moves only if the review
+        // commits (applyRating's atomic SQL joins the ride write).
+        await this.drivers.applyRating(ride.driverId, dto.rating, manager);
+      }
+    });
+    // Reload after commit (withRideLock contract) — relations for the view.
+    const fresh = await this.getOrThrow(rideId);
+    return this.toRiderView(fresh);
   }
 
   // GET /rides/:id

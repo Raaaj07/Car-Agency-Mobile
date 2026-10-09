@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { DriverEntity, VehicleType } from './entities/driver.entity';
 import { GeoService, NearbyDriverHit } from './geo.service';
 import { RideEntity } from '../rides/entities/ride.entity';
@@ -200,10 +200,13 @@ export class DriversService {
 
   // Called by RidesService after ReviewRideScreen submits a star rating —
   // rolls the new rating into the driver's running average (atomic, no lost writes).
-  async applyRating(driverId: string, newRating: number): Promise<void> {
+  // SEC-9: an optional `manager` lets the aggregate update join the review's
+  // transaction — the ride.rating write and the driver's rating/totalTrips
+  // then commit (or roll back) together.
+  async applyRating(driverId: string, newRating: number, manager?: EntityManager): Promise<void> {
     if (!Number.isFinite(newRating) || newRating < 1 || newRating > 5) return;
     // Atomic: rating = (rating*totalTrips + new)/(totalTrips+1), totalTrips+1.
-    await this.drivers
+    await (manager ?? this.drivers.manager)
       .createQueryBuilder()
       .update(DriverEntity)
       .set({

@@ -24,6 +24,13 @@ export type RideStatus =
   | 'completed'
   | 'cancelled';
 
+// Single source of truth for "the rider/driver is locked into this ride"
+// statuses — used by RidesService.create()/findActiveForRider() (booking
+// pre-check) and by PromosService's SEC-9 cap accounting (an in-flight ride
+// still holds its promo slot until it completes or cancels). Lives here so
+// the promos module can use it without importing rides.service.
+export const ACTIVE_RIDE_STATUSES = ['requested', 'matched', 'driver_en_route', 'in_progress'] as const;
+
 export type PaymentMethod = 'upi' | 'wallet' | 'card' | 'cash';
 // State machine (P-1): pending → rider_claimed → paid | disputed, plus
 // 'failed' for a failed Razorpay verification. Only the driver/admin/provider

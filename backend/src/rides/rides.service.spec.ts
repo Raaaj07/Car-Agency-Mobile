@@ -51,6 +51,7 @@ describe('RidesService phase-1 fixes', () => {
   let drivers: Record<string, jest.Mock>;
   let gateway: Record<string, jest.Mock>;
   let queryRunner: QueryRunnerStub;
+  let promos: Record<string, jest.Mock>;
   // Shared "Redis server" — extra service instances in a test join the same
   // FakeRedis to model multiple backend processes (R-5).
   let fake: FakeRedis;
@@ -62,11 +63,7 @@ describe('RidesService phase-1 fixes', () => {
       { removeDriver: jest.fn().mockResolvedValue(undefined), upsertDriverLocation: jest.fn().mockResolvedValue(undefined) } as unknown as GeoService,
       gateway as unknown as RidesGateway,
       { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
-      {
-        discountFor: jest.fn().mockResolvedValue(0),
-        resolveDiscount: jest.fn().mockResolvedValue(0),
-        recordRedemption: jest.fn().mockResolvedValue(undefined),
-      } as unknown as PromosService,
+      promos as unknown as PromosService,
       // R-7: routed distance — tests use a fixed estimate (no HTTP).
       { routedKm: jest.fn().mockResolvedValue(5) } as unknown as RouteDistanceService,
       fake as unknown as Redis,
@@ -134,6 +131,14 @@ describe('RidesService phase-1 fixes', () => {
       },
     };
     (rides.manager.connection.createQueryRunner as jest.Mock).mockReturnValue(queryRunner);
+
+    promos = {
+      discountFor: jest.fn().mockResolvedValue(0),
+      resolveDiscount: jest.fn().mockResolvedValue(0),
+      recordRedemption: jest.fn().mockResolvedValue(undefined),
+      // SEC-9: the locked booking gate — tests assert through this handle.
+      assertBookable: jest.fn().mockResolvedValue(0),
+    };
 
     fake = new FakeRedis();
     service = buildService();
@@ -449,6 +454,122 @@ describe('RidesService phase-1 fixes', () => {
       );
       expect(rides.save).not.toHaveBeenCalled();
       expect(queryRunner.commitTransaction).toHaveBeenCalled();
+    });
+  });
+
+  // SEC-9: the review check-write-apply must be atomic (two concurrent
+  // submits used to both read rating == null and double-apply the driver
+  // rating), and the promo cap must be enforced under the promo row lock
+  // (concurrent bookings of one code used to all pass on a stale counter).
+  describe('SEC-9: atomic review + locked promo cap', () => {
+    const bookingDto = {
+      vehicleType: 'auto' as const,
+      pickup: { address: 'Point A', lat: 12.9, lng: 77.6 },
+      dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
+    };
+
+    describe('submitReview', () => {
+      const completedRide = (overrides: Record<string, unknown> = {}) =>
+        requestedRide({ id: 'r9', status: 'completed', driverId: 'drv-1', ...overrides });
+
+      it('writes the review and the driver aggregate in one locked transaction', async () => {
+        queryRunner.manager.findOne.mockResolvedValue(completedRide());
+        // Post-commit reload for the response view.
+        rides.findOne.mockResolvedValue(
+          completedRide({ rating: 5, tipAmount: 10, compliments: ['safe'] }),
+        );
+
+        const view = await service.submitReview('r9', 'u1', {
+          rating: 5,
+          compliments: ['safe'],
+          tipAmount: 10,
+        });
+
+        expect(queryRunner.manager.save).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'r9', rating: 5, tipAmount: 10 }),
+        );
+        // The aggregate joins the SAME transaction — it moves only if the
+        // review commits.
+        expect(drivers.applyRating).toHaveBeenCalledWith('drv-1', 5, queryRunner.manager);
+        expect(queryRunner.commitTransaction).toHaveBeenCalled();
+        expect(view).toMatchObject({ id: 'r9', status: 'completed', rating: 5 });
+      });
+
+      it('rejects the concurrent second submit with 409 under the lock', async () => {
+        // The lock makes the loser re-read the committed row: rating is set.
+        queryRunner.manager.findOne.mockResolvedValue(completedRide({ rating: 4 }));
+
+        await expect(
+          service.submitReview('r9', 'u1', { rating: 5 }),
+        ).rejects.toThrow(ConflictException);
+
+        expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+        expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+        expect(queryRunner.manager.save).not.toHaveBeenCalled();
+        expect(drivers.applyRating).not.toHaveBeenCalled();
+        expect(rides.findOne).not.toHaveBeenCalled(); // no response reload on throw
+      });
+
+      it('enforces ownership inside the lock', async () => {
+        queryRunner.manager.findOne.mockResolvedValue(
+          completedRide({ riderId: 'someone-else' }),
+        );
+
+        await expect(service.submitReview('r9', 'u1', { rating: 5 })).rejects.toThrow(
+          ForbiddenException,
+        );
+        expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+        expect(queryRunner.manager.save).not.toHaveBeenCalled();
+        expect(drivers.applyRating).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('promo booking', () => {
+      it('runs the cap gate and the INSERT in one transaction with the normalised code', async () => {
+        rides.count.mockResolvedValue(0);
+        drivers.findByUserId.mockResolvedValue(null);
+        promos.assertBookable.mockResolvedValue(20);
+        rides.findOne.mockResolvedValue(requestedRide()); // post-commit reload
+
+        const out = await service.create('u1', { ...bookingDto, promoCode: ' vazhi20 ' });
+
+        // Trim + upper handed to the gate together with the txn manager...
+        expect(promos.assertBookable).toHaveBeenCalledWith(
+          queryRunner.manager,
+          'VAZHI20',
+          'u1',
+        );
+        // ...and the ride INSERT joins that transaction with the discount the
+        // gate approved.
+        expect(queryRunner.manager.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            promoCode: 'VAZHI20',
+            fareBreakdown: expect.objectContaining({ discount: 20 }),
+          }),
+        );
+        expect(queryRunner.commitTransaction).toHaveBeenCalled();
+        // Nothing books through the old lock-free advisory path.
+        expect(promos.resolveDiscount).not.toHaveBeenCalled();
+        expect(rides.save).not.toHaveBeenCalled();
+        expect(out.match).toEqual({ status: 'no_drivers', candidates: 0 });
+      });
+
+      it('a full cap rejects the booking before any row is written', async () => {
+        rides.count.mockResolvedValue(0);
+        drivers.findByUserId.mockResolvedValue(null);
+        promos.assertBookable.mockRejectedValue(
+          new BadRequestException('Promo code "VAZHI20" has reached its redemption limit.'),
+        );
+
+        await expect(
+          service.create('u1', { ...bookingDto, promoCode: 'VAZHI20' }),
+        ).rejects.toThrow('has reached its redemption limit');
+
+        expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+        expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+        expect(queryRunner.manager.save).not.toHaveBeenCalled();
+        expect(drivers.findNearby).not.toHaveBeenCalled(); // no driver search storm
+      });
     });
   });
 

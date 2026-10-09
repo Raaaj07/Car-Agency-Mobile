@@ -36,6 +36,20 @@ const matchWhere = (rows: PromoRow[], where: Record<string, unknown>): PromoRow 
     ),
   ) ?? null;
 
+/** Chainable stub for em.createQueryBuilder().update().set().where().execute(). */
+const counterQb = () => {
+  const qb = {
+    update: jest.fn(),
+    set: jest.fn(),
+    where: jest.fn(),
+    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  };
+  qb.update.mockReturnValue(qb);
+  qb.set.mockReturnValue(qb);
+  qb.where.mockReturnValue(qb);
+  return qb;
+};
+
 /** In-memory stand-in for the two repos PromosService touches. */
 function buildService(promos: PromoRow[], completedRides = 0) {
   const saveMock = jest.fn(async (row: PromoRow) => {
@@ -51,6 +65,9 @@ function buildService(promos: PromoRow[], completedRides = 0) {
     ),
     insert: jest.fn().mockResolvedValue({}),
     increment: jest.fn().mockResolvedValue({ affected: 1 }),
+    // SEC-9: issuedCount (in-flight rides) runs through the manager too.
+    count: jest.fn().mockResolvedValue(0),
+    createQueryBuilder: jest.fn(() => counterQb()),
   };
   const promoRepo = {
     findOne: jest.fn(({ where }: { where: Record<string, unknown> }) =>
@@ -136,6 +153,23 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
       );
     });
 
+    it('counts in-flight rides toward the cap (SEC-9: issued = completed + in flight)', async () => {
+      const { service, managerMock } = buildService([
+        promoRow({ maxRedemptions: 3, redemptionCount: 2 }),
+      ]);
+      managerMock.count.mockResolvedValue(1); // one ride is still running the code
+
+      await expect(service.resolveDiscount('VAZHI20', 'r1')).rejects.toThrow(
+        'has reached its redemption limit.',
+      );
+      expect(managerMock.count).toHaveBeenCalledWith(
+        RideEntity,
+        expect.objectContaining({
+          where: expect.objectContaining({ promoCode: 'VAZHI20' }),
+        }),
+      );
+    });
+
     it('rejects first-ride promos once the rider has completed a ride', async () => {
       const { service, ridesRepo } = buildService([promoRow({ firstRideOnly: true })], 1);
       await expect(service.resolveDiscount('VAZHI20', 'r1')).rejects.toThrow(
@@ -149,6 +183,82 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
     it('returns the amount for an eligible rider', async () => {
       const { service } = buildService([promoRow({ firstRideOnly: true })], 0);
       expect(await service.resolveDiscount('VAZHI20', 'r1')).toBe(20);
+    });
+  });
+
+  describe('assertBookable (SEC-9 — authoritative booking gate)', () => {
+    // Emulates the booking transaction's manager: findOne gets the locked
+    // promo, count answers issuedCount (in-flight) vs firstRide (completed).
+    const bookingEm = (promo: PromoRow | null, inFlight = 0, completed = 0) => ({
+      findOne: jest.fn().mockResolvedValue(promo),
+      count: jest
+        .fn()
+        .mockImplementation((_cls: unknown, opts: { where?: { riderId?: string } }) =>
+          Promise.resolve(opts?.where?.riderId ? completed : inFlight),
+        ),
+    });
+
+    it('locks the promo row FOR UPDATE and returns the discount', async () => {
+      const { service } = buildService([]);
+      const em = bookingEm(promoRow({ discountAmount: 20 }));
+
+      expect(
+        await service.assertBookable(em as unknown as EntityManager, ' vazhi20 ', 'r1'),
+      ).toBe(20);
+
+      // The lock is what serializes concurrent bookings of one code.
+      expect(em.findOne).toHaveBeenCalledWith(PromoEntity, {
+        where: { code: 'VAZHI20' },
+        lock: { mode: 'pessimistic_write' },
+      });
+    });
+
+    it('rejects when completed + in-flight rides fill the cap', async () => {
+      const { service } = buildService([]);
+      const em = bookingEm(promoRow({ maxRedemptions: 3, redemptionCount: 2 }), 1);
+
+      await expect(
+        service.assertBookable(em as unknown as EntityManager, 'VAZHI20', 'r1'),
+      ).rejects.toThrow('has reached its redemption limit.');
+      // The in-flight ride was counted — the old counter-only check missed it.
+      expect(em.count).toHaveBeenCalledWith(
+        RideEntity,
+        expect.objectContaining({
+          where: expect.objectContaining({ promoCode: 'VAZHI20' }),
+        }),
+      );
+    });
+
+    it('allows booking while the cap still has room', async () => {
+      const { service } = buildService([]);
+      const em = bookingEm(promoRow({ maxRedemptions: 3, redemptionCount: 1 }), 1);
+
+      expect(
+        await service.assertBookable(em as unknown as EntityManager, 'VAZHI20', 'r1'),
+      ).toBe(20);
+    });
+
+    it('keeps the rider-facing messages identical to resolveDiscount', async () => {
+      const { service } = buildService([]);
+
+      const missing = bookingEm(null);
+      await expect(
+        service.assertBookable(missing as unknown as EntityManager, 'NOPE', 'r1'),
+      ).rejects.toThrow('Promo code "NOPE" is not valid.');
+
+      const inactive = bookingEm(promoRow({ active: false }));
+      await expect(
+        service.assertBookable(inactive as unknown as EntityManager, 'VAZHI20', 'r1'),
+      ).rejects.toThrow('Promo code "VAZHI20" is no longer active.');
+    });
+
+    it('rejects first-ride promos for riders who already completed a trip', async () => {
+      const { service } = buildService([]);
+      const em = bookingEm(promoRow({ firstRideOnly: true }), 0, 2);
+
+      await expect(
+        service.assertBookable(em as unknown as EntityManager, 'VAZHI20', 'r1'),
+      ).rejects.toThrow('is only valid for your first ride.');
     });
   });
 
@@ -208,10 +318,11 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
     it('inserts the redemption and bumps the cap counter in the same manager', async () => {
       const rows = [promoRow({ discountAmount: 20 })];
       const { service, promoRepo } = buildService(rows);
+      const qb = counterQb();
       const manager = {
         findOne: jest.fn().mockResolvedValue(rows[0]),
         insert: jest.fn().mockResolvedValue({}),
-        increment: jest.fn().mockResolvedValue({ affected: 1 }),
+        createQueryBuilder: jest.fn().mockReturnValue(qb),
       } as unknown as EntityManager;
 
       await service.recordRedemption(' vaZHi20 ', 'ride-1', 'rider-1', manager);
@@ -229,8 +340,16 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
           discountAmount: 20,
         }),
       );
-      expect(manager.increment).toHaveBeenCalledWith(PromoEntity, { id: 'p1' }, 'redemptionCount', 1);
-      expect(promoRepo.increment).not.toHaveBeenCalled(); // manager path only
+      // SEC-9: ONE conditional increment — the counter can never be pushed
+      // past the declared cap (affected=0 there is a silent no-op, never an
+      // error: a completed ride must not fail over a counter).
+      expect(qb.set).toHaveBeenCalledWith({ redemptionCount: expect.any(Function) });
+      expect(qb.where).toHaveBeenCalledWith(
+        expect.stringContaining('"redemptionCount" < "maxRedemptions"'),
+        { id: 'p1' },
+      );
+      expect(qb.execute).toHaveBeenCalled();
+      expect(promoRepo.increment).not.toHaveBeenCalled(); // never an uncapped bump
     });
 
     it('is a no-op when the promo was deleted since booking', async () => {
@@ -250,12 +369,14 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
         expect.anything(),
         expect.objectContaining({ code: 'WALKIN5', rideId: 'ride-2' }),
       );
-      expect(managerMock.increment).toHaveBeenCalledWith(
-        PromoEntity,
+      const qb = managerMock.createQueryBuilder.mock.results[0].value as ReturnType<
+        typeof counterQb
+      >;
+      expect(qb.where).toHaveBeenCalledWith(
+        expect.stringContaining('"redemptionCount" < "maxRedemptions"'),
         { id: 'p1' },
-        'redemptionCount',
-        1,
       );
+      expect(qb.execute).toHaveBeenCalled();
     });
   });
 
