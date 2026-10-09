@@ -32,23 +32,10 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.vijayrajvj.CarAgencyMobile",
+      "allowBackup": false,
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION"
-      ],
-      "intentFilters": [
-        {
-          "action": "android.intent.action.VIEW",
-          "data": [
-            {
-              "scheme": "google.navigation"
-            }
-          ],
-          "category": [
-            "android.intent.category.DEFAULT",
-            "android.intent.category.BROWSABLE"
-          ]
-        }
       ]
     },
     "web": {

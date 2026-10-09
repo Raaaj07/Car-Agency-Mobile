@@ -46,7 +46,13 @@ export const SignInScreen: React.FC<Props> = ({
       if (idToken) {
         onGoogleTokenRef.current(idToken);
       } else {
-        console.log('Google auth succeeded but no idToken found. Full response:', JSON.stringify(response));
+        // SEC-10: never log the full auth response — it can carry identity
+        // claims (names, emails, tokens) into logcat/release logs. The key
+        // names are enough to debug which response shape arrived.
+        console.warn(
+          '[auth] Google auth succeeded but no idToken found; response keys:',
+          Object.keys(response).join(','),
+        );
       }
     } else if (response?.type === 'error') {
       console.log('Google auth error:', response.error);
