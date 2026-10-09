@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { ApprovedDriverGuard } from '../drivers/guards/approved-driver.guard';
@@ -26,7 +26,7 @@ export class RidesController {
   // R-1: "Retry" when the search came back with no drivers — re-runs the
   // match immediately instead of waiting out the server search window.
   @Post(':id/rematch')
-  rematch(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  rematch(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.rematch(id, user.userId);
   }
 
@@ -60,35 +60,35 @@ export class RidesController {
   }
 
   @Get(':id')
-  findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  findOne(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.findById(id, user.userId);
   }
 
   // RideRequestNearbyScreen's "Accept Ride" (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/accept')
-  accept(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  accept(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.accept(id, user.userId);
   }
 
   // RideRequestNearbyScreen's "Decline" / 15s timeout (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/decline')
-  decline(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  decline(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.decline(id, user.userId);
   }
 
   // TurnByTurnNavigationScreen: driver begins heading to pickup (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/en-route')
-  enRoute(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  enRoute(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.markEnRoute(id, user.userId);
   }
 
   // DriverEnRouteScreen's "Driver Arrived (Start)" (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/start')
-  start(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  start(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.start(id, user.userId);
   }
 
@@ -97,7 +97,7 @@ export class RidesController {
   @Patch(':id/verify-pickup-otp')
   verifyPickupOtp(
     @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: VerifyPickupOtpDto,
   ) {
     return this.rides.verifyPickupOtp(id, user.userId, dto);
@@ -106,7 +106,7 @@ export class RidesController {
   // Trip end -> PaymentFareBreakdownScreen's numbers (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/complete')
-  complete(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: CompleteRideDto) {
+  complete(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CompleteRideDto) {
     return this.rides.complete(id, user.userId, dto);
   }
 
@@ -114,19 +114,19 @@ export class RidesController {
   // (approved driver who owns the ride; ride must be completed).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/payment-received')
-  paymentReceived(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  paymentReceived(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.markPaymentReceived(id, user.userId);
   }
 
   // CancelRideConfirmationScreen (either party can cancel).
   @Patch(':id/cancel')
-  cancel(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: CancelRideDto) {
+  cancel(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelRideDto) {
     return this.rides.cancel(id, user.userId, user.role ?? 'rider', dto);
   }
 
   // ReviewRideScreen's onSubmitReview (ownership checked in service).
   @Patch(':id/review')
-  review(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: SubmitReviewDto) {
+  review(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SubmitReviewDto) {
     return this.rides.submitReview(id, user.userId, dto);
   }
 }

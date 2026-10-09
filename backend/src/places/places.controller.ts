@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
 import { RolesGuard, Roles } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
@@ -24,7 +24,7 @@ export class PlacesController {
   }
 
   @Delete('saved/:id')
-  async deleteSaved(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<{ ok: true }> {
+  async deleteSaved(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string): Promise<{ ok: true }> {
     await this.service.deleteSaved(user.userId, id);
     return { ok: true };
   }

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
 import { Roles, RolesGuard } from '../common/guards/roles.guard';
 import { PromosService } from './promos.service';
 import { PromoAdminDto } from './dto/promo-admin.dto';
@@ -29,13 +29,13 @@ export class AdminPromosController {
 
   /** PATCH /admin/promos/:id — edit; null clears copy/validity fields. */
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: PromoAdminDto) {
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: PromoAdminDto) {
     return this.service.updatePromo(id, dto);
   }
 
   /** DELETE /admin/promos/:id — redemption history survives (SET NULL). */
   @Delete(':id')
-  remove(@Param('id') id: string) {
+  remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.removePromo(id);
   }
 }

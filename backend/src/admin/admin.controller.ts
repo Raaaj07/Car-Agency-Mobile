@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles, RolesGuard } from '../common/guards/roles.guard';
@@ -54,13 +54,13 @@ export class AdminController {
   }
 
   @Get('driver-applications/:id')
-  getOne(@Param('id') id: string) {
+  getOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.admin.getApplication(id);
   }
 
   // Full driver console detail: application + stats + last rides + history.
   @Get('drivers/:id')
-  driverDetail(@Param('id') id: string) {
+  driverDetail(@Param('id', ParseUUIDPipe) id: string) {
     return this.admin.getDriverDetail(id);
   }
 
@@ -111,7 +111,7 @@ export class AdminController {
 
   // Ride timeline + fare + payment rows + audited admin actions.
   @Get('rides/:id')
-  rideDetail(@Param('id') id: string) {
+  rideDetail(@Param('id', ParseUUIDPipe) id: string) {
     return this.admin.getRideDetail(id);
   }
 
@@ -119,7 +119,7 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   cancelRide(
     @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CancelRideDto,
   ) {
     return this.admin.adminCancelRide(id, user.userId, dto.reason);
@@ -129,7 +129,7 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   resolvePayment(
     @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ResolvePaymentDto,
   ) {
     return this.admin.resolvePayment(id, user.userId, dto.status, dto.note);
@@ -143,32 +143,32 @@ export class AdminController {
 
   @Post('driver-applications/:id/approve')
   @HttpCode(HttpStatus.OK)
-  approve(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  approve(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.admin.approve(id, user.userId);
   }
 
   @Post('driver-applications/:id/reject')
   @HttpCode(HttpStatus.OK)
-  reject(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: ReviewApplicationDto) {
+  reject(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ReviewApplicationDto) {
     return this.admin.reject(id, user.userId, dto.reason);
   }
 
   @Post('drivers/:id/suspend')
   @HttpCode(HttpStatus.OK)
-  suspend(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: SuspendDriverDto) {
+  suspend(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SuspendDriverDto) {
     return this.admin.suspend(id, user.userId, { reason: dto.reason, force: dto?.force === true });
   }
 
   @Post('drivers/:id/reinstate')
   @HttpCode(HttpStatus.OK)
-  reinstate(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: ReinstateDriverDto) {
+  reinstate(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ReinstateDriverDto) {
     return this.admin.reinstate(id, user.userId, { reason: dto?.reason });
   }
 
   // All documents of one application with fresh, short-lived signed URLs.
   // This is the endpoint a web admin dashboard should call.
   @Get('driver-applications/:id/documents')
-  documents(@Param('id') id: string, @Res({ passthrough: true }) res: Response) {
+  documents(@Param('id', ParseUUIDPipe) id: string, @Res({ passthrough: true }) res: Response) {
     res.setHeader('Cache-Control', 'no-store');
     return this.admin.listDocuments(id);
   }
@@ -178,7 +178,7 @@ export class AdminController {
   // { mime, base64 }. ?raw=1 -> 302 to the signed URL (or raw bytes for legacy).
   @Get('files/:applicationId/:kind')
   async getFile(
-    @Param('applicationId') applicationId: string,
+    @Param('applicationId', ParseUUIDPipe) applicationId: string,
     @Param('kind') kind: string,
     @Query('raw') raw: string | undefined,
     @Res() res: Response,
