@@ -28,6 +28,18 @@ export interface NearbyDriverResult {
   heading?: number;
 }
 
+// SEC-6: the RIDER-FACING shape of a nearby driver — position and derived
+// display numbers only. No driverId / userId / name / car model / rating:
+// together with a live coordinate feed those turn "how many cars are
+// around me" into a real-time tracker for NAMED people that any rider
+// account could poll and scrape.
+export interface NearbyPublicDriver {
+  lat: number;
+  lng: number;
+  vehicleType: VehicleType;
+  etaMinutes: number;
+}
+
 @Injectable()
 export class DriversService {
   private readonly defaultRadiusMeters: number;
@@ -354,6 +366,33 @@ export class DriversService {
     }
 
     return results;
+  }
+
+  // GET /drivers/nearby (rider-facing). SEC-6: same search as the internal
+  // findNearby() above — which ride matching still needs (driverId/userId
+  // to offer and de-duplicate) — but the HTTP response is REDACTED down to
+  // NearbyPublicDriver. The app only draws dots and counts.
+  async findNearbyPublic(
+    lat: number,
+    lng: number,
+    radiusMeters?: number,
+    vehicleType?: VehicleType,
+    groupByType?: boolean,
+  ): Promise<
+    NearbyPublicDriver[] | { drivers: NearbyPublicDriver[]; countsByType: Record<string, { count: number; bestEtaMinutes: number | null }> }
+  > {
+    const found = await this.findNearby(lat, lng, radiusMeters, vehicleType, groupByType);
+    const redact = (list: NearbyDriverResult[]): NearbyPublicDriver[] =>
+      list.map((d) => ({
+        lat: d.lat,
+        lng: d.lng,
+        vehicleType: d.vehicleType,
+        etaMinutes: d.etaMinutes,
+      }));
+    if (Array.isArray(found)) {
+      return redact(found);
+    }
+    return { drivers: redact(found.drivers), countsByType: found.countsByType };
   }
   
   private async hydrateFromRedis(hits: NearbyDriverHit[], minUpdatedAt: Date): Promise<NearbyDriverResult[]> {

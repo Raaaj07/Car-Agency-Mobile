@@ -96,4 +96,48 @@ describe('DriversService.setStatus (R-3)', () => {
     // the trip, but the driver must not be handed a second offer.
     expect(drivers.save).toHaveBeenCalled();
   });
+
+  // SEC-6: the rider-facing nearby feed is redacted to dots + etas. Ride
+  // matching keeps using the full internal findNearby().
+  describe('findNearbyPublic (SEC-6 redaction)', () => {
+    const hit = { driverId: 'd1', distanceMeters: 800, lat: 11.6643, lng: 78.146 };
+
+    it('returns position + eta only — no ids, names, models or ratings', async () => {
+      geo.searchNearby = jest.fn().mockResolvedValue([hit]);
+      drivers.find = jest.fn().mockResolvedValue([
+        driverFixture({
+          isOnline: true,
+          isAvailable: true,
+          carModel: 'Tiago',
+          rating: 4.8,
+          user: { name: 'Priya' },
+        }),
+      ]);
+
+      const list = await service.findNearbyPublic(11.6643, 78.146);
+
+      expect(list).toEqual([
+        { lat: 11.6643, lng: 78.146, vehicleType: 'auto', etaMinutes: expect.any(Number) },
+      ]);
+      // Belt and braces: none of the redacted identifiers survive serialization.
+      expect(JSON.stringify(list)).not.toMatch(/d1|Priya|Tiago|4\.8/);
+    });
+
+    it('redacts the drivers array in the grouped response but keeps the counts', async () => {
+      geo.searchNearby = jest.fn().mockResolvedValue([hit]);
+      drivers.find = jest.fn().mockResolvedValue([
+        driverFixture({ isOnline: true, isAvailable: true, user: { name: 'Arun' } }),
+      ]);
+
+      const grouped = (await service.findNearbyPublic(11.6643, 78.146, undefined, undefined, true)) as {
+        drivers: unknown[];
+        countsByType: Record<string, { count: number; bestEtaMinutes: number | null }>;
+      };
+
+      expect(grouped.countsByType.auto).toEqual({ count: 1, bestEtaMinutes: expect.any(Number) });
+      expect(grouped.drivers).toEqual([
+        { lat: 11.6643, lng: 78.146, vehicleType: 'auto', etaMinutes: expect.any(Number) },
+      ]);
+    });
+  });
 });

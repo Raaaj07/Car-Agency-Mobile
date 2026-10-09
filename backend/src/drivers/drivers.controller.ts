@@ -126,9 +126,11 @@ export class DriversController {
 
   // Matches VehicleSelectionScreen / FindingDriverScreen — driver search
   // around the rider's pickup point, optionally filtered by vehicle type.
+  // SEC-6: the HTTP response is redacted (see findNearbyPublic) — riders
+  // get dots + etas, never the drivers' ids/names/models/ratings.
   @Get('nearby')
   findNearby(@Query() query: NearbyDriversQueryDto) {
-    return this.drivers.findNearby(
+    return this.drivers.findNearbyPublic(
       query.lat,
       query.lng,
       query.radiusMeters,

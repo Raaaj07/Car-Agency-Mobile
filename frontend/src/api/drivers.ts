@@ -28,18 +28,15 @@ export interface DriverProfile {
   upiVpa?: string | null;
 }
 
+// SEC-6: redacted rider-facing shape — position + derived display numbers
+// only (the app draws dots and etas). The server no longer sends (and this
+// type no longer pretends to receive) driverId / userId / name / car model
+// / rating / plate — a live coordinate feed of named drivers.
 export interface NearbyDriver {
-  driverId: string;
-  userId: string;
-  name: string;
-  vehicleType: VehicleType;
-  carModel: string;
-  plateNumber: string;
-  rating: number;
-  distanceMeters: number;
-  etaMinutes: number;
   lat: number;
   lng: number;
+  vehicleType: VehicleType;
+  etaMinutes: number;
 }
 
 export interface DriverApplication {
