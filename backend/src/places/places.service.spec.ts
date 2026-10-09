@@ -115,4 +115,38 @@ describe('PlacesService — location-based suggestions', () => {
       expect(google.searchNearbyByPopularity).not.toHaveBeenCalled();
     });
   });
+
+  // SEC-5: input clamps — a non-numeric ?limit used to reach `LIMIT $2` as
+  // NaN (every NaN comparison is false, so the 1..10 clamp passed it) and
+  // surfaced as a 500.
+  describe('getRecent', () => {
+    const makeRecent = () => {
+      const rides = { query: jest.fn().mockResolvedValue([]) };
+      const savedPlaces = {
+        createQueryBuilder: jest.fn().mockReturnValue({
+          where: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([]),
+        }),
+      };
+      const service = new PlacesService(savedPlaces as never, rides as never, {} as never);
+      return { service, rides };
+    };
+
+    it('a non-numeric limit never reaches SQL as NaN (was a LIMIT NaN 500)', async () => {
+      const { service, rides } = makeRecent();
+
+      expect(await service.getRecent('u1', Number.NaN)).toEqual([]);
+      expect(rides.query).toHaveBeenCalledWith(expect.any(String), ['u1', 15]); // default 5 x 3
+    });
+
+    it('clamps the limit into the 1..10 window', async () => {
+      const { service, rides } = makeRecent();
+
+      await service.getRecent('u1', 9999);
+      expect(rides.query).toHaveBeenLastCalledWith(expect.any(String), ['u1', 30]); // 10 x 3
+
+      await service.getRecent('u1', -3);
+      expect(rides.query).toHaveBeenLastCalledWith(expect.any(String), ['u1', 3]); // 1 x 3
+    });
+  });
 });

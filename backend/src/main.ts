@@ -125,6 +125,20 @@ async function bootstrap() {
       set(setting: string, value: number): unknown;
     };
     httpAdapter.set('trust proxy', 1);
+  } else if (isProd) {
+    // SEC-5: loud on purpose. Behind a proxy with this off, req.ip is the
+    // PROXY address for every caller — all anonymous traffic (OTP sends,
+    // social sign-in, photo streams) then shares ONE rate-limit bucket, so
+    // the eleventh user in any 10 minutes gets a 429 that is not their
+    // fault, and audit rows blame the proxy. The fix is one env var.
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[SEC-5] TRUST_PROXY is not "true" in production. If a reverse proxy / load ' +
+        "balancer (Render, nginx) sits in front of this app, every caller shares the proxy's " +
+        'IP: anonymous rate limits collide across ALL users and audit logs record the proxy ' +
+        'address. Set TRUST_PROXY=true (trusts exactly one hop) — unless the port is directly ' +
+        'reachable, in which case keep it false so X-Forwarded-For cannot be spoofed.',
+    );
   }
   // CORS_ORIGIN may be "*" in dev, or a comma-separated allowlist in prod.
   const rawOrigin = config.get<string>('CORS_ORIGIN') ?? '*';

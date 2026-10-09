@@ -210,7 +210,10 @@ export class PlacesService {
   }
 
   async getRecent(userId: string, limit = 5): Promise<PlaceItemDto[]> {
-    const clampedLimit = Math.min(Math.max(1, limit), 10);
+    // SEC-5: NaN slips through Math.max/Math.min (every NaN comparison is
+    // false) into `LIMIT $2` — sanitize at the boundary, then clamp 1..10.
+    const safeLimit = Number.isFinite(limit) ? limit : 5;
+    const clampedLimit = Math.min(Math.max(1, safeLimit), 10);
     // Distinct dropoff by geoKey (lat/lng rounded to 4 decimals), newest first.
     // Exclude system-cancelled rides.
     const rows = await this.rides.query(

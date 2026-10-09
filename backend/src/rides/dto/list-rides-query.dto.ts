@@ -14,6 +14,9 @@ export class ListRidesQueryDto {
   @Type(() => Number)
   @IsInt()
   @IsPositive()
+  // SEC-5: cap the page so the OFFSET cannot be driven into a full-table
+  // walk (1000 pages x the 100-row limit cap = 100k rides of history).
+  @Max(1000)
   page?: number;
 
   // Unified accounts hold both roles: ?as=rider shows bookings made,

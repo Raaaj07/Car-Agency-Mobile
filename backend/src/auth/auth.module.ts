@@ -49,6 +49,16 @@ import { TokensService } from './tokens.service';
     DevSmsProvider,
     Msg91SmsProvider,
   ],
-  exports: [AuthService, TokensService, JwtStrategy, JwtAuthGuard, TypeOrmModule],
+  exports: [
+    // SEC-5: UserKeyedThrottlerGuard (global, in AppModule) verifies the
+    // access token to key rate limits per user — JwtService must be
+    // resolvable from there.
+    JwtModule,
+    AuthService,
+    TokensService,
+    JwtStrategy,
+    JwtAuthGuard,
+    TypeOrmModule,
+  ],
 })
 export class AuthModule {}

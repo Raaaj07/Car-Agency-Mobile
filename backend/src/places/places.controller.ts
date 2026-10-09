@@ -34,7 +34,12 @@ export class PlacesController {
     @CurrentUser() user: AuthenticatedUser,
     @Query('limit') limit?: string,
   ): Promise<PlaceItemDto[]> {
-    return this.service.getRecent(user.userId, limit ? parseInt(limit, 10) : 5);
+    // SEC-5: ?limit=abc passed the truthy check and arrived as NaN — which
+    // slipped through the service's clamp (every NaN comparison is false)
+    // into `LIMIT $2` and surfaced as a 500. Same isFinite pattern as
+    // getNearby below; the service clamps the range (1..10) as well.
+    const parsed = limit ? Number.parseInt(limit, 10) : NaN;
+    return this.service.getRecent(user.userId, Number.isFinite(parsed) ? parsed : 5);
   }
 
   @Get('nearby')

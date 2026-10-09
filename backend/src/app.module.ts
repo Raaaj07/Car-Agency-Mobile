@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { validateEnv } from './config/env.validation';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
+import { UserKeyedThrottlerGuard } from './common/guards/user-keyed-throttler.guard';
 import { RedisModule } from './config/redis.module';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
@@ -31,8 +32,10 @@ import { PromosModule } from './promos/promos.module';
       validate: validateEnv,
     }),
 
-    // AU-1: global per-IP rate limit (300 req/min — room for 3 s polling),
-    // with tighter per-route overrides on the OTP endpoints.
+    // AU-1: global rate limit (300 req/min — room for 3 s polling), with
+    // tighter per-route overrides on the OTP endpoints. SEC-5: buckets are
+    // keyed PER USER for authenticated traffic and per IP for anonymous —
+    // see UserKeyedThrottlerGuard (CGNAT/proxy fairness, rotation-proof).
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
 
     TypeOrmModule.forRootAsync({
@@ -77,7 +80,7 @@ import { PromosModule } from './promos/promos.module';
     // JWT work), then default-deny auth. SEC-1: JwtAuthGuard is now global —
     // every route requires a bearer token unless its handler/controller is
     // marked @Public() (OTP, refresh, social sign-in, image streams).
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: UserKeyedThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
 })
