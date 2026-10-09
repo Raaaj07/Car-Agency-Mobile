@@ -18,6 +18,19 @@ class EnvironmentVariables {
   @IsString()
   CORS_ORIGIN?: string;
 
+  /**
+   * SEC-5: "false" (default) | "true". Rate limiting keys on req.ip; behind a
+   * reverse proxy that would be the proxy's IP, collapsing every user into one
+   * rate-limit budget (and breaking the 10-sends/10-min OTP backstop in
+   * production). Set "true" ONLY when a proxy (nginx/Render router) fronts the
+   * app and the app port is not directly reachable — with a direct connection
+   * Express would instead trust client-supplied X-Forwarded-For headers and
+   * attackers could rotate fake IPs to bypass the limits.
+   */
+  @IsOptional()
+  @IsBooleanString()
+  TRUST_PROXY?: string;
+
   @IsString()
   DB_HOST!: string;
 

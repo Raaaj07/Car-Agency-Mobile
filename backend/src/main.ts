@@ -103,6 +103,17 @@ async function bootstrap() {
   // AU-1: baseline security headers (CSP/HSTS/frame options etc.) — harmless
   // for a JSON API, meaningful for any HTML/error pages it might serve.
   app.use(helmet());
+  // SEC-5: correct client IP for rate limiting (ThrottlerGuard keys on req.ip).
+  // Default off: if the port is directly reachable, trusting X-Forwarded-For
+  // would let attackers spoof a fresh IP per request and bypass the OTP /
+  // refresh throttles entirely. TRUST_PROXY=true trusts exactly one proxy hop.
+  const trustProxy = (config.get<string>('TRUST_PROXY') ?? 'false') === 'true';
+  if (trustProxy) {
+    const httpAdapter = app.getHttpAdapter().getInstance() as {
+      set(setting: string, value: number): unknown;
+    };
+    httpAdapter.set('trust proxy', 1);
+  }
   // CORS_ORIGIN may be "*" in dev, or a comma-separated allowlist in prod.
   const rawOrigin = config.get<string>('CORS_ORIGIN') ?? '*';
   const origin =
