@@ -357,6 +357,101 @@ describe('RidesService phase-1 fixes', () => {
     });
   });
 
+  // SEC-4: booking/matching races — the count() pre-check cannot serialize
+  // two concurrent POST /rides (the partial unique index can), and a
+  // lock-free rematch could persist a STALE row over a concurrent cancel.
+  describe('SEC-4: booking/matching races', () => {
+    const bookingDto = {
+      vehicleType: 'auto' as const,
+      pickup: { address: 'Point A', lat: 12.9, lng: 77.6 },
+      dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
+    };
+
+    it('create() losing the race maps the unique violation to the friendly 400', async () => {
+      rides.count.mockResolvedValue(0); // the pre-check saw zero — then lost
+      drivers.findByUserId.mockResolvedValue(null);
+      rides.save.mockRejectedValueOnce(
+        Object.assign(
+          new Error('duplicate key value violates unique constraint "UQ_rides_active_per_rider"'),
+          { code: '23505', constraint: 'UQ_rides_active_per_rider' },
+        ),
+      );
+
+      await expect(service.create('u1', bookingDto)).rejects.toThrow(
+        'You already have an active ride',
+      );
+      // The loser never reaches the driver search — no second offer storm.
+      expect(drivers.findNearby).not.toHaveBeenCalled();
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+    });
+
+    it('rematch() re-checks ownership under the row lock', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(requestedRide({ riderId: 'someone-else' }));
+
+      await expect(service.rematch('r1', 'u1')).rejects.toThrow(ForbiddenException);
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+      expect(drivers.findNearby).not.toHaveBeenCalled();
+    });
+
+    it('rematch() refuses a ride a concurrent cancel already killed', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(
+        requestedRide({ status: 'cancelled', cancellationReason: 'rider_changed_mind' }),
+      );
+
+      await expect(service.rematch('r1', 'u1')).rejects.toThrow('cannot be re-matched');
+      // No offer is written for a dead ride and nothing commits.
+      expect(drivers.findNearby).not.toHaveBeenCalled();
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+    });
+
+    it('rematch() writes the offer THROUGH the transaction, not around it', async () => {
+      const locked = requestedRide();
+      queryRunner.manager.findOne.mockResolvedValue(locked);
+      drivers.findNearby.mockResolvedValue([{ driverId: 'drv-9', userId: 'du-9', distance: 80 }]);
+      drivers.findById.mockResolvedValue({ id: 'drv-9', userId: 'driver-user' });
+      rides.findOne.mockResolvedValue(locked); // relation load + response reload
+
+      const result = await service.rematch('r1', 'u1');
+
+      expect(result.match).toEqual({ status: 'offered', candidates: 1 });
+      // The offer lands in the SAME transaction as the "still requested"
+      // re-check...
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'r1', driverId: 'drv-9' }),
+      );
+      // ...and nothing writes the ride outside it (an out-of-txn save could
+      // commit a stale row over a concurrent cancel).
+      expect(rides.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      expect(queryRunner.rollbackTransaction).not.toHaveBeenCalled();
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledWith(
+        'driver-user',
+        expect.objectContaining({ rideId: 'r1' }),
+      );
+    });
+
+    it('rematch() cancelling a thrice-declined ride also commits in-txn', async () => {
+      const locked = requestedRide({ declinedDriverIds: ['d1', 'd2', 'd3'] });
+      queryRunner.manager.findOne.mockResolvedValue(locked);
+      rides.findOne.mockResolvedValue(locked); // response reload after commit
+      drivers.findNearby.mockResolvedValue([]);
+
+      const result = await service.rematch('r1', 'u1');
+
+      expect(result.match).toEqual({ status: 'no_drivers', candidates: 0 });
+      expect(locked.status).toBe('cancelled');
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'cancelled', cancellationReason: 'no_drivers_available' }),
+      );
+      expect(rides.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+    });
+  });
+
   describe('P-1: driver payment confirmation', () => {
     const completedRide = (overrides: Record<string, unknown> = {}) =>
       requestedRide({

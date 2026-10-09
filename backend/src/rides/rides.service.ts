@@ -485,7 +485,20 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       declinedDriverIds: [],
       otpAttempts: 0,
     });
-    ride = await this.rides.save(ride);
+    try {
+      ride = await this.rides.save(ride);
+    } catch (err) {
+      // SEC-4: two concurrent POST /rides both passed the count() pre-check
+      // above — the partial unique index UQ_rides_active_per_rider rejects
+      // the second INSERT (Postgres 23505). The database is the only place
+      // this race can be closed; map its violation onto the same friendly
+      // message the pre-check uses. Anything else still surfaces as-is.
+      const e = err as { code?: string; driverError?: { code?: string } };
+      if (e.code === '23505' || e.driverError?.code === '23505') {
+        throw new BadRequestException('You already have an active ride. Cancel or complete it first.');
+      }
+      throw err;
+    }
 
     let matchResult: { status: 'offered' | 'no_drivers'; candidates: number } = {
       status: 'no_drivers',
@@ -509,23 +522,33 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // Re-runs the search immediately instead of waiting out the search window;
   // returns the same view+match shape as create().
   async rematch(rideId: string, riderId: string): Promise<any> {
-    const ride = await this.getOrThrow(rideId);
-    if (ride.riderId !== riderId) {
-      throw new ForbiddenException('Not your ride');
-    }
-    if (ride.status !== 'requested' || ride.driverId) {
-      throw new BadRequestException(`Ride is ${ride.status} and cannot be re-matched`);
-    }
-    let matchResult: { status: 'offered' | 'no_drivers'; candidates: number } = {
-      status: 'no_drivers',
-      candidates: 0,
-    };
-    try {
-      matchResult = await this.matchNearestDriver(ride);
-    } catch (error) {
-      this.logger.error(`matchNearestDriver failed for rematch of ride ${ride.id}`, error as Error);
-    }
-    const reloaded = await this.findById(ride.id, riderId);
+    // SEC-4: validate AND re-match under the pessimistic row lock. Before,
+    // getOrThrow read the row lock-free: a concurrent cancel/decline/timeout
+    // landing between the status check and matchNearestDriver's save let a
+    // STALE row overwrite the fresh state — resurrecting a cancelled ride or
+    // offering it to a second driver. The ride writes go through the
+    // transaction manager so the offer commits atomically with the
+    // "still requested" re-check; the reload below runs after commit, per
+    // the withRideLock contract.
+    const matchResult = await this.withRideLock(rideId, async (ride, manager) => {
+      if (ride.riderId !== riderId) {
+        throw new ForbiddenException('Not your ride');
+      }
+      if (ride.status !== 'requested' || ride.driverId) {
+        throw new BadRequestException(`Ride is ${ride.status} and cannot be re-matched`);
+      }
+      let result: { status: 'offered' | 'no_drivers'; candidates: number } = {
+        status: 'no_drivers',
+        candidates: 0,
+      };
+      try {
+        result = await this.matchNearestDriver(ride, false, manager);
+      } catch (error) {
+        this.logger.error(`matchNearestDriver failed for rematch of ride ${ride.id}`, error as Error);
+      }
+      return result;
+    });
+    const reloaded = await this.findById(rideId, riderId);
     return {
       ...this.toRiderView(reloaded),
       match: matchResult,
@@ -535,7 +558,14 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   private async matchNearestDriver(
     ride: RideEntity,
     allowUpgrade = false,
+    manager?: EntityManager,
   ): Promise<{ status: 'offered' | 'no_drivers'; candidates: number }> {
+    // SEC-4: when called under withRideLock (rematch) the ride writes must
+    // join that transaction — an out-of-txn this.rides.save() would persist
+    // a STALE row and could resurrect a ride cancelled in the meantime.
+    // create() passes no manager and keeps the plain save (its row is fresh;
+    // the partial unique index covers its race).
+    const saveRide = (r: RideEntity) => (manager ? manager.save(r) : this.rides.save(r));
     await this.clearOfferTimeout(ride.id);
 
     const declinedSet = new Set(ride.declinedDriverIds || []);
@@ -599,7 +629,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         ride.cancelledBy = 'system';
         ride.cancelledAt = new Date();
         await this.clearSearchTimeout(ride.id);
-        await this.rides.save(ride);
+        await saveRide(ride);
         this.pushStatus(ride);
       } else {
         // R-1: nobody is nearby — arm (or re-arm) the search window so the
@@ -620,7 +650,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     ride.driverId = nearest.driverId;
     ride.offeredAt = now;
     ride.offerExpiresAt = expiresAt;
-    await this.rides.save(ride);
+    await saveRide(ride);
 
     const driver = await this.drivers.findById(nearest.driverId);
     const withRider = await this.rides.findOne({ where: { id: ride.id }, relations: ['rider'] });

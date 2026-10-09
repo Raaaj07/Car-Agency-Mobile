@@ -37,6 +37,17 @@ export interface RideLocation {
   lng: number;
 }
 
+// SEC-4: at most ONE active ride per rider, enforced by the database. The
+// count() pre-check in RidesService.create() is only a friendly fast path —
+// two concurrent POST /rides both saw zero and double-booked (two active
+// rides, two driver searches). Partial index: completed/cancelled history
+// rows are unaffected. Declared here with the SAME name/shape as migration
+// 1791600000000 so DB_SYNCHRONIZE keeps it (TypeORM drops indexes the
+// entity does not know) and can even create it on a synchronize-only DB.
+@Index('UQ_rides_active_per_rider', ['riderId'], {
+  unique: true,
+  where: `"status" IN ('requested','matched','driver_en_route','in_progress')`,
+})
 @Entity('rides')
 export class RideEntity {
   @PrimaryGeneratedColumn('uuid')

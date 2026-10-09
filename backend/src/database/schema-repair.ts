@@ -62,6 +62,37 @@ export const SCHEMA_REPAIR_STATEMENTS: string[] = [
   `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "paymentMarkedBy" varchar(16)`,
   // 'rider_claimed' is 13 chars; the original varchar(10) rejected it.
   `ALTER TABLE "rides" ALTER COLUMN "paymentStatus" TYPE varchar(16)`,
+  // SEC-4: one active ride per rider — resolve legacy duplicates first (keep
+  // the furthest-progressed ride; an in_progress trip is never the one
+  // cancelled), then the partial unique index create()'s 23505 mapping and
+  // the entity both rely on. Both statements are idempotent (no duplicates /
+  // existing index => no-ops).
+  `WITH dup AS (
+     SELECT "id",
+            ROW_NUMBER() OVER (
+              PARTITION BY "riderId"
+              ORDER BY CASE "status"
+                         WHEN 'in_progress' THEN 4
+                         WHEN 'driver_en_route' THEN 3
+                         WHEN 'matched' THEN 2
+                         ELSE 1
+                       END DESC,
+                       "updatedAt" DESC NULLS LAST,
+                       "createdAt" DESC,
+                       "id"
+            ) AS rn
+     FROM "rides"
+     WHERE "status" IN ('requested', 'matched', 'driver_en_route', 'in_progress')
+   )
+   UPDATE "rides" r
+   SET "status" = 'cancelled',
+       "cancellationReason" = 'duplicate_active_ride',
+       "cancelledBy" = 'system',
+       "cancelledAt" = NOW()
+   FROM dup
+   WHERE r."id" = dup."id" AND dup.rn > 1`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "UQ_rides_active_per_rider" ON "rides" ("riderId")
+   WHERE "status" IN ('requested', 'matched', 'driver_en_route', 'in_progress')`,
 
   // ── payments ────────────────────────────────────────────────────────────
   `ALTER TABLE "payments" ALTER COLUMN "status" TYPE varchar(16)`,
