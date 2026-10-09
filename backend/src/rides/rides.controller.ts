@@ -1,7 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApprovedDriverGuard } from '../drivers/guards/approved-driver.guard';
 import { CancelRideDto } from './dto/cancel-ride.dto';
 import { CompleteRideDto } from './dto/complete-ride.dto';
@@ -11,7 +10,8 @@ import { SubmitReviewDto } from './dto/submit-review.dto';
 import { VerifyPickupOtpDto } from './dto/verify-pickup-otp.dto';
 import { RidesService } from './rides.service';
 
-@UseGuards(JwtAuthGuard)
+// Authentication is global (SEC-1 default-deny); driver-only routes below add
+// ApprovedDriverGuard on top.
 @Controller('rides')
 export class RidesController {
   constructor(private readonly rides: RidesService) {}

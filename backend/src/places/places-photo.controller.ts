@@ -7,6 +7,7 @@ import {
   StreamableFile,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { Public } from '../common/decorators/public.decorator';
 import { PLACES_CONFIG } from './places.config';
 import { PlaceImageService } from './place-image.service';
 
@@ -19,6 +20,7 @@ const CURATED_BY_ID = new Map(
   ),
 );
 
+@Public()
 @Controller('places/photo')
 export class PlacesPhotoController {
   constructor(private readonly images: PlaceImageService) {}

@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { validateEnv } from './config/env.validation';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RedisModule } from './config/redis.module';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
@@ -72,7 +73,12 @@ import { PromosModule } from './promos/promos.module';
     PromosModule,
   ],
   providers: [
+    // Order matters: rate-limit first (cheap, caps request volume before any
+    // JWT work), then default-deny auth. SEC-1: JwtAuthGuard is now global —
+    // every route requires a bearer token unless its handler/controller is
+    // marked @Public() (OTP, refresh, social sign-in, image streams).
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
 })
 export class AppModule {}

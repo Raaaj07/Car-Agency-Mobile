@@ -1,5 +1,4 @@
 import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
@@ -7,7 +6,8 @@ import { PlacesService } from './places.service';
 import { UpsertSavedPlaceDto } from './dto/upsert-saved-place.dto';
 import { PlaceItemDto, SavedPlaceDto } from './dto/place-item.dto';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+// Authentication is global (SEC-1 default-deny); only the role check stays.
+@UseGuards(RolesGuard)
 @Roles('rider')
 @Controller('places')
 export class PlacesController {

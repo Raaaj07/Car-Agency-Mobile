@@ -1,12 +1,12 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { PromosService } from './promos.service';
 import { ValidatePromoDto } from './dto/validate-promo.dto';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+// Authentication is global (SEC-1 default-deny); only the role check stays.
+@UseGuards(RolesGuard)
 @Roles('rider')
 @Controller('promos')
 export class PromosController {

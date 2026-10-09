@@ -3,7 +3,6 @@ import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles, RolesGuard } from '../common/guards/roles.guard';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminService } from './admin.service';
 import { ReviewApplicationDto } from './dto/review-application.dto';
 import { SuspendDriverDto } from './dto/suspend-driver.dto';
@@ -15,7 +14,9 @@ import { ListRidesQueryDto } from './dto/list-rides-query.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { AuditQueryDto } from './dto/audit-query.dto';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+// Authentication is global (SEC-1 default-deny); only the admin-role check
+// stays.
+@UseGuards(RolesGuard)
 @Roles('admin')
 @Controller('admin')
 export class AdminController {

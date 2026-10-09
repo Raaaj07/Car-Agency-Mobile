@@ -1,5 +1,6 @@
 import { Controller, Get, Param, Res } from '@nestjs/common';
 import { Response } from 'express';
+import { Public } from '../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
 
 // Legacy local-disk avatar streaming (Cloudinary avatars are plain https
@@ -7,6 +8,7 @@ import { AuthService } from './auth.service';
 // shown cross-user (rider sees the driver's photo, the driver sees the
 // rider's) and React Native <Image> cannot attach an Authorization header.
 // The uuid-keyed path is unguessable, and the payload is only a photo.
+@Public()
 @Controller('users')
 export class UsersController {
   constructor(private readonly auth: AuthService) {}

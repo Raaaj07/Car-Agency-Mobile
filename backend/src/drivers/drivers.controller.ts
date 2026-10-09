@@ -3,7 +3,6 @@ import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { NearbyDriversQueryDto } from './dto/nearby-drivers-query.dto';
 import { ApplyDriverDto } from './dto/apply-driver.dto';
 import { UpdateDriverLocationDto } from './dto/update-driver-location.dto';
@@ -23,8 +22,8 @@ export class DriversController {
   ) {}
 
   // Driver application with document uploads (multipart). Any authenticated
-  // rider; allowed when never applied or after rejection.
-  @UseGuards(JwtAuthGuard)
+  // rider; allowed when never applied or after rejection. Auth is global
+  // (SEC-1 default-deny).
   @Post('apply')
   @UseInterceptors(
     FileFieldsInterceptor(
@@ -93,35 +92,33 @@ export class DriversController {
   }
 
   // Own application status (null when never applied).
-  @UseGuards(JwtAuthGuard)
   @Get('application')
   getApplication(@CurrentUser() user: AuthenticatedUser) {
     return this.drivers.getApplication(user.userId);
   }
 
   // Matches DriverDashboardScreen's online/offline Switch (approved only).
-  @UseGuards(JwtAuthGuard, ApprovedDriverGuard)
+  @UseGuards(ApprovedDriverGuard)
   @Post('status')
   setStatus(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateDriverStatusDto) {
     return this.drivers.setStatus(user.userId, dto.isOnline);
   }
 
   // Matches DriverDashboardScreen's top bar + earnings card, and DriverAccountScreen.
-  @UseGuards(JwtAuthGuard)
   @Get('me')
   getMyProfile(@CurrentUser() user: AuthenticatedUser) {
     return this.drivers.tryGetMyProfile(user.userId);
   }
 
   // D-1: payee VPA for the payment QR (approved only, validated, audited).
-  @UseGuards(JwtAuthGuard, ApprovedDriverGuard)
+  @UseGuards(ApprovedDriverGuard)
   @Patch('me/upi-vpa')
   setMyUpiVpa(@CurrentUser() user: AuthenticatedUser, @Body() dto: SetUpiVpaDto) {
     return this.drivers.setMyUpiVpa(user.userId, dto.vpa);
   }
 
   // Matches TurnByTurnNavigationScreen's periodic location pings (approved only).
-  @UseGuards(JwtAuthGuard, ApprovedDriverGuard)
+  @UseGuards(ApprovedDriverGuard)
   @Patch('location')
   updateLocation(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateDriverLocationDto) {
     return this.drivers.updateLocation(user.userId, dto.lat, dto.lng);
@@ -129,7 +126,6 @@ export class DriversController {
 
   // Matches VehicleSelectionScreen / FindingDriverScreen — driver search
   // around the rider's pickup point, optionally filtered by vehicle type.
-  @UseGuards(JwtAuthGuard)
   @Get('nearby')
   findNearby(@Query() query: NearbyDriversQueryDto) {
     return this.drivers.findNearby(

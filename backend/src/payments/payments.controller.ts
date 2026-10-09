@@ -1,13 +1,12 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { PaymentsService } from './payments.service';
 
-// Any authenticated user; the service verifies ride ownership (rider side).
-@UseGuards(JwtAuthGuard)
+// Authentication is global (SEC-1 default-deny). Any authenticated user; the
+// service verifies ride ownership (rider side).
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly payments: PaymentsService) {}

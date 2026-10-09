@@ -1,5 +1,4 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles, RolesGuard } from '../common/guards/roles.guard';
 import { PromosService } from './promos.service';
 import { PromoAdminDto } from './dto/promo-admin.dto';
@@ -7,9 +6,10 @@ import { PromoAdminDto } from './dto/promo-admin.dto';
 /**
  * PR-1 (Task 8): admin CRUD for promo codes, mounted under /admin/promos and
  * guarded like the rest of the admin console (JWT + admin role). The admin
- * promo screen (Account → Promo codes) drives these.
+ * promo screen (Account → Promo codes) drives these. Authentication itself is
+ * now global (SEC-1 default-deny); only the admin-role check stays here.
  */
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(RolesGuard)
 @Roles('admin')
 @Controller('admin/promos')
 export class AdminPromosController {
