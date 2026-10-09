@@ -1,0 +1,18 @@
+# SEC-6: keep secrets and local state out of the build context — the build
+# stage runs `COPY . .`, so anything not excluded here is baked into image
+# layers (and travels with any image that gets pushed to a registry).
+node_modules
+dist
+coverage
+uploads
+
+# Secrets and signing material — never belong in an image layer.
+.env
+.env.*
+*.log
+*.jjs
+*.jks
+*.pem
+*.key
+
+.git
