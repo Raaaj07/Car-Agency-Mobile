@@ -6,6 +6,7 @@ import {
   Res,
   StreamableFile,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { Public } from '../common/decorators/public.decorator';
 import { PLACES_CONFIG } from './places.config';
@@ -26,7 +27,10 @@ export class PlacesPhotoController {
   constructor(private readonly images: PlaceImageService) {}
 
   // Curated places: Google photo -> curated URL -> Wikimedia search, all
-  // downloaded server-side and streamed to the app.
+  // downloaded server-side and streamed to the app. SEC-4: each cache miss
+  // triggers an outbound provider fetch (billable Google Places API), so the
+  // public route gets its own 120 req/min/IP cap on top of the global limit.
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @Get(':configId')
   async servePhoto(
     @Param('configId') configId: string,
@@ -43,6 +47,8 @@ export class PlacesPhotoController {
   // supplies only a Google place ID (strictly validated); bytes are resolved
   // and downloaded server-side (Google first, Wikimedia as backup), so the
   // key never reaches the app and the phone never hits Wikimedia directly.
+  // SEC-4: live lookups are billable per cache miss — same 120 req/min/IP cap.
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @Get('g/:googlePlaceId')
   async serveGooglePhoto(
     @Param('googlePlaceId') googlePlaceId: string,

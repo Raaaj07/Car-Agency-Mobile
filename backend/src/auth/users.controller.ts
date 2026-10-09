@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Res } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { Public } from '../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
@@ -13,8 +13,10 @@ import { AuthService } from './auth.service';
 export class UsersController {
   constructor(private readonly auth: AuthService) {}
 
+  // SEC-7: uuid-shaped ids only — anything else is a 400 before the query
+  // layer sees it (a non-uuid used to reach Postgres and surface as a 500).
   @Get(':id/avatar')
-  async getAvatar(@Param('id') id: string, @Res() res: Response) {
+  async getAvatar(@Param('id', ParseUUIDPipe) id: string, @Res() res: Response) {
     const doc = await this.auth.readAvatar(id);
     res.setHeader('Content-Type', doc.mime);
     res.setHeader('Cache-Control', 'public, max-age=3600');

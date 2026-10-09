@@ -115,8 +115,12 @@ export class AuthService {
 
   async googleSignIn(idToken: string): Promise<VerifyOtpResult> {
     const audience = this.config.get<string>('GOOGLE_WEB_CLIENT_ID');
-    const ticket = await this.googleClient.verifyIdToken({ idToken, audience });
-    const payload = ticket.getPayload();
+    // SEC: a malformed/expired token is attacker-controlled input — map the
+    // provider library's raw rejection to 400 instead of letting it escape
+    // as an unhandled 500.
+    const payload = await this.googleClient
+      .verifyIdToken({ idToken, audience })
+      .then((ticket) => ticket.getPayload(), () => undefined);
     if (!payload?.sub) throw new BadRequestException('Invalid Google token');
 
     let user = await this.users.findOne({ where: { googleId: payload.sub } });
@@ -155,9 +159,13 @@ export class AuthService {
   }
 
   async appleSignIn(identityToken: string, fullName: string | undefined): Promise<VerifyOtpResult> {
-    const payload = await appleSignin.verifyIdToken(identityToken, {
-      audience: this.config.get<string>('APPLE_CLIENT_ID'),
-    });
+    // SEC: same as googleSignIn — a garbage identity token must yield 400,
+    // never an unhandled 500 from inside the Apple verification library.
+    const payload = await appleSignin
+      .verifyIdToken(identityToken, {
+        audience: this.config.get<string>('APPLE_CLIENT_ID'),
+      })
+      .catch(() => undefined);
     if (!payload?.sub) throw new BadRequestException('Invalid Apple token');
 
     let user = await this.users.findOne({ where: { appleId: payload.sub } });
