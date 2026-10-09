@@ -7,9 +7,12 @@ export class VerifyOtpDto {
   })
   phone!: string;
 
-  // OTPVerificationScreen collects a 4-digit code.
+  // OTPVerificationScreen renders otpLength boxes (server-reported, 4..8;
+  // legacy servers/apps default to 4). The width must match what the server
+  // issued — a wrong-width code can never compare equal anyway (AU-2), and
+  // clamping OTP_LENGTH to 4..8 keeps this regex and the generator in sync.
   @IsString()
-  @Matches(/^\d{4}$/, { message: 'otp must be a 4-digit code' })
+  @Matches(/^\d{4,8}$/, { message: 'otp must be a 4 to 8 digit code' })
   otp!: string;
 
   @IsOptional()

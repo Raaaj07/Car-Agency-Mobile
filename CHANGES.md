@@ -225,3 +225,26 @@ per group, never pushed.
   on the dev machine. Owner: `docker compose build` + boot + upload smoke after pulling.
   Pre-existing, untouched: compose's `npm run migration:run` needs `ts-node` (a devDependency)
   that the prod image never installed — already the case before this pass.
+
+---
+
+## Security hardening pass 2 (2026-10-09) — brute force, takeover, abuse controls
+
+Third pass, 12 tasks (0-11), one commit per task, branch `security-hardening` (not pushed).
+Ground rules as before: no `.env*`/keystore/`uploads/` reads or edits (`.env.example`
+template excepted - names and comments only), no edits to existing migrations (new files
+only), no hard-coded colors, no `any` in new code.
+
+### Status table
+
+| # | Task | Status | Commit | Notes |
+|---|------|--------|--------|-------|
+| 0 | Secrets-in-git + audit verification | **Done** | `2c0bf4a` | Nothing sensitive was ever tracked (history scan found only the committed `backend/.env.example` / `frontend/.env.example` templates; gitleaks/trufflehog not installed - `git ls-files` + `git log --diff-filter=A` cover the same surface). Backend `npm audit --omit=dev`: **0 high / 0 critical** (5 moderate = known Nest-12 chain). Frontend: all 18 high + 1 critical are **build-time** tooling (metro, @expo/cli, node-forge via code-signing-certificates, glob braces/micromatch) - none ships in the app bundle, so not runtime-reachable. Non-breaking `npm audit fix` removed the critical (26 -> 23; patched shell-quote/node-forge/braces/micromatch/source-map-js in range); the remaining 16 high need expo/react-native majors (`fixAvailable: false`). `TRUST_PROXY` wiring confirmed in `main.ts` + ADMIN.md; Render-side value remains an owner action. |
+| 1 | OTP brute force + admin takeover | **Done** | (this commit) | Per-phone failed-verify lockout on `otp:fail:<phone>` (10 failures / 60 min -> 429 for the rest of the window) that `issue()` never resets - only a successful verify clears it; a locked phone also refuses new sends and stops comparing codes entirely (no guesses run). OTP width is end-to-end now: `VerifyOtpDto` `^\d{4,8}$`, `POST /auth/otp/send` returns `otpLength` (`OTP_LENGTH` clamped to the 4..8 window), the OTP screen renders that many boxes and resizes on resend (default 4 when the field is absent - old servers and old apps keep working). `ADMIN_PHONES` promotion through OTP login is refused below a 6-digit code (warning logged, no phone digits; existing admins are never demoted). `.env.example`: `OTP_LENGTH` flip-to-6 note. |
+
+### Verification (this pass)
+
+- Task 0: frontend `npx tsc --noEmit` 0 errors after the lockfile fix.
+- Task 1: backend `npm run build` 0 errors, `npm test` **155 tests / 15 suites** green
+  (`otp.service.spec` +4 lockout cases, new `auth.service.spec` +5); frontend
+  `npx tsc --noEmit` 0, `npx eslint src` 0.

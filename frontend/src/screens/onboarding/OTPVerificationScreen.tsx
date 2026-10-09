@@ -10,8 +10,13 @@ interface Props {
   phone?: string;
   onBack: () => void;
   onVerify: (otp: string) => Promise<void> | void;
-  onResend?: () => Promise<void> | void;
+  // SEC-1: may resolve with the NEW code width when the resend reports one
+  // (server-side OTP_LENGTH change); undefined keeps the current width.
+  onResend?: () => Promise<number | void> | number | void;
   developmentOtp?: string | null;
+  // SEC-1: server-reported OTP_LENGTH (4..8). Defaults to 4 so payloads from
+  // old servers keep the legacy layout.
+  length?: number;
 }
 
 export const OTPVerificationScreen: React.FC<Props> = ({
@@ -20,8 +25,9 @@ export const OTPVerificationScreen: React.FC<Props> = ({
   onVerify,
   onResend,
   developmentOtp,
+  length = 4,
 }) => {
-  const [code, setCode] = useState<string[]>(['', '', '', '']);
+  const [code, setCode] = useState<string[]>(() => Array.from({ length }, () => ''));
   const [timer, setTimer] = useState<number>(30);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -33,13 +39,15 @@ export const OTPVerificationScreen: React.FC<Props> = ({
     }
   }, [timer]);
 
-  const isComplete = code.join('').length === 4;
+  const isComplete = code.join('').length === length;
 
   const handleResend = async () => {
     try {
-      await onResend?.();
+      const next = await onResend?.();
+      // A resend can report a different width — resize the boxes with it.
+      const width = typeof next === 'number' && next >= 4 ? next : length;
       setTimer(30);
-      setCode(['', '', '', '']);
+      setCode(Array.from({ length: width }, () => ''));
       setError('');
     } catch (resendError) {
       setError(resendError instanceof Error ? resendError.message : 'Unable to resend OTP');
@@ -67,7 +75,7 @@ export const OTPVerificationScreen: React.FC<Props> = ({
           Code sent to <Text style={styles.phoneText}>{phone}</Text>
         </Text>
 
-        <OTPInput code={code} setCode={setCode} length={4} />
+        <OTPInput code={code} setCode={setCode} length={length} />
         {/* Shown whenever the server returns a dev OTP (OTP_DEV_MODE=true,
             non-prod). NOT gated on __DEV__: release dev builds never set
             __DEV__, but the server still only sends this in dev mode. */}
@@ -75,7 +83,7 @@ export const OTPVerificationScreen: React.FC<Props> = ({
           <TouchableOpacity
             style={styles.devCodeBox}
             activeOpacity={0.7}
-            onPress={() => setCode(developmentOtp.split('').slice(0, 4))}
+            onPress={() => setCode(Array.from({ length }, (_, i) => developmentOtp[i] ?? ''))}
           >
             <Text style={styles.devCodeLabel}>DEVELOPMENT OTP</Text>
             <Text style={styles.devCodeValue}>{developmentOtp}</Text>

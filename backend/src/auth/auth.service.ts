@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -29,6 +29,11 @@ function hashToken(raw: string): string {
 
 type DriverStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'suspended';
 
+// SEC-1: a short OTP is practically brute-forceable, so admin promotion at
+// OTP login is refused below this width (log a warning instead). The owner
+// must run OTP_LENGTH>=6 in production before any new admin gets in.
+const ADMIN_OTP_MIN_LENGTH = 6;
+
 function mapStatusToDriverStatus(v: string | null | undefined): DriverStatus {
   if (v === 'approved' || v === 'pending' || v === 'rejected' || v === 'suspended') return v;
   return 'none';
@@ -36,6 +41,7 @@ function mapStatusToDriverStatus(v: string | null | undefined): DriverStatus {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly googleClient = new OAuth2Client();
 
   constructor(
@@ -50,13 +56,25 @@ export class AuthService {
   ) {}
 
   // Matches MobileNumberScreen -> POST /auth/otp/send
-  async sendOtp({ phone }: SendOtpDto): Promise<{ message: string; expiresInSeconds: number; devOtp?: string }> {
+  async sendOtp({ phone }: SendOtpDto): Promise<{
+    message: string;
+    expiresInSeconds: number;
+    otpLength: number;
+    devOtp?: string;
+  }> {
     // AU-1: per-phone cooldown + window cap, before any SMS is spent.
+    // SEC-1: assertCanSend also refuses while the phone is locked out.
     await this.otp.assertCanSend(phone);
     const code = await this.otp.issue(phone);
     await this.sms.sendOtp(phone, code);
     const ttl = Number(this.config.get<string>('OTP_TTL_SECONDS') ?? 300);
-    const response = { message: 'OTP sent', expiresInSeconds: Number.isFinite(ttl) ? ttl : 300 };
+    const response = {
+      message: 'OTP sent',
+      expiresInSeconds: Number.isFinite(ttl) ? ttl : 300,
+      // SEC-1: the OTP screen renders this many boxes. Absent in old payloads,
+      // so old servers keep old apps at the 4-box default.
+      otpLength: this.otp.otpLength,
+    };
 
     // Fail-closed default: missing env means no leak. Prod refusal enforced in Phase 6.
     const isProd = (this.config.get<string>('NODE_ENV') ?? 'development') === 'production';
@@ -91,7 +109,9 @@ export class AuthService {
     user = await this.users.save(user);
     // First admin(s) can also be promoted at OTP login (covers phones that
     // signed up after the last server start; ADMIN_PHONES is 10-digit).
-    await this.promoteAdminByPhone(user);
+    // SEC-1: pass the code width — a match requires equal lengths, so the
+    // submitted otp.length IS the issued code's length here.
+    await this.promoteAdminByPhone(user, otp.length);
 
     const tokenPair = await this.issueAndPersist(user);
     const full = await this.toFullUser(user);
@@ -100,7 +120,9 @@ export class AuthService {
 
   // Shared with AdminService.onApplicationBootstrap (start-up promotion).
   // Compares trailing-10-digit phone forms so "+91..." entries still match.
-  private async promoteAdminByPhone(user: UserEntity): Promise<void> {
+  // otpLength is supplied only by the OTP login path; social sign-in passes
+  // nothing because its tokens are provider-verified (no code to brute-force).
+  private async promoteAdminByPhone(user: UserEntity, otpLength?: number): Promise<void> {
     if ((user.role as string) === 'admin') return;
     const raw = this.config.get<string>('ADMIN_PHONES') ?? '';
     const want = new Set(
@@ -108,6 +130,15 @@ export class AuthService {
     );
     const mine = (user.phone ?? '').replace(/\D/g, '').slice(-10);
     if (want.size > 0 && mine.length === 10 && want.has(mine)) {
+      // SEC-1: never mint an admin session through a login whose OTP is too
+      // short to resist brute force. Warn (no phone digits logged) and stay
+      // rider; an existing admin is never demoted (early return above).
+      if (otpLength !== undefined && otpLength < ADMIN_OTP_MIN_LENGTH) {
+        this.logger.warn(
+          `Admin promotion refused: OTP length ${otpLength} < ${ADMIN_OTP_MIN_LENGTH} (user ${user.id})`,
+        );
+        return;
+      }
       await this.users.update({ id: user.id }, { role: 'admin' as any }).catch(() => {});
       user.role = 'admin' as any;
     }

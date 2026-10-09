@@ -14,7 +14,7 @@ export const authApi = {
     // needs 30-60 s to wake up, so the first OTP request of the day used to
     // time out and the user never got a (dev) OTP.
     (
-      await api.post<{ message: string; expiresInSeconds: number; devOtp?: string }>(
+      await api.post<{ message: string; expiresInSeconds: number; otpLength?: number; devOtp?: string }>(
         '/auth/otp/send',
         { phone },
         { timeout: 60_000 },

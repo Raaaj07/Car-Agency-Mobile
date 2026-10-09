@@ -20,6 +20,7 @@ export const OnboardingNavigator: React.FC = () => {
   const setPhone = useAuthStore((state) => state.setPhone);
   const login = useAuthStore((state) => state.login);
   const developmentOtp = useAuthStore((s) => s.developmentOtp);
+  const otpLength = useAuthStore((s) => s.otpLength);
   const [socialAuthError, setSocialAuthError] = useState<string | undefined>();
 
   return (
@@ -73,6 +74,8 @@ export const OnboardingNavigator: React.FC = () => {
               try {
                 const response = await authApi.sendOtp(phone);
                 useAuthStore.getState().setDevelopmentOtp(response.devOtp ?? null);
+                // SEC-1: absent on old servers → keep the 4-box default.
+                useAuthStore.getState().setOtpLength(response.otpLength ?? 4);
               } catch (error) {
                 throw new Error(getApiError(error));
               }
@@ -89,10 +92,16 @@ export const OnboardingNavigator: React.FC = () => {
             onBack={() => navigation.goBack()}
             phone={useAuthStore.getState().phone}
             developmentOtp={developmentOtp}
+            length={otpLength}
+            // Returns the (possibly updated) width so the screen can resize
+            // its boxes right after a resend, not one render later.
             onResend={async () => {
               try {
                 const response = await authApi.sendOtp(useAuthStore.getState().phone);
                 useAuthStore.getState().setDevelopmentOtp(response.devOtp ?? null);
+                const nextLength = response.otpLength ?? 4;
+                useAuthStore.getState().setOtpLength(nextLength);
+                return nextLength;
               } catch (error) {
                 throw new Error(getApiError(error));
               }

@@ -41,6 +41,8 @@ interface AuthState {
   accessToken: string | null;
   refreshToken: string | null;
   developmentOtp: string | null;
+  // SEC-1: code width reported by POST /auth/otp/send (old servers omit it → 4).
+  otpLength: number;
   activeMode: 'rider' | 'driver';
   hydrated: boolean;
   bootOffline: boolean;
@@ -49,6 +51,7 @@ interface AuthState {
   setLanguage: (lang: string) => void;
   setPhone: (phone: string) => void;
   setDevelopmentOtp: (otp: string | null) => void;
+  setOtpLength: (length: number) => void;
   setActiveMode: (mode: 'rider' | 'driver') => void;
   setHydrated: () => void;
   login: (userData: User, tokens?: { accessToken: string; refreshToken: string }) => void;
@@ -66,6 +69,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   accessToken: null,
   refreshToken: null,
   developmentOtp: null,
+  otpLength: 4,
   activeMode: 'rider',
   hydrated: false,
   bootOffline: false,
@@ -74,6 +78,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   setLanguage: (lang) => set({ language: lang }),
   setPhone: (phone) => set({ phone }),
   setDevelopmentOtp: (otp) => set({ developmentOtp: otp }),
+  setOtpLength: (length) => set({ otpLength: length }),
   setActiveMode: (mode) => {
     set({ activeMode: mode });
     void saveSecure(MODE_KEY, mode);
@@ -148,6 +153,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       accessToken: null,
       refreshToken: null,
       developmentOtp: null,
+      otpLength: 4,
       activeMode: 'rider',
       bootOffline: false,
       justLoggedIn: false,
