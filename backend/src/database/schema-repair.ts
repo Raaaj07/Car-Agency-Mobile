@@ -29,6 +29,8 @@ export const SCHEMA_REPAIR_STATEMENTS: string[] = [
   `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "appleId" varchar(255)`,
   `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "profileComplete" boolean NOT NULL DEFAULT false`,
   `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "refreshTokenHash" varchar(128)`,
+  // SEC-2b: provenance flag for users.email (Google link-by-email gate).
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "emailVerified" boolean NOT NULL DEFAULT false`,
 
   // ── drivers ─────────────────────────────────────────────────────────────
   `ALTER TABLE "drivers" ADD COLUMN IF NOT EXISTS "profilePhotoUrl" text`,

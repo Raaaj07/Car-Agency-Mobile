@@ -1,4 +1,11 @@
-import { BadRequestException, Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -146,6 +153,14 @@ export class AuthService {
 
   async googleSignIn(idToken: string): Promise<VerifyOtpResult> {
     const audience = this.config.get<string>('GOOGLE_WEB_CLIENT_ID');
+    // SEC-2a: with no audience the library SKIPS the aud check entirely
+    // (google-auth-library only verifies aud "if we have one"), so any
+    // Google-signed token minted for another app would be accepted here —
+    // a classic account takeover (replay a victim's token from elsewhere).
+    // Fail closed with 503 instead of verifying blind; production boot also
+    // requires the variable (env.validation.ts).
+    if (!audience) throw new ServiceUnavailableException('Google sign-in is not configured');
+
     // SEC: a malformed/expired token is attacker-controlled input — map the
     // provider library's raw rejection to 400 instead of letting it escape
     // as an unhandled 500.
@@ -154,30 +169,56 @@ export class AuthService {
       .then((ticket) => ticket.getPayload(), () => undefined);
     if (!payload?.sub) throw new BadRequestException('Invalid Google token');
 
+    // SEC-2b: Google returns mixed-case addresses; every lookup and the
+    // unique index on users.email must see one canonical form, or the same
+    // address can mismatch (missed link) or collide (23505 -> 500).
+    const email = payload.email ? payload.email.toLowerCase() : null;
+    const emailVerifiedByGoogle = email !== null && payload.email_verified === true;
+
     let user = await this.users.findOne({ where: { googleId: payload.sub } });
-    let isNewUser = !user;
-    if (!user && payload.email) {
-      // Prevent account takeover: only link when Google confirms the email.
-      if (payload.email_verified !== true) {
+    let emailTakenByUnverifiedRow = false;
+    if (!user && email) {
+      // Prevent account takeover: only consider linking when Google confirms the email.
+      if (!emailVerifiedByGoogle) {
         throw new BadRequestException('Google email not verified');
       }
-      user = await this.users.findOne({ where: { email: payload.email } });
+      const byEmail = await this.users.findOne({ where: { email } });
+      // SEC-2b: link ONLY into an account that already proved this address.
+      // PATCH /auth/me lets anyone store an UNVERIFIED email, so linking on
+      // it would let an attacker pre-set the victim's address on their own
+      // account and capture the victim's next "Sign in with Google". A
+      // separate account is started instead of rejecting: rejection would
+      // let that pre-set address DoS the victim's Google sign-up, and
+      // reusing the address would hit the unique index.
+      if (byEmail?.emailVerified) {
+        user = byEmail;
+      } else if (byEmail) {
+        emailTakenByUnverifiedRow = true;
+      }
     }
+    const isNewUser = !user;
     if (!user) {
       user = this.users.create({
         googleId: payload.sub,
-        email: payload.email ?? null,
+        // The address is only stored (and flagged verified) when Google
+        // vouched for it AND no unverified row already owns it.
+        email: emailTakenByUnverifiedRow ? null : email,
+        emailVerified: emailVerifiedByGoogle && !emailTakenByUnverifiedRow,
         name: payload.name || 'New Rider',
         avatar: payload.picture ?? null,
         role: 'rider',
         language: 'en',
         profileComplete: false,
       });
-      isNewUser = true;
     } else {
       if (!user.googleId) user.googleId = payload.sub;
       if (!user.role) user.role = 'rider';
       if (payload.picture && !user.avatar) user.avatar = payload.picture;
+      // SEC-2b: trust Google's verification only for the exact address it
+      // verified — never flag a different stored address as proven.
+      if (emailVerifiedByGoogle && user.email?.toLowerCase() === email) {
+        user.emailVerified = true;
+      }
     }
     user = await this.users.save(user);
     // A-1: ADMIN_PHONES promotion must also run at social sign-in, not just
@@ -190,12 +231,16 @@ export class AuthService {
   }
 
   async appleSignIn(identityToken: string, fullName: string | undefined): Promise<VerifyOtpResult> {
+    const audience = this.config.get<string>('APPLE_CLIENT_ID');
+    // SEC-2a: apple-signin-auth spreads { audience } straight into
+    // jsonwebtoken's verify options — undefined means NO aud check, so a
+    // token minted for another Apple app would be accepted. Fail closed
+    // with 503 (production boot requires the variable too).
+    if (!audience) throw new ServiceUnavailableException('Apple sign-in is not configured');
     // SEC: same as googleSignIn — a garbage identity token must yield 400,
     // never an unhandled 500 from inside the Apple verification library.
     const payload = await appleSignin
-      .verifyIdToken(identityToken, {
-        audience: this.config.get<string>('APPLE_CLIENT_ID'),
-      })
+      .verifyIdToken(identityToken, { audience })
       .catch(() => undefined);
     if (!payload?.sub) throw new BadRequestException('Invalid Apple token');
 
@@ -204,7 +249,8 @@ export class AuthService {
     if (!user) {
       user = this.users.create({
         appleId: payload.sub,
-        email: (payload as any).email ?? null,
+        // SEC-2b: canonical lowercase form — same reason as googleSignIn.
+        email: (payload as { email?: string }).email?.toLowerCase() ?? null,
         // Apple only sends fullName on the FIRST sign-in ever — capture it now or lose it.
         name: fullName?.trim() || 'New Rider',
         role: 'rider',
@@ -248,7 +294,16 @@ export class AuthService {
         user.profileComplete = true;
       }
     }
-    if (dto.email !== undefined) user.email = dto.email?.toLowerCase().trim() || null;
+    if (dto.email !== undefined) {
+      const next = dto.email?.toLowerCase().trim() || null;
+      // SEC-2b: a self-asserted address proves nothing (no verification
+      // flow), so any change invalidates emailVerified — Google sign-in may
+      // only link into accounts whose stored address was already proven.
+      if (next !== user.email) {
+        user.email = next;
+        user.emailVerified = false;
+      }
+    }
 
     try {
       const saved = await this.users.save(user);

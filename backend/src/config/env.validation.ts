@@ -254,6 +254,20 @@ export function validateEnv(config: Record<string, unknown>) {
     if (!publicUrl || typeof publicUrl !== 'string' || !publicUrl.startsWith('https://')) {
       throw new Error('Invalid environment configuration:\nPUBLIC_API_URL must be a valid https:// URL in production');
     }
+    // SEC-2a: both sign-in libraries SKIP the audience check entirely when the
+    // audience is undefined (google-auth-library only verifies aud "if we have
+    // one"; apple-signin-auth spreads it straight into jsonwebtoken options),
+    // so without these a token minted for ANY other app would be accepted —
+    // a classic account takeover. Required in production, and the service
+    // itself fails closed with 503 when unset (AuthService).
+    const socialEnv = validated as unknown as Record<string, unknown>;
+    for (const key of ['GOOGLE_WEB_CLIENT_ID', 'APPLE_CLIENT_ID'] as const) {
+      if (!socialEnv[key]) {
+        throw new Error(
+          `Invalid environment configuration:\n${key} is required in production (social sign-in audience)`,
+        );
+      }
+    }
   }
 
   return validated;

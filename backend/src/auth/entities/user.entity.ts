@@ -22,6 +22,12 @@ export class UserEntity {
   @Column({ type: 'varchar', length: 255, nullable: true })
   email?: string | null;
 
+  // SEC-2b: server-side proof that `email` was actually confirmed (Google's
+  // email_verified claim). Self-asserted addresses from PATCH /auth/me are
+  // always false — Google sign-in links an account by email ONLY when true.
+  @Column({ type: 'boolean', default: false })
+  emailVerified!: boolean;
+
   @Column({ type: 'varchar', length: 255, nullable: true })
   googleId?: string | null;
 

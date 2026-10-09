@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Repository } from 'typeorm';
@@ -14,6 +14,8 @@ import { TokensService } from './tokens.service';
  * SEC-1: admin promotion through OTP login requires a code that is not
  * practically brute-forceable, and POST /auth/otp/send reports otpLength so
  * the app can render that many boxes.
+ * SEC-2: social sign-in fails closed without an audience and links an
+ * account by email only when that address is proven (emailVerified).
  */
 describe('AuthService', () => {
   let service: AuthService;
@@ -30,6 +32,8 @@ describe('AuthService', () => {
     otpLength: number;
   };
   let warnSpy: jest.SpyInstance;
+  let configValues: Record<string, string | undefined>;
+  let configGet: jest.Mock;
 
   const adminPhone = '9876543210';
 
@@ -37,7 +41,15 @@ describe('AuthService', () => {
   // leak an admin into the "stays rider" assertions. Overrides are applied
   // BEFORE the toFrontendUser closure captures the object, so the method
   // always reflects this instance's current state.
-  const makeRider = (overrides: { role?: string; phone?: string } = {}) => {
+  const makeRider = (
+    overrides: {
+      role?: string;
+      phone?: string;
+      email?: string | null;
+      emailVerified?: boolean;
+      googleId?: string | null;
+    } = {},
+  ) => {
     const user = {
       id: 'u-1',
       phone: overrides.phone ?? adminPhone,
@@ -46,6 +58,9 @@ describe('AuthService', () => {
       language: 'en',
       profileComplete: true,
       avatar: null as string | null,
+      email: overrides.email ?? null,
+      emailVerified: overrides.emailVerified ?? false,
+      googleId: overrides.googleId ?? null,
       toFrontendUser: () => ({
         id: 'u-1',
         phone: user.phone,
@@ -61,6 +76,16 @@ describe('AuthService', () => {
   const adminUpdateCalls = () =>
     users.update.mock.calls.filter((c: unknown[]) => (c[1] as { role?: string })?.role === 'admin');
 
+  // Replaces the real google-auth-library client so the audience guard and
+  // every payload branch can be driven without network or key material.
+  const setGooglePayload = (payload: Record<string, unknown> | null) => {
+    const client = {
+      verifyIdToken: jest.fn().mockResolvedValue({ getPayload: () => payload }),
+    };
+    (service as unknown as { googleClient: typeof client }).googleClient = client;
+    return client;
+  };
+
   beforeEach(() => {
     warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     users = {
@@ -75,10 +100,12 @@ describe('AuthService', () => {
       issue: jest.fn().mockResolvedValue('1234'),
       otpLength: 4,
     };
-    const configGet = jest.fn().mockImplementation((key: string) => {
-      if (key === 'ADMIN_PHONES') return adminPhone;
-      return undefined;
-    });
+    configValues = {
+      ADMIN_PHONES: adminPhone,
+      GOOGLE_WEB_CLIENT_ID: 'gid-test',
+      APPLE_CLIENT_ID: 'aid-test',
+    };
+    configGet = jest.fn().mockImplementation((key: string) => configValues[key]);
     service = new AuthService(
       users as unknown as Repository<UserEntity>,
       { findOne: jest.fn().mockResolvedValue(null) } as unknown as Repository<DriverEntity>,
@@ -149,6 +176,134 @@ describe('AuthService', () => {
         otpLength: 4, // from the mocked OtpService's configured width
       });
       expect(otp.assertCanSend).toHaveBeenCalledWith(adminPhone);
+    });
+  });
+
+  describe('social sign-in audiences (SEC-2a)', () => {
+    it('fails closed with 503 when GOOGLE_WEB_CLIENT_ID is unset — never verifies blind', async () => {
+      delete configValues.GOOGLE_WEB_CLIENT_ID;
+      const client = setGooglePayload(null);
+
+      const err = await service.googleSignIn('any-token').catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect((err as ServiceUnavailableException).getStatus()).toBe(503);
+      expect(client.verifyIdToken).not.toHaveBeenCalled();
+    });
+
+    it('fails closed with 503 when APPLE_CLIENT_ID is unset', async () => {
+      delete configValues.APPLE_CLIENT_ID;
+
+      const err = await service.appleSignIn('any-token', undefined).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect((err as ServiceUnavailableException).getStatus()).toBe(503);
+    });
+  });
+
+  describe('google sign-in linking (SEC-2b)', () => {
+    beforeEach(() => {
+      configValues.ADMIN_PHONES = ''; // promotion is covered above, not here
+    });
+
+    it('links by email only into an account that already proved the address', async () => {
+      setGooglePayload({ sub: 'g-1', email: 'Victim@Example.com', email_verified: true });
+      const existing = makeRider({ email: 'victim@example.com', emailVerified: true });
+      users.findOne
+        .mockResolvedValueOnce(null) // no googleId match yet
+        .mockResolvedValueOnce(existing); // email lookup uses the lowercased form
+
+      const result = await service.googleSignIn('tok');
+
+      expect(users.findOne).toHaveBeenNthCalledWith(2, { where: { email: 'victim@example.com' } });
+      expect(result.isNewUser).toBe(false);
+      expect(existing.googleId).toBe('g-1'); // linked
+      expect(existing.emailVerified).toBe(true);
+    });
+
+    it('does NOT link into an account whose email was never verified (pre-hijack)', async () => {
+      setGooglePayload({ sub: 'g-1', email: 'victim@example.com', email_verified: true });
+      const attackerRow = makeRider({ email: 'victim@example.com', emailVerified: false });
+      users.findOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(attackerRow);
+      users.create.mockImplementation((data: Record<string, unknown>) => {
+        const created = makeRider();
+        Object.assign(created, data);
+        return created;
+      });
+
+      const result = await service.googleSignIn('tok');
+
+      // A separate account is started; the pre-set row is left untouched...
+      expect(result.isNewUser).toBe(true);
+      expect(attackerRow.googleId).toBeNull();
+      expect(attackerRow.emailVerified).toBe(false);
+      // ...and the taken address is neither reused nor flagged proven.
+      expect(users.create).toHaveBeenCalledWith(
+        expect.objectContaining({ googleId: 'g-1', email: null, emailVerified: false }),
+      );
+    });
+
+    it('stores a new account email verified when Google verified it', async () => {
+      setGooglePayload({ sub: 'g-1', email: 'New@Example.com', email_verified: true });
+      users.findOne.mockResolvedValue(null); // no googleId, no email match
+      users.create.mockImplementation((data: Record<string, unknown>) => {
+        const created = makeRider();
+        Object.assign(created, data);
+        return created;
+      });
+
+      const result = await service.googleSignIn('tok');
+
+      expect(users.create).toHaveBeenCalledWith(
+        expect.objectContaining({ email: 'new@example.com', emailVerified: true }),
+      );
+      expect(result.isNewUser).toBe(true);
+    });
+
+    it('flags the stored address proven only when Google verified THAT address', async () => {
+      setGooglePayload({ sub: 'g-1', email: 'Other@Example.com', email_verified: true });
+      const account = makeRider({
+        email: 'victim@example.com',
+        emailVerified: false,
+        googleId: 'g-1',
+      });
+      users.findOne.mockResolvedValueOnce(account);
+
+      await service.googleSignIn('tok');
+
+      expect(account.emailVerified).toBe(false); // different address — not proven
+      expect(account.email).toBe('victim@example.com'); // never overwritten
+    });
+
+    it('rejects a Google login whose email Google has not verified', async () => {
+      setGooglePayload({ sub: 'g-1', email: 'x@example.com', email_verified: false });
+      users.findOne.mockResolvedValueOnce(null);
+
+      await expect(service.googleSignIn('tok')).rejects.toThrow('Google email not verified');
+      expect(users.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateMe email provenance (SEC-2b)', () => {
+    it('invalidates emailVerified when the address changes', async () => {
+      const user = makeRider({ email: 'a@example.com', emailVerified: true });
+      users.findOne.mockResolvedValue(user);
+
+      await service.updateMe('u-1', { email: 'B@Example.com' });
+
+      expect(user.email).toBe('b@example.com');
+      expect(user.emailVerified).toBe(false);
+    });
+
+    it('keeps emailVerified when the address is unchanged (case-insensitive)', async () => {
+      const user = makeRider({ email: 'a@example.com', emailVerified: true });
+      users.findOne.mockResolvedValue(user);
+
+      await service.updateMe('u-1', { email: 'A@EXAMPLE.com' });
+
+      expect(user.emailVerified).toBe(true);
     });
   });
 });
