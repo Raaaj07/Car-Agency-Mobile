@@ -242,7 +242,21 @@ export const RiderHomeStackNavigator: React.FC = () => {
                 // which flips paymentStatus — PaymentFareBreakdown polls it.
                 navigation.navigate('PaymentFareBreakdown');
               } catch (error) {
-                Alert.alert('Unable to submit review', getApiError(error));
+                const message = getApiError(error);
+                // The review is already stored (earlier submit whose response
+                // was lost, or the rider came back from the payment screen).
+                // Not an error for the rider: load the saved ride (it carries
+                // the tip they chose) and carry on to payment.
+                if (message.toLowerCase().includes('already been reviewed')) {
+                  try {
+                    setActiveRide(await ridesApi.get(ride.id));
+                  } catch {
+                    // keep the local ride; PaymentFareBreakdown polls it fresh
+                  }
+                  navigation.navigate('PaymentFareBreakdown');
+                  return;
+                }
+                Alert.alert('Unable to submit review', message);
               }
             }}
           />

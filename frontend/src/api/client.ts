@@ -109,6 +109,16 @@ export function getApiError(error: unknown): string {
     if (Array.isArray(message)) return message.join('\n');
     if (typeof message === 'string' && message) return message;
     if (data?.error) return `${data.error}${data?.statusCode ? ` (${data.statusCode})` : ''}`;
+    // No HTTP response at all = the request never reached the server. Say so in
+    // plain words instead of axios' bare "Network Error" / "timeout of 15000ms",
+    // which gave a tester no clue whether the phone, the network or the
+    // server was at fault.
+    if (!error.response) {
+      if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message)) {
+        return 'The server is taking too long to respond (it may be waking up). Please wait a moment and try again.';
+      }
+      return `Can't reach the server at ${API_URL}. Check your internet connection and try again.`;
+    }
     return error.message;
   }
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.';

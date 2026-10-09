@@ -25,11 +25,16 @@ const tipOptions = ['₹10', '₹20', '₹50', '₹100'];
 
 export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) => {
   const [rating, setRating] = useState<number>(5);
-  const [selectedCompliments, setSelectedCompliments] = useState<string[]>(['Safe Driver 🛡️']);
+  // Nothing is pre-selected: a pre-ticked "Safe Driver" recorded feedback the
+  // rider never gave (same class of bug as the pre-selected tip).
+  const [selectedCompliments, setSelectedCompliments] = useState<string[]>([]);
   // Tip is OPTIONAL: nothing pre-selected (a pre-selected ₹20 silently added a
   // tip, and raised the driver's payment QR amount, for riders who just tapped
   // Submit). Tap a chip again to remove it.
   const [selectedTip, setSelectedTip] = useState<string | null>(null);
+  // Locks the button while the request is in flight: a double tap used to send
+  // two reviews, and the 2nd (409 "already reviewed") showed a false error.
+  const [submitting, setSubmitting] = useState(false);
   // Real driver from the completed ride (photo + name + vehicle).
   const driver = useRideStore((state) => state.activeRide?.driver ?? null);
   const driverName = driver?.name?.trim() || 'Your driver';
@@ -42,6 +47,22 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
       setSelectedCompliments(selectedCompliments.filter((c) => c !== item));
     } else {
       setSelectedCompliments([...selectedCompliments, item]);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onSubmitReview(
+        rating,
+        selectedCompliments,
+        selectedTip ? Number(selectedTip.replace('₹', '')) : 0,
+      );
+    } finally {
+      // On success the navigator leaves this screen; on failure the rider must
+      // be able to retry.
+      setSubmitting(false);
     }
   };
 
@@ -117,9 +138,9 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
       <View style={styles.footer}>
         <Button
           title="Submit Rating & Feedback"
-          onPress={() =>
-            onSubmitReview(rating, selectedCompliments, selectedTip ? Number(selectedTip.replace('₹', '')) : 0)
-          }
+          onPress={handleSubmit}
+          loading={submitting}
+          disabled={submitting}
           variant="primary"
           size="large"
         />

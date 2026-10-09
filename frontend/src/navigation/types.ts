@@ -58,7 +58,6 @@ export type DriverDashboardStackParamList = {
   TurnByTurnNavigation: { phase: 'to_pickup' | 'in_progress' };
   DriverOtpEntry: undefined;
   DriverPayment: undefined;
-  RideAvailableAgain: undefined;
 };
 
 // Admin tabs (visible only when user.role === 'admin') — Phase 4 console:

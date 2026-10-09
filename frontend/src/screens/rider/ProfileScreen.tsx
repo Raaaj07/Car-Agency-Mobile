@@ -12,6 +12,7 @@ import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
+import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import { connectSocket, disconnectSocket } from '../../lib/socket';
 import { tokenManager } from '../../lib/tokenManager';
 import { savePayeeUpi } from '../../lib/payeeUpi';
@@ -30,6 +31,10 @@ export const ProfileScreen: React.FC = () => {
   const setActiveMode = useAuthStore((s) => s.setActiveMode);
   const activeMode = useAuthStore((s) => s.activeMode);
   const resetRide = useRideStore((s) => s.resetRide);
+  // The floating bottom tab bar is position:absolute, so it overlays the end
+  // of this ScrollView. Without this extra bottom padding the "Log out" button
+  // sat underneath it and could never be reached.
+  const tabBarSpace = useTabBarSpace();
 
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(user?.name ?? '');
@@ -213,7 +218,7 @@ export const ProfileScreen: React.FC = () => {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingBottom: tabBarSpace + 24 }]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadApp(); setRefreshing(false); }} />}
     >
       <View style={styles.header}>
@@ -314,8 +319,12 @@ export const ProfileScreen: React.FC = () => {
             style={styles.editTrigger}
           />
 
-          {/* Payment UPI ID: the ride-payment QR shown after every trip is
-              generated from this ID + the exact fare. */}
+          {/* Payment UPI ID — DRIVER MODE ONLY. An approved driver who is
+              currently in rider mode is acting as a rider, who never receives
+              fares, so the field must not be offered there. The ride-payment
+              QR shown after every trip is generated from this ID + the fare. */}
+          {activeMode === 'driver' && (
+            <>
           <View style={styles.sectionDivider} />
           <View style={styles.cardTitleRow}>
             <QrCode size={18} color={colors.primary} />
@@ -372,6 +381,8 @@ export const ProfileScreen: React.FC = () => {
                   style={styles.editBtn}
                 />
               </View>
+            </>
+          )}
             </>
           )}
         </Card>

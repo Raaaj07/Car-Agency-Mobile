@@ -10,7 +10,16 @@ export interface VerifyOtpResponse {
 
 export const authApi = {
   sendOtp: async (phone: string) =>
-    (await api.post<{ message: string; expiresInSeconds: number; devOtp?: string }>('/auth/otp/send', { phone })).data,
+    // 60 s (not the global 15 s): a free-tier Render server that has been idle
+    // needs 30-60 s to wake up, so the first OTP request of the day used to
+    // time out and the user never got a (dev) OTP.
+    (
+      await api.post<{ message: string; expiresInSeconds: number; devOtp?: string }>(
+        '/auth/otp/send',
+        { phone },
+        { timeout: 60_000 },
+      )
+    ).data,
   verifyOtp: async (input: { phone: string; otp: string; name?: string }) =>
     (await api.post<VerifyOtpResponse>('/auth/otp/verify', input)).data,
   googleSignIn: async (idToken: string) =>

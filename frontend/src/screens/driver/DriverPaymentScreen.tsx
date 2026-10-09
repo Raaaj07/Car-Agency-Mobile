@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Alert } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -17,6 +17,11 @@ import { loadPayeeUpi, savePayeeUpi } from '../../lib/payeeUpi';
 interface Props {
   onDone: () => void;
 }
+
+// How often the driver's screen re-reads the ride. The rider submits their tip
+// AFTER the driver has completed the trip, so without this the QR kept the
+// fare-only amount while the rider was told to pay fare + tip.
+const RIDE_REFRESH_MS = 4000;
 
 /**
  * Collect Payment (shown right after the driver completes a trip).
@@ -66,6 +71,37 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
       void loadPayee();
     }, [loadPayee]),
   );
+
+  // Keep tip + payment status fresh until the payment is settled. Only the
+  // fields that matter are compared, so an unchanged poll causes no re-render
+  // (and no QR regeneration).
+  const rideId = activeRide?.id;
+  useEffect(() => {
+    if (!rideId || isPaid) return;
+    let stopped = false;
+    const timer = setInterval(() => {
+      ridesApi
+        .get(rideId)
+        .then((fresh) => {
+          if (stopped || !fresh?.id) return;
+          const current = useRideStore.getState().activeRide;
+          if (current?.id !== fresh.id) return;
+          if (
+            Number(fresh.tipAmount ?? 0) !== Number(current.tipAmount ?? 0) ||
+            fresh.paymentStatus !== current.paymentStatus
+          ) {
+            setActiveRide({ ...current, tipAmount: fresh.tipAmount, paymentStatus: fresh.paymentStatus });
+          }
+        })
+        .catch(() => {
+          // Transient network error — the next tick retries.
+        });
+    }, RIDE_REFRESH_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [rideId, isPaid, setActiveRide]);
 
   const inputValid = isValidUpiId(vpaInput);
   const hasPayee = isValidUpiId(savedVpa);

@@ -5,7 +5,6 @@ import { DriverDashboardStackParamList } from './types';
 import { DriverDashboardScreen } from '../screens/driver/DriverDashboardScreen';
 import { RideRequestNearbyScreen } from '../screens/driver/RideRequestNearbyScreen';
 import { TurnByTurnNavigationScreen } from '../screens/driver/TurnByTurnNavigationScreen';
-import { RideAvailableAgainScreen } from '../screens/driver/RideAvailableAgainScreen';
 import { Alert } from 'react-native';
 import { ridesApi } from '../api/rides';
 import { useRideStore } from '../store/rideStore';
@@ -196,17 +195,25 @@ export const DriverDashboardStackNavigator: React.FC = () => {
 
       <Stack.Screen name="DriverPayment">
         {({ navigation }) => (
-          <DriverPaymentScreen onDone={() => navigation.navigate('RideAvailableAgain')} />
-        )}
-      </Stack.Screen>
-
-      <Stack.Screen name="RideAvailableAgain">
-        {({ navigation }) => (
-          <RideAvailableAgainScreen
-            onBackToDashboard={() => {
-              // Trip fully finished — clear it so nothing stale lingers.
-              useRideStore.getState().resetRide();
-              navigation.reset({ index: 0, routes: [{ name: 'DriverDashboard' }] });
+          <DriverPaymentScreen
+            onDone={() => {
+              // Continue = trip finished: go straight back to the driver home.
+              // (It used to open the RideAvailableAgain summary screen, which
+              // has its own button — so Continue never actually reached home
+              // and looked stuck.) An unpaid trip stays reachable from the
+              // dashboard's "Collect payment" card.
+              if (navigation.canGoBack()) {
+                // Clear the finished trip only AFTER the screen has slid away;
+                // clearing it first made this screen flash "₹0.00" mid-transition.
+                const unsubscribe = navigation.addListener('transitionEnd', () => {
+                  unsubscribe();
+                  useRideStore.getState().resetRide();
+                });
+                navigation.popToTop();
+              } else {
+                useRideStore.getState().resetRide();
+                navigation.reset({ index: 0, routes: [{ name: 'DriverDashboard' }] });
+              }
             }}
           />
         )}
