@@ -18,6 +18,16 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const POSITIVE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
 const NEGATIVE_TTL_MS = 5 * 60 * 1000; // 5 min (retry soon if everything failed)
 
+// SEC-7: bound the in-memory image cache (LRU — an entry count AND a byte
+// budget). Without caps, every distinct valid-format Google place id a
+// client requests becomes a cache entry of up to 5 MB held for 6 h: enough
+// distinct ids grow the heap until the process dies, and every miss is a
+// billable Google/Wikimedia fetch. Eviction is least-recently-used — hits
+// refresh an entry's recency so the working set survives. Exported for the
+// spec's fixtures.
+export const MAX_CACHE_ENTRIES = 400;
+export const MAX_CACHE_BYTES = 32 * 1024 * 1024;
+
 // Wikimedia blocks / rate-limits requests that do not send an identifying
 // User-Agent. A phone's <Image> sends a generic one, so the BACKEND downloads
 // the image with a proper UA and streams the bytes to the app.
@@ -53,6 +63,7 @@ function candidateUrls(raw: string): string[] {
 export class PlaceImageService {
   private readonly logger = new Logger(PlaceImageService.name);
   private readonly cache = new Map<string, CacheEntry>();
+  private cacheBytes = 0;
   private readonly inflight = new Map<string, Promise<PlaceImageBytes | null>>();
 
   constructor(
@@ -94,8 +105,13 @@ export class PlaceImageService {
     const cached = this.cache.get(key);
     if (cached) {
       const ttl = cached.value ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS;
-      if (Date.now() - cached.at < ttl) return Promise.resolve(cached.value);
-      this.cache.delete(key);
+      if (Date.now() - cached.at < ttl) {
+        // SEC-7: refresh recency — this is LRU, not FIFO.
+        this.cache.delete(key);
+        this.cache.set(key, cached);
+        return Promise.resolve(cached.value);
+      }
+      this.forget(key); // expired: drop it (and its bytes) properly
     }
     const running = this.inflight.get(key);
     if (running) return running;
@@ -103,11 +119,31 @@ export class PlaceImageService {
     const started = job()
       .then((value) => {
         this.cache.set(key, { at: Date.now(), value });
+        this.cacheBytes += value?.body.length ?? 0;
+        this.evictIfNeeded();
         return value;
       })
       .finally(() => this.inflight.delete(key));
     this.inflight.set(key, started);
     return started;
+  }
+
+  /** Drop one entry, keeping the byte accounting honest. */
+  private forget(key: string): void {
+    const entry = this.cache.get(key);
+    if (!entry) return;
+    this.cacheBytes -= entry.value?.body.length ?? 0;
+    this.cache.delete(key);
+  }
+
+  // SEC-7: evict least-recently-used entries until both budgets hold. Map
+  // iteration follows insertion order, and deleting the CURRENT entry while
+  // iterating a Map is safe.
+  private evictIfNeeded(): void {
+    for (const key of this.cache.keys()) {
+      if (this.cache.size <= MAX_CACHE_ENTRIES && this.cacheBytes <= MAX_CACHE_BYTES) break;
+      this.forget(key);
+    }
   }
 
   private async resolveLive(googlePlaceId: string): Promise<PlaceImageBytes | null> {
