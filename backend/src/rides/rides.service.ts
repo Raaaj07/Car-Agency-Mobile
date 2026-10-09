@@ -1099,8 +1099,6 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       }
 
       // Ownership + status both checked: we own this transition now.
-      await this.clearOfferTimeout(rideId);
-      await this.clearSearchTimeout(rideId);
 
       ride.status = 'cancelled';
       ride.cancellationReason = dto.reason;
@@ -1127,6 +1125,15 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     } finally {
       await queryRunner.release().catch(() => {});
     }
+
+    // SEC-11: the Redis timer clears run only AFTER the commit. They were
+    // inside the transaction before — Redis can't roll back with Postgres,
+    // so a failed commit left an active ride with no offer/search timer
+    // (offered driver stuck, or the search window never auto-cancelling).
+    // A rare stale-timer fire on a cancelled ride is safe: every handler
+    // re-reads the ride and no-ops unless it is still in the right state.
+    await this.clearOfferTimeout(rideId);
+    await this.clearSearchTimeout(rideId);
 
     if (ride.driverId) {
       await this.drivers.setAvailability(ride.driverId, true);

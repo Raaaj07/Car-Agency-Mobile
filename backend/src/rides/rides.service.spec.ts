@@ -273,6 +273,24 @@ describe('RidesService phase-1 fixes', () => {
       expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
       expect(queryRunner.manager.save).not.toHaveBeenCalled();
     });
+
+    it('SEC-11: a failed COMMIT keeps the timers armed (Redis cannot roll back)', async () => {
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      await fake.zadd(RIDE_TIMERS_KEY, Date.now() + 90_000, 'search:r1');
+      queryRunner.manager.findOne.mockResolvedValue(requestedRide({ riderId: 'owner' }));
+      queryRunner.commitTransaction.mockRejectedValueOnce(new Error('db down'));
+
+      await expect(
+        service.cancel('r1', 'owner', 'rider', { reason: 'rider changed mind' }),
+      ).rejects.toThrow('db down');
+
+      // The Postgres write rolled back, so the ride is still active — its
+      // timers must survive too (they used to be cleared inside the
+      // transaction, which Redis cannot roll back with it).
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).not.toBeNull();
+      expect(drivers.setAvailability).not.toHaveBeenCalled();
+    });
   });
 
   describe('SEC-3: no free rides by cancelling mid-trip', () => {

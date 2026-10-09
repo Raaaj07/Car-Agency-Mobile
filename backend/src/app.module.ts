@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { validateEnv } from './config/env.validation';
+import { resolveDbSsl } from './config/db-ssl';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { UserKeyedThrottlerGuard } from './common/guards/user-keyed-throttler.guard';
 import { RedisModule } from './config/redis.module';
@@ -15,15 +16,6 @@ import { PaymentsModule } from './payments/payments.module';
 import { AdminModule } from './admin/admin.module';
 import { PlacesModule } from './places/places.module';
 import { PromosModule } from './promos/promos.module';
-
-// console.log('DB CONFIG:', {
-//   host: process.env.DB_HOST,
-//   port: process.env.DB_PORT,
-//   username: process.env.DB_USERNAME,
-//   database: process.env.DB_DATABASE,
-//   passwordLoaded: !!process.env.DB_PASSWORD,
-//   passwordLength: process.env.DB_PASSWORD?.length,
-// });
 
 @Module({
   imports: [
@@ -55,13 +47,15 @@ import { PromosModule } from './promos/promos.module';
         // "Accept Ride" tap after minutes of waiting) then paid a full
         // reconnect + SSL handshake, which showed up as a multi-second stall.
         extra: { keepAlive: true, keepAliveInitialDelayMillis: 10_000 },
-        // Only disable cert verification for managed dev DBs; in prod use proper CA.
-        ssl:
-          (config.get<string>('DB_SSL') ?? 'true') === 'false'
-            ? false
-            : (config.get<string>('NODE_ENV') ?? 'development') === 'production'
-              ? { rejectUnauthorized: true }
-              : { rejectUnauthorized: false },
+        // SEC-11: the same SSL policy as the migration CLI (config/db-ssl) —
+        // DB_SSL=false disables TLS; otherwise DB_SSL_REJECT_UNAUTHORIZED
+        // overrides the default (strict in production, relaxed in dev), so
+        // `migration:run` and the app can never disagree about it.
+        ssl: resolveDbSsl({
+          DB_SSL: config.get<string>('DB_SSL'),
+          DB_SSL_REJECT_UNAUTHORIZED: config.get<string>('DB_SSL_REJECT_UNAUTHORIZED'),
+          NODE_ENV: config.get<string>('NODE_ENV'),
+        }),
       }),
     }),
     // Global bridge for cross-module events (admin application notifications).

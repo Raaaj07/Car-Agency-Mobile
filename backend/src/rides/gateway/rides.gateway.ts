@@ -169,23 +169,11 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(`Driver ${client.data.userId} acknowledged ride request ${data?.rideId}`);
   }
 
-  @SubscribeMessage('nearby:subscribe')
-  onNearbySubscribe(
-    @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() _data: { lat: number; lng: number },
-  ): void {
-    if (!client.data.userId) return;
-    client.join('nearby:drivers');
-  }
-
-  @SubscribeMessage('nearby:unsubscribe')
-  onNearbyUnsubscribe(@ConnectedSocket() client: AuthedSocket): void {
-    client.leave('nearby:drivers');
-  }
-
-  emitNearbyUpdate(payload: unknown): void {
-    this.server.to('nearby:drivers').emit('nearby:update', payload);
-  }
+  // SEC-11: the old `nearby:subscribe` / `nearby:unsubscribe` handlers and
+  // emitNearbyUpdate() were removed — nothing ever called emitNearbyUpdate
+  // (the WS nearby feed was never wired; the app gets nearby drivers over
+  // the redacted HTTP endpoint from Task 6), so the 'nearby:drivers' room
+  // was pure dead surface on an authenticated socket.
 
   /** Server-initiated push: driver application status change (reject/suspend). */
   emitDriverStatus(driverUserId: string, payload: unknown): void {
