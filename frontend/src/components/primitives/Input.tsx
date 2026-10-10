@@ -184,20 +184,27 @@ const styles = StyleSheet.create({
   },
   otpRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
+    alignItems: 'center',
     marginVertical: 20,
     width: '100%',
-    paddingHorizontal: 20,
+    gap: 8,
   },
+  // SEC-1: code width runs 4..8 digits, so boxes share the available
+  // width instead of using a fixed 60dp — 6 fixed boxes overflowed small
+  // screens (6x60 > 272dp usable on a 360dp phone). maxWidth keeps short
+  // codes from stretching into slabs; minWidth lets Android shrink them.
   otpBox: {
-    width: 60,
-    height: 64,
+    flex: 1,
+    minWidth: 0,
+    maxWidth: 56,
+    height: 56,
     borderRadius: radii.md,
     borderWidth: 1.5,
     borderColor: colors.border,
     backgroundColor: '#FFFFFF',
     textAlign: 'center',
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '700',
     color: colors.textPrimary,
   },
