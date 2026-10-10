@@ -258,3 +258,62 @@ only), no hard-coded colors, no `any` in new code.
 - Task 1: backend `npm run build` 0 errors, `npm test` **155 tests / 15 suites** green
   (`otp.service.spec` +4 lockout cases, new `auth.service.spec` +5); frontend
   `npx tsc --noEmit` 0, `npx eslint src` 0.
+
+---
+
+## Security hardening pass 3 (2026-10-10) - follow-up items
+
+Fourth pass, 11 tasks (1-11), one commit per task, branch `security-hardening` (not pushed).
+Ground rules as before: no `.env*`/keystore/`uploads/` reads or edits, no `any` in new code,
+legacy `role` fields kept in auth DTOs, no response-shape changes without the matching
+frontend caller update.
+
+### Status table
+
+| # | Task | Status | Commit | Notes |
+|---|------|--------|--------|-------|
+| 1 | Route-level rate limits | **Done** | `0bb9a8b` | `@Throttle` overrides stricter than the 300/min global: create ride 5/min; cancel/review/verify-pickup-otp/payment-received 10/min; `POST /promos/validate` 10/min (code guessing); `GET /drivers/nearby` 30/min; `POST /drivers/apply` 5/min (multipart); `GET /places/nearby` + `/popular` 30/min (billable server-side Google searches); saved-place writes 20/min; avatar upload 5/min. `GET /places/photo/*` keeps its existing deliberate 120/min (public + IP-keyed under CGNAT; already stricter than global). New `route-throttles.spec.ts` pins every limit + 1-min window via the throttler metadata keys (+27 asserts). |
+| 2 | DTO input length limits | **Done** | `08f18b3` | Every persisted `@IsString()` got a `MaxLength`: `promoCode` 32, ride `address` 300 (lat/lng already `@IsLatitude`/`@IsLongitude`), cancel `reason` 300, review `compliments[]` 50 each, driver-application carModel 50 / plate 20 / license 32 / rc 32, OTP-signup `name` 120, social tokens 4096 + Apple `fullName` 120, payment `orderId` 64 / `paymentId` 128 / `signature` 256. Admin DTOs (Length 5..300), saved-place, validate-promo and query DTOs were already bounded. |
+| 3 | Photo-proxy SSRF | **Done** | `9e47f49` | `place-image.service` fetched with `redirect:'follow'` - an allowlisted host turning malicious could bounce the proxy onto metadata/internal addresses. Now `redirect:'manual'`, max 3 hops followed by hand, EVERY hop re-validated by one `isAllowedImageUrl` gate (https + explicit host allowlist + port 443 only + no IP literals / localhost). LRU bounds, size caps, retry semantics and response shape unchanged. Spec: redirect-to-internal rejected (hop never fetched), allowed redirect followed, >3 hops gives up, bad direct targets never fetched (+4 tests). |
+| 4 | Google key out of the bundle | **Done** | `9c45b17` | `places.ts` called Google Places + Static Maps from the phone with `EXPO_PUBLIC_GOOGLE_PLACE` / `EXPO_PUBLIC_GOOGLE_MAPS_KEY`. Both functions were dead code (zero call sites): `placePhotoUrl` deleted (photos flow through the backend proxy `imageUrl`), `placeThumbUrl` now delegates to the Mapbox static helper. No `EXPO_PUBLIC_GOOGLE_*` reference remains in `frontend/src`; `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` stays (sign-in client id). |
+| 5 | Android cleartext | **Done** | `cb45613` | `usesCleartextTraffic: false` added to the existing expo-build-properties android block (verified against SDK 57 build-properties docs; Android 8 and below default to TRUE, so the explicit flag matters). `allowBackup: false` kept. Only http:// URLs left in src are the emulator/localhost fallbacks, used only when `EXPO_PUBLIC_API_URL` is unset. |
+| 6 | Gateway room guards | **Done** | `adca472` | `ride:join` now acks every outcome (`unauthenticated` / `invalid_ride_id` / `ride_not_found` / `not_a_participant` / `rate_limited`) and joins only the rider, assigned driver, or admin (role from the DB user row); `ride:leave` requires the same authenticated socket + UUID; shared 20 join/leave-per-minute budget per socket, then disconnect (WeakMap-keyed, reconnect re-verifies auth). Acks are additive - the app emits without a callback, so old APKs are unaffected. New `rides.gateway.spec.ts` (+10 tests). |
+| 7 | Rider cancel mid-trip UI | **Done** | `6a0603e` | For riders with an `in_progress` ride the shared cancel screen now shows "Trip already started / You can't cancel once the trip has started. Contact your driver or support." and hides the reasons list + Confirm button (only "Keep My Ride" remains); drivers keep the existing flow/copy. The AppNavigator cancel handler refreshes the active ride from the server on 409 before showing the server's message - never a stuck spinner. |
+| 8 | Promo cap at completion | **Done** | `7f921d2` | `recordRedemption` now runs the CONDITIONAL increment FIRST inside the completion transaction and inserts the redemption row only when it wins; at the cap (affected=0) the ride completes at the already-quoted fare with a `Logger.warn` (promo code + ride id, no rider identity). Spec: cap-reached inserts nothing + resolves + warns; two completing rides - exactly one increment and one row (+2 tests). |
+| 9 | Console log audit | **Done** | `e75213d` | Swept every `console.*` under `frontend/src`. Files touched: `SignInScreen.tsx` (Google error object could embed the OAuth redirect URL - now `__DEV__`-only and reduced to the error message; key-names warn + type log `__DEV__`-guarded; Apple catch logs code/message only), `PlaceImage.tsx` (logged the full image URI - query string stripped so a Mapbox token never reaches logcat), `mapbox.ts` (status/message only, `__DEV__`-guarded - an error object can carry the tokenised URL). `client.ts` was already safe (localhost fallback, `__DEV__`). |
+| 10 | Hardening tests | **Done** | `94432c5` | OTP lockout: existing spec re-verified - 10 wrong codes in the 1-hour window lock the phone with an explicit 429, resend refused while locked without spending budget, success resets, `issue()` cannot; key-aware fake Redis. Active-ride unique index: Postgres 23505 now maps to **409 ConflictException** and the count() pre-check throws the same 409 + message (frontend keys off the message, never the status); spec pins class + message. Promo cap: new walk test - book A, book B (in-flight fills cap 2), refuse C, complete A then B - exactly two conditional increments, `completed + in-flight <= cap` at every step. |
+| 11 | Owner notes | **Done** | (this commit) | "Remaining owner actions" appended below. |
+
+### Verification (this pass)
+
+- Backend: `npm run build` 0 errors; `npm test` **253 tests / 22 suites** green
+  (was 209/20; +44 tests, +2 suites: route-throttles, rides.gateway);
+  `INTEGRATION=1 npm run test:integration` **11/11 (3 suites)** against real Postgres.
+- Frontend: `npx tsc --noEmit` 0 errors, `npx eslint src` 0 warnings/errors.
+
+### Remaining owner actions
+
+1. **`TRUST_PROXY=true` on Render** - without it every anonymous caller (OTP send/verify,
+   social sign-in, public photo proxy) shares the platform proxy's IP in the rate-limit
+   key. Backend logs a loud boot warning while it is unset.
+2. **Set `GOOGLE_WEB_CLIENT_ID` and `APPLE_CLIENT_ID`** in production - both social
+   sign-ins refuse to run without an audience (503) since pass 2; the boot check only
+   REFUSES on missing values when `NODE_ENV=production`.
+3. **Run the new migrations on Render** (`npm run migration:run`) - the pass-2 columns
+   and the partial unique index `UQ_rides_active_per_rider` are what the 409 mapping
+   in task 10 depends on.
+4. **Keep `OTP_LENGTH=4` until the new APK ships**, then flip to 6 (old APKs render
+   exactly the server-reported number of boxes - a 6-digit code would break builds that
+   hardcode 4).
+5. **Restrict or rotate the Google key(s)** in Google Cloud: the Places/Static-Maps key
+   that used to ship in the APK (`EXPO_PUBLIC_GOOGLE_PLACE`, `EXPO_PUBLIC_GOOGLE_MAPS_KEY`)
+   should be restricted to the Android package name + SHA-1 certificate fingerprint (or
+   rotated and dropped from the EAS build env and `frontend/.env.example`) - task 4
+   removed the code that used them, but already-shipped APKs still carry the value.
+   `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` stays (sign-in client id, not a billing key).
+6. **Restrict or rotate the Mapbox token** (`EXPO_PUBLIC_MAPBOX_TOKEN`) - it is the only
+   client key left in code (geocoding, static thumbs, directions); apply URL/app
+   restrictions and a monthly quota in the Mapbox account console.
+7. **Confirm `EXPO_PUBLIC_API_URL` is an https URL in the EAS build env** - task 5's
+   `usesCleartextTraffic: false` makes an http API base fail closed on every Android
+   version (intended, but it must be the https Render URL, not the localhost fallback).
