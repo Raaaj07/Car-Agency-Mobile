@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { ApprovedDriverGuard } from '../drivers/guards/approved-driver.guard';
@@ -18,6 +19,9 @@ export class RidesController {
 
   // Vehicle Selection -> Ride Details -> "Book". Any authenticated user; the
   // service rejects double-booking and online-driver booking.
+  // Route throttle: booking is the most expensive mutation (driver match, SMS
+  // hints) — 5/min is far above any real booking pace but caps scripted spam.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post()
   create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateRideDto) {
     return this.rides.create(user.userId, dto);
@@ -93,6 +97,9 @@ export class RidesController {
   }
 
   // OTP the driver enters from the rider's YouGotTheRideScreen code (approved only).
+  // Route throttle: a 4-6 digit code is guessable — 10/min backs up the
+  // service's per-ride attempt counter even against an approved driver account.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/verify-pickup-otp')
   verifyPickupOtp(
@@ -112,6 +119,8 @@ export class RidesController {
 
   // DriverPaymentScreen's "Amount Received" after the rider pays the UPI QR
   // (approved driver who owns the ride; ride must be completed).
+  // Route throttle: 10/min — a payment claim is a state change, not a poll.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/payment-received')
   paymentReceived(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
@@ -119,12 +128,16 @@ export class RidesController {
   }
 
   // CancelRideConfirmationScreen (either party can cancel).
+  // Route throttle: 10/min — cancel spam cannot be used to flap match state.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Patch(':id/cancel')
   cancel(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelRideDto) {
     return this.rides.cancel(id, user.userId, user.role ?? 'rider', dto);
   }
 
   // ReviewRideScreen's onSubmitReview (ownership checked in service).
+  // Route throttle: 10/min — reviews are write-once anyway (409 on re-review).
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Patch(':id/review')
   review(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SubmitReviewDto) {
     return this.rides.submitReview(id, user.userId, dto);

@@ -1,5 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Patch, Post, Query, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
@@ -24,6 +25,9 @@ export class DriversController {
   // Driver application with document uploads (multipart). Any authenticated
   // rider; allowed when never applied or after rejection. Auth is global
   // (SEC-1 default-deny).
+  // Route throttle: 5/min — multipart uploads cost storage + scan time; a
+  // human re-applies at most a handful of times after a rejection.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('apply')
   @UseInterceptors(
     FileFieldsInterceptor(
@@ -128,6 +132,9 @@ export class DriversController {
   // around the rider's pickup point, optionally filtered by vehicle type.
   // SEC-6: the HTTP response is redacted (see findNearbyPublic) — riders
   // get dots + etas, never the drivers' ids/names/models/ratings.
+  // Route throttle: 30/min — the app polls while searching, but each call
+  // walks the driver table; 30/min bounds the CPU cost per user.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('nearby')
   findNearby(@Query() query: NearbyDriversQueryDto) {
     return this.drivers.findNearbyPublic(

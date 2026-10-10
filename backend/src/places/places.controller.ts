@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { RolesGuard, Roles } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
@@ -18,11 +19,15 @@ export class PlacesController {
     return this.service.getSaved(user.userId);
   }
 
+  // Route throttle: 20/min — saved-place writes are user-paced taps, not a
+  // stream; the cap bounds DB churn from a scripted loop.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post('saved')
   upsertSaved(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpsertSavedPlaceDto): Promise<SavedPlaceDto> {
     return this.service.upsertSaved(user.userId, dto);
   }
 
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Delete('saved/:id')
   async deleteSaved(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string): Promise<{ ok: true }> {
     await this.service.deleteSaved(user.userId, id);
@@ -42,6 +47,10 @@ export class PlacesController {
     return this.service.getRecent(user.userId, Number.isFinite(parsed) ? parsed : 5);
   }
 
+  // Route throttle: 30/min — nearby triggers a server-side Google Places
+  // search (billable per miss); the global 300/min would let one client burn
+  // the Places quota alone.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('nearby')
   getNearby(
     @Query('lat') lat?: string,
@@ -54,6 +63,8 @@ export class PlacesController {
     return this.service.getNearby(plat, plng, Number.isFinite(r) ? r : undefined);
   }
 
+  // Same reasoning as nearby: this searches Google Places server-side.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('popular')
   async getPopular(
     @Query('lat') lat?: string,

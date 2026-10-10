@@ -81,6 +81,9 @@ export class AuthController {
     return this.auth.updateMe(user.userId, dto);
   }
 
+  // Route throttle: 5/min — an avatar is a human-paced action, but the
+  // endpoint stores bytes + hits Cloudinary, so scripted loops are capped.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('me/avatar')
   @HttpCode(HttpStatus.OK)
   @UseInterceptors(
