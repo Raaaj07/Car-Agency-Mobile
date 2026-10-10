@@ -1,10 +1,13 @@
 /**
  * places.ts — typed wrappers over the Vazhi backend /places routes.
  *
- * Also re-exports placeThumbUrl / placePhotoUrl (legacy image helpers used
- * by the old home screen; kept so existing call sites compile unchanged).
+ * Also re-exports placeThumbUrl (legacy helper kept so existing call sites
+ * compile unchanged). SEC-9: place imagery never carries a Google key in the
+ * bundle — photos come from the backend proxy (/places/photo/...), and the
+ * thumb falls back to the Mapbox static API.
  */
 import { api, API_URL } from './client';
+import { placeThumbUrl as mapboxThumbUrl } from './mapbox';
 
 // ── Shared types ────────────────────────────────────────────────────────────
 
@@ -99,75 +102,17 @@ export function absolutizeImageUrl(item: PlaceItem): PlaceItem {
   return item;
 }
 
-// ── Legacy image helpers (kept for backward compat) ──────────────────────────
+// ── Legacy image helper (kept for backward compat) ──────────────────────────
 
-const PLACES_KEY = process.env.EXPO_PUBLIC_GOOGLE_PLACE;
-const GOOGLE_MAPS_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY;
-const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN;
-
-/** Map image of a spot on the planet, sized w×h (dp). Null when no key/token is configured. */
+/**
+ * Map image of a spot on the planet, sized w×h (dp).
+ *
+ * SEC-9: this used to prefer Google Static Maps with EXPO_PUBLIC_GOOGLE_MAPS_KEY
+ * in the bundle — the key ships in every APK and can be lifted and billed
+ * against. Photos/place imagery now come from the backend proxy
+ * (/places/photo/... via imageUrl from /places/nearby and friends); the only
+ * client key left is the Mapbox token (restricted in the Mapbox account).
+ */
 export function placeThumbUrl(lat: number, lng: number, w: number, h: number): string | null {
-  if (GOOGLE_MAPS_KEY) {
-    const W = Math.max(1, Math.min(Math.round(w), 640));
-    const H = Math.max(1, Math.min(Math.round(h), 640));
-    return (
-      `https://maps.googleapis.com/maps/api/staticmap` +
-      `?center=${lat},${lng}&zoom=16&size=${W}x${H}&scale=2` +
-      `&maptype=roadmap&markers=color:0x211B4E|size:mid|${lat},${lng}` +
-      `&key=${GOOGLE_MAPS_KEY}`
-    );
-  }
-  if (!MAPBOX_TOKEN) return null;
-  const W = Math.round(w * 2);
-  const H = Math.round(h * 2);
-  return (
-    `https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/` +
-    `pin-s+211B4E(${lng},${lat})/${lng},${lat},13/${W}x${H}@2x?access_token=${MAPBOX_TOKEN}`
-  );
-}
-
-const photoCache = new Map<string, string | null>();
-
-/** Photo URL for a place address, or null when unconfigured/unknown. */
-export async function placePhotoUrl(address: string): Promise<string | null> {
-  const query = address.trim();
-  if (!PLACES_KEY || !query) return null;
-  if (photoCache.has(query)) return photoCache.get(query) ?? null;
-
-  let result: string | null = null;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    try {
-      const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': PLACES_KEY,
-          'X-Goog-FieldMask': 'places.photos.name',
-        },
-        body: JSON.stringify({
-          textQuery: query,
-          languageCode: 'en',
-          regionCode: 'IN',
-          maxResultCount: 1,
-        }),
-        signal: controller.signal,
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const photoName = data?.places?.[0]?.photos?.[0]?.name;
-        if (typeof photoName === 'string' && photoName) {
-          result = `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=400&key=${PLACES_KEY}`;
-        }
-      }
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    // Network hiccup / abort → static-map fallback.
-  }
-
-  if (result) photoCache.set(query, result);
-  return result;
+  return mapboxThumbUrl(lat, lng, w, h);
 }
