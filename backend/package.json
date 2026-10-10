@@ -20,6 +20,7 @@
     "migration:run": "npm run typeorm -- migration:run",
     "migration:revert": "npm run typeorm -- migration:revert",
     "db:repair": "ts-node -r tsconfig-paths/register scripts/repair-schema.ts",
+    "db:unseed": "ts-node -r tsconfig-paths/register scripts/remove-seed-drivers.ts",
     "seed": " ts-node -r tsconfig-paths/register src/database/seeds/seed.ts"
   },
   "dependencies": {
