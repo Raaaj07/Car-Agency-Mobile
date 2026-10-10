@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Logger,
   NotFoundException,
   Param,
   Res,
@@ -24,6 +25,7 @@ const CURATED_BY_ID = new Map(
 @Public()
 @Controller('places/photo')
 export class PlacesPhotoController {
+  private readonly logger = new Logger('PlacesPhotoController');
   constructor(private readonly images: PlaceImageService) {}
 
   // Curated places: Google photo -> curated URL -> Wikimedia search, all
@@ -64,9 +66,15 @@ export class PlacesPhotoController {
   // ("unknown image format"). StreamableFile sends the real binary bytes.
   private sendPhoto(res: Response, photo: { body: Buffer; contentType: string }): StreamableFile {
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    return new StreamableFile(photo.body, {
-      type: photo.contentType,
-      length: photo.body.length,
-    });
+    return (
+      new StreamableFile(photo.body, {
+        type: photo.contentType,
+        length: photo.body.length,
+      })
+        // The source is an in-memory Buffer (it cannot fail), so any stream
+        // error here means the phone dropped the socket mid-image — routine
+        // on mobile (list recycling). Keep those at debug, not ERROR.
+        .setErrorLogger((err) => this.logger.debug(`photo stream ended early: ${err.message}`))
+    );
   }
 }
