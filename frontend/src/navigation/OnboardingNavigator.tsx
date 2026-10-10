@@ -17,6 +17,7 @@ const Stack = createNativeStackNavigator<OnboardingStackParamList>();
 // never by navigating inside this stack (that screen unmounted instantly).
 export const OnboardingNavigator: React.FC = () => {
   const setLanguage = useAuthStore((state) => state.setLanguage);
+  const language = useAuthStore((state) => state.language);
   const setPhone = useAuthStore((state) => state.setPhone);
   const login = useAuthStore((state) => state.login);
   const developmentOtp = useAuthStore((s) => s.developmentOtp);
@@ -25,7 +26,11 @@ export const OnboardingNavigator: React.FC = () => {
 
   return (
     <Stack.Navigator
-      initialRouteName="LanguageSelection"
+      // First run (no language chosen yet) opens the language picker; once
+      // chosen it persists across logout, so logging out — or a logged-out
+      // relaunch — starts at the login screen instead of bouncing back
+      // through language settings.
+      initialRouteName={language ? 'SignIn' : 'LanguageSelection'}
       screenOptions={{ headerShown: false, animation: 'slide_from_right' }}
     >
       <Stack.Screen name="LanguageSelection">

@@ -22,6 +22,10 @@ export interface User {
 }
 
 const MODE_KEY = 'vazhi.activeMode';
+// Survives logout: the onboarding stack opens the language picker only
+// on first run ('' = nothing chosen yet) and starts at SignIn afterwards,
+// so logging out lands on the login page — not language settings again.
+const LANG_KEY = 'vazhi.language';
 
 async function saveSecure(key: string, value: string | null) {
   try {
@@ -62,7 +66,8 @@ interface AuthState {
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  language: 'en',
+  // '' until the user picks a language in onboarding (see LANG_KEY).
+  language: '',
   phone: '',
   user: null,
   isAuthenticated: false,
@@ -75,7 +80,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   bootOffline: false,
   justLoggedIn: false,
 
-  setLanguage: (lang) => set({ language: lang }),
+  setLanguage: (lang) => {
+    set({ language: lang });
+    void saveSecure(LANG_KEY, lang);
+  },
   setPhone: (phone) => set({ phone }),
   setDevelopmentOtp: (otp) => set({ developmentOtp: otp }),
   setOtpLength: (length) => set({ otpLength: length }),
@@ -140,10 +148,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     tokenManager.clear();
     void saveSecure(ACCESS_KEY, null);
     void saveSecure(REFRESH_KEY, null);
-    // The persisted Rider/Driver mode belongs to the account that just left.
-    // Left behind, the NEXT approved driver to sign in on this phone would
-    // reopen straight in driver mode (restoreSession reads this key).
-    void saveSecure(MODE_KEY, null);
+    // The Rider/Driver mode deliberately survives logout: the same approved
+    // driver signing back in must land in driver mode again. login() only
+    // honors the remembered mode for an approved account (everyone else
+    // falls back to rider), and updateUser forces rider if the server ever
+    // downgrades the driver — so keeping it here is preference, not privilege.
     import('./rideStore')
       .then((m) => m.useRideStore.getState().resetRide())
       .catch(() => {});
@@ -154,7 +163,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       refreshToken: null,
       developmentOtp: null,
       otpLength: 4,
-      activeMode: 'rider',
+      // activeMode kept — the same account must reopen in its last mode.
       bootOffline: false,
       justLoggedIn: false,
     });
@@ -166,15 +175,20 @@ export const useAuthStore = create<AuthState>((set) => ({
       let access: string | null = null;
       let refresh: string | null = null;
       let mode: string | null = null;
+      let lang: string | null = null;
       try {
-        [access, refresh, mode] = await Promise.all([
+        [access, refresh, mode, lang] = await Promise.all([
           SecureStore.getItemAsync(ACCESS_KEY),
           SecureStore.getItemAsync(REFRESH_KEY),
           SecureStore.getItemAsync(MODE_KEY),
+          SecureStore.getItemAsync(LANG_KEY),
         ]);
       } catch {
         // No secure storage — stay logged out.
       }
+      // Set before the !access early-return below: a logged-out launch must
+      // still know a language was chosen (otherwise it re-shows the picker).
+      if (lang) set({ language: lang });
       if (access || refresh) {
         tokenManager.setTokens({
           ...(access ? { accessToken: access } : {}),
