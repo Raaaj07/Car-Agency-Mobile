@@ -38,7 +38,10 @@ export const PlaceImage: React.FC<Props> = memo(({ uri, width, height, borderRad
 
   const handleError = (e: { nativeEvent?: { error?: string } }) => {
     if (__DEV__) {
-      console.warn('[PlaceImage] failed to load', finalUri, e?.nativeEvent?.error ?? '');
+      // SEC-10: strip the query string — a thumb URL can carry the Mapbox
+      // access token, which must never reach logcat/release logs.
+      const safeUri = finalUri ? finalUri.split('?')[0] : null;
+      console.warn('[PlaceImage] failed to load', safeUri, e?.nativeEvent?.error ?? '');
     }
     if (attempt < MAX_RETRIES) {
       setTimeout(() => setAttempt((a) => a + 1), RETRY_DELAY_MS);

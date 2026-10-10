@@ -45,7 +45,7 @@ export const SignInScreen: React.FC<Props> = ({
       const idToken = response.authentication?.idToken ?? (response.params as any)?.id_token;
       if (idToken) {
         onGoogleTokenRef.current(idToken);
-      } else {
+      } else if (__DEV__) {
         // SEC-10: never log the full auth response — it can carry identity
         // claims (names, emails, tokens) into logcat/release logs. The key
         // names are enough to debug which response shape arrived.
@@ -55,9 +55,12 @@ export const SignInScreen: React.FC<Props> = ({
         );
       }
     } else if (response?.type === 'error') {
-      console.log('Google auth error:', response.error);
+      // SEC-10: dev-only, and only the error message (the OAuth error code /
+      // description) — never the full error object, which can embed the
+      // redirect URL (codes, claims, state).
+      if (__DEV__) console.warn('[auth] Google auth error:', response.error?.message ?? 'unknown');
     } else if (response) {
-      console.log('Google auth response type:', response.type);
+      if (__DEV__) console.log('[auth] Google auth response type:', response.type);
     }
   }, [response]);
 
@@ -76,7 +79,11 @@ export const SignInScreen: React.FC<Props> = ({
         onAppleToken(credential.identityToken, fullName);
       }
     } catch (err: any) {
-      if (err.code !== 'ERR_REQUEST_CANCELED') console.warn('Apple sign-in failed', err);
+      // SEC-10: dev-only, and only the error code/message — never the whole
+      // error object (it can carry native stack frames).
+      if (__DEV__ && err.code !== 'ERR_REQUEST_CANCELED') {
+        console.warn('[auth] Apple sign-in failed', err.code ?? err.message ?? 'unknown');
+      }
     }
   };
 

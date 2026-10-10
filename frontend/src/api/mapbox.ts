@@ -38,7 +38,7 @@ export async function searchAddress(query: string): Promise<GeocodeResult[]> {
 export async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
   if (!MAPBOX_TOKEN) {
-    console.warn('[mapbox] EXPO_PUBLIC_MAPBOX_TOKEN missing, reverseGeocode returning null');
+    if (__DEV__) console.warn('[mapbox] EXPO_PUBLIC_MAPBOX_TOKEN missing, reverseGeocode returning null');
     return null;
   }
   const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${MAPBOX_TOKEN}&limit=1`;
@@ -47,13 +47,18 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string |
   try {
     const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) {
-      console.warn(`[mapbox] Reverse geocode HTTP error ${res.status}`);
+      // SEC-10: status only — the URL itself carries the access token.
+      if (__DEV__) console.warn(`[mapbox] Reverse geocode HTTP error ${res.status}`);
       return null;
     }
     const data = await res.json();
     return data.features?.[0]?.place_name ?? null;
   } catch (err) {
-    console.warn('[mapbox] Reverse geocode error:', err);
+    // SEC-10: message only, dev-only — an error object can embed the
+    // request URL (which carries the token) or verbose transport details.
+    if (__DEV__) {
+      console.warn('[mapbox] Reverse geocode error:', err instanceof Error ? err.message : 'unknown');
+    }
     return null;
   } finally {
     clearTimeout(timer);
