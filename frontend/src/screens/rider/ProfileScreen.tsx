@@ -156,14 +156,16 @@ export const ProfileScreen: React.FC = () => {
     setUpiEditing(true);
   };
 
-  const handleLogout = async () => {
-    // Best-effort: an online driver must not stay "available" after logout
-    // (kept from the removed DriverAccountScreen).
-    try {
-      await driversApi.getMyProfile();
-      await driversApi.setStatus(false).catch(() => {});
-    } catch {
-      // No driver profile or already offline — proceed to logout.
+  const handleLogout = () => {
+    // Best-effort: an approved driver must not stay "available" after
+    // logout. Send the PATCH while the token is still in memory and never
+    // await it — serialising getMyProfile + setStatus ahead of local
+    // logout made every account wait out up to two 15s-timeout HTTP
+    // round-trips (riders paid for a driver-profile probe they can't even
+    // have), and a timed-out probe skipped setStatus anyway. Only an
+    // approved driver can be online; every other role skips the call.
+    if (user?.driverStatus === 'approved') {
+      driversApi.setStatus(false).catch(() => {});
     }
     resetRide();
     logout();
