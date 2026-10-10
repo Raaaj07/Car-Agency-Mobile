@@ -50,6 +50,10 @@ export type RootStackParamList = {
   RideCancelled: { reason?: string };
   RideAnnouncementsSettings: undefined;
   BecomeDriver: undefined;
+  // Profile-page destinations (both modes) — modal group in AppNavigator.
+  HelpSupport: undefined;
+  MyVehicle: undefined;
+  PaymentQr: undefined;
 };
 
 export type DriverDashboardStackParamList = {

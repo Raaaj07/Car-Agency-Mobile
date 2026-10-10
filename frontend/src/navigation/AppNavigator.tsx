@@ -11,6 +11,9 @@ import { AdminNavigator } from './AdminNavigator';
 import { CancelRideConfirmationScreen } from '../screens/shared/CancelRideConfirmationScreen';
 import { RideCancelledScreen } from '../screens/shared/RideCancelledScreen';
 import { RideAnnouncementsSettingsScreen } from '../screens/shared/RideAnnouncementsSettingsScreen';
+import { HelpSupportScreen } from '../screens/shared/HelpSupportScreen';
+import { MyVehicleScreen } from '../screens/driver/MyVehicleScreen';
+import { PaymentQrScreen } from '../screens/driver/PaymentQrScreen';
 import { BecomeDriverScreen } from '../screens/driver/BecomeDriverScreen';
 import { CompleteProfileScreen } from '../screens/onboarding/CompleteProfileScreen';
 import { useAuthStore } from '../store/authStore';
@@ -179,6 +182,17 @@ export const AppNavigator: React.FC = () => {
                     onSave={() => navigation.goBack()}
                   />
                 )}
+              </Stack.Screen>
+
+              {/* Profile-page destinations (rider + driver share these). */}
+              <Stack.Screen name="HelpSupport">
+                {({ navigation }) => <HelpSupportScreen onBack={() => navigation.goBack()} />}
+              </Stack.Screen>
+              <Stack.Screen name="MyVehicle">
+                {({ navigation }) => <MyVehicleScreen onBack={() => navigation.goBack()} />}
+              </Stack.Screen>
+              <Stack.Screen name="PaymentQr">
+                {({ navigation }) => <PaymentQrScreen onBack={() => navigation.goBack()} />}
               </Stack.Screen>
             </Stack.Group>
           </>
