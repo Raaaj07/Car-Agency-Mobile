@@ -138,6 +138,14 @@ export const AppNavigator: React.FC = () => {
                         // to do instead (ask the driver / support) and keep the
                         // active ride intact so the trip view stays usable.
                         if (getApiStatus(error) === 409) {
+                          // R-5: refresh from the server so the trip view shows
+                          // reality after the refusal (and any transition that
+                          // happened meanwhile). The alert is awaited LAST so the
+                          // user always sees it — never a stuck spinner.
+                          const fresh = await ridesApi.getActive().catch(() => null);
+                          if (fresh) {
+                            useRideStore.getState().setActiveRide(fresh as any);
+                          }
                           Alert.alert('Cannot cancel now', getApiError(error));
                         } else {
                           Alert.alert('Cancellation failed', getApiError(error));
