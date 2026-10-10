@@ -5,7 +5,6 @@ import * as Location from 'expo-location';
 import { useNavigation } from '@react-navigation/native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
-import { Button } from '../../components/primitives/Button';
 import { LatLng } from '../../components/primitives/RealMapView';
 import { driversApi, DriverProfile } from '../../api/drivers';
 import { ridesApi, Ride } from '../../api/rides';
@@ -14,8 +13,6 @@ import { useSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
 import { NotificationBar } from '../../components/primitives/NotificationBar';
 import { useAuthStore } from '../../store/authStore';
-import { connectSocket, disconnectSocket } from '../../lib/socket';
-import { tokenManager } from '../../lib/tokenManager';
 import {
   promptBackgroundLocationOnce,
   startDriverBackgroundLocation,
@@ -23,6 +20,10 @@ import {
 } from '../../lib/locationTask';
 
 const LOCATION_HEARTBEAT_MS = 5000;
+// Reuse a GPS fix younger than this when going online: the server only
+// needs locationUpdatedAt ≤2 min old, so a quick off→on toggle reuses the
+// last heartbeat fix instead of waiting for a cold GPS lock.
+const FRESH_FIX_MS = 60_000;
 
 interface Props {
   onRideRequest: () => void;
@@ -84,6 +85,14 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const autoResumed = useRef(false);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestCoords = useRef<LatLng | undefined>(undefined);
+  // When latestCoords was last refreshed (see FRESH_FIX_MS).
+  const latestCoordsAt = useRef(0);
+  // Toggle bookkeeping: the Switch flips optimistically, so rapid taps are
+  // common. Each tap gets a sequence number (only the latest may roll the
+  // UI back) and status requests are serialised through statusChain so the
+  // server can never end up in the opposite state of the UI.
+  const toggleSeq = useRef(0);
+  const statusChain = useRef<Promise<unknown>>(Promise.resolve());
   // Last offer we already surfaced (socket OR polling) so the request screen
   // is opened exactly once per offer.
   const lastOfferId = useRef<string | null>(null);
@@ -192,6 +201,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
         setDriverCoords(coords);
         latestCoords.current = coords;
+        latestCoordsAt.current = Date.now();
       } catch {
         // Location stays unset; going online will prompt for GPS.
       }
@@ -208,6 +218,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
         setDriverCoords(coords);
         latestCoords.current = coords;
+        latestCoordsAt.current = Date.now();
         driversApi.updateLocation(coords.lat, coords.lng).catch(() => {});
       } catch {
         // Ignored — GPS may be momentarily unavailable
@@ -328,70 +339,79 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   }, [isOnline, setActiveRide]);
 
   // ── Go-online toggle ───────────────────────────────────────────────────────
-  const handleToggle = async (nextStatus: boolean) => {
-    if (nextStatus) {
-      // 1. Ensure location permission
+  // The Switch is optimistic: it flips the instant you tap and reconciles
+  // afterwards (rollback + alert only if this tap is still the latest),
+  // instead of staying stuck for as long as a cold GPS fix plus two
+  // HTTP round-trips take. Network requests are serialised through
+  // statusChain so rapid taps can never land on the server out of order.
+  const handleToggle = (nextStatus: boolean) => {
+    const seq = ++toggleSeq.current;
+    const isLatest = () => toggleSeq.current === seq;
+    const fail = (title: string, message: string) => {
+      if (!isLatest()) return;
+      setIsOnline(!nextStatus);
+      Alert.alert(title, message);
+    };
+
+    if (!nextStatus) {
+      // Going offline has no server-side gates — flip instantly, then
+      // reconcile; a failure snaps the switch back to server truth.
+      setIsOnline(false);
+      const task = statusChain.current.then(() => driversApi.setStatus(false));
+      statusChain.current = task.catch(() => {});
+      task.catch((error) => fail('Unable to update availability', getApiError(error)));
+      return;
+    }
+
+    // Going online: permission first (near-instant when already granted),
+    // and only then flip — a denied permission never flashes an online
+    // state or starts the heartbeat.
+    void (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert(
-          'Location Required',
-          'Please grant location permission to go online. Open Settings and enable location for this app.',
-        );
+        if (isLatest()) {
+          Alert.alert(
+            'Location Required',
+            'Please grant location permission to go online. Open Settings and enable location for this app.',
+          );
+        }
         return;
       }
-      // 2. Get a fresh GPS fix and push it before toggling status
+      if (!isLatest()) return;
+      setIsOnline(true);
+
+      // The server only accepts online drivers with a location ≤2 min old,
+      // so freshen it first — reusing a recent fix means a quick off→on
+      // toggle skips the cold-GPS wait entirely.
+      let coords: LatLng | undefined = latestCoords.current;
+      if (!coords || Date.now() - latestCoordsAt.current > FRESH_FIX_MS) {
+        try {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+          coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          setDriverCoords(coords);
+          latestCoords.current = coords;
+          latestCoordsAt.current = Date.now();
+        } catch {
+          fail('GPS Error', 'Unable to get your current location. Please try again.');
+          return;
+        }
+      }
+      if (!coords || !isLatest()) return;
+
+      const target = coords;
+      const task = statusChain.current
+        .then(() => driversApi.updateLocation(target.lat, target.lng))
+        .then(() => driversApi.setStatus(true));
+      statusChain.current = task.catch(() => {});
       try {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-        const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
-        setDriverCoords(coords);
-        latestCoords.current = coords;
-        await driversApi.updateLocation(coords.lat, coords.lng);
-      } catch {
-        Alert.alert('GPS Error', 'Unable to get your current location. Please try again.');
-        return;
+        await task;
+        // D-4: first go-online of the session nudges for background
+        // permission (non-blocking; registering happens inside once granted).
+        if (isLatest()) void promptBackgroundLocationOnce();
+      } catch (error) {
+        fail('Unable to update availability', getApiError(error));
       }
-    }
-
-    try {
-      await driversApi.setStatus(nextStatus);
-      setIsOnline(nextStatus);
-      // D-4: first go-online of the session nudges for background permission
-      // (non-blocking; registering happens inside once granted).
-      if (nextStatus) void promptBackgroundLocationOnce();
-    } catch (error) {
-      Alert.alert('Unable to update availability', getApiError(error));
-    }
-  };
-
-  // ── Switch to Rider mode ─────────────────────────────────────────────
-  // Online drivers are set offline first; an active trip blocks the switch.
-  const switchToRider = async () => {
-    const current = useRideStore.getState().activeRide;
-    if (activeTrip && activeTrip.status !== 'completed') {
-      Alert.alert('Trip in progress', 'You cannot switch modes while a trip is active. Complete or cancel it first.');
-      return;
-    }
-    if (current && ['matched', 'driver_en_route', 'in_progress'].includes(current.status)) {
-      Alert.alert('Trip in progress', 'You cannot switch modes while a trip is active. Complete or cancel it first.');
-      return;
-    }
-    try {
-      if (isOnline) {
-        await driversApi.setStatus(false);
-        setIsOnline(false);
-      }
-    } catch (error) {
-      Alert.alert('Unable to go offline', getApiError(error));
-      return;
-    }
-    stopHeartbeat();
-    useAuthStore.getState().setActiveMode('rider');
-    useRideStore.getState().resetRide();
-    disconnectSocket();
-    const token = tokenManager.getAccessToken();
-    if (token) connectSocket(token, 'rider');
-    // No explicit navigation: MainTabNavigator swaps to the rider tree
-    // (initial route HomeTab) as soon as activeMode flips.
+    })();
   };
 
   const openNotifications = () => {
@@ -561,8 +581,6 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
             </Text>
           </View>
         )}
-
-        <Button title="Switch to Rider mode" variant="outline" onPress={switchToRider} style={styles.switchBtn} />
       </ScrollView>
 
       <NotificationBar
@@ -638,7 +656,6 @@ const styles = StyleSheet.create({
   viewRideText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
   emptyTitle: { ...typography.bodyBold, fontSize: 15, textAlign: 'center' },
   emptySub: { ...typography.meta, fontSize: 13, textAlign: 'center' },
-  switchBtn: { marginHorizontal: 20, marginTop: 8 },
   activeTripCard: { borderWidth: 1.5, borderColor: colors.success },
   upiNudge: {
     flexDirection: 'row',
