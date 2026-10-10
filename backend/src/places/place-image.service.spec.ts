@@ -6,6 +6,7 @@ import {
 } from './place-image.service';
 import { GooglePlacesService } from './google-places.service';
 import { WikimediaService } from './wikimedia.service';
+import type { PlaceConfigItem } from './places.config';
 
 /**
  * SEC-7: the proxy cache was a plain Map — uncapped, "request many distinct
@@ -75,5 +76,111 @@ describe('PlaceImageService cache bounding (SEC-7)', () => {
     // ...while the newest is still cached.
     await service.getLiveImage(id(howMany - 1));
     expect(google.fetchPlacePhotoById.mock.calls.length).toBe(seen + 1);
+  });
+});
+
+/**
+ * SEC-3: the proxy downloads bytes server-side, so a redirect the service
+ * follows blindly is an SSRF pivot (an allowlisted host bouncing us onto
+ * cloud metadata or an internal address). Redirects are now manual, capped
+ * at 3 hops, and every hop re-runs the host allowlist.
+ */
+describe('PlaceImageService SSRF hardening (SEC-3)', () => {
+  let google: { fetchPlacePhoto: jest.Mock; fetchPlacePhotoById: jest.Mock };
+  let wiki: { findPhoto: jest.Mock };
+  let service: PlaceImageService;
+  let realFetch: typeof globalThis.fetch;
+
+  const item = (imageUrl: string): PlaceConfigItem => ({
+    id: 'ssrf-fixture',
+    title: 'Fixture',
+    subtitle: 'Test',
+    lat: 11.65,
+    lng: 78.16,
+    imageUrl,
+  });
+
+  // A minimal Response stand-in — only what download() reads.
+  const response = (status: number, contentType: string | null, bytes = 3) => ({
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get: (h: string) => (h.toLowerCase() === 'content-type' ? contentType : null) },
+    arrayBuffer: async () => Uint8Array.from({ length: bytes }, (_, i) => i + 1).buffer,
+  });
+  const redirect = (to: string) => ({
+    status: 302,
+    ok: false,
+    headers: { get: (h: string) => (h.toLowerCase() === 'location' ? to : null) },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+
+  beforeEach(() => {
+    google = {
+      fetchPlacePhoto: jest.fn().mockResolvedValue(null),
+      fetchPlacePhotoById: jest.fn().mockResolvedValue(null),
+    };
+    wiki = { findPhoto: jest.fn().mockResolvedValue(null) };
+    service = new PlaceImageService(
+      google as unknown as GooglePlacesService,
+      wiki as unknown as WikimediaService,
+    );
+    realFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('rejects a redirect from an allow-listed host to an internal address', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(redirect('http://169.254.169.254/latest/meta-data'));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    const out = await service.getCuratedImage(item('https://upload.wikimedia.org/wikipedia/commons/x.jpg'));
+
+    expect(out).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // the internal hop was never fetched
+  });
+
+  it('follows a redirect to another allow-listed host and returns the bytes', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(redirect('https://commons.wikimedia.org/next.jpg'))
+      .mockResolvedValueOnce(response(200, 'image/jpeg'));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    const out = await service.getCuratedImage(item('https://commons.wikimedia.org/a.jpg'));
+
+    expect(out?.contentType).toBe('image/jpeg');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe('https://commons.wikimedia.org/next.jpg');
+  });
+
+  it('gives up after more than 3 redirect hops', async () => {
+    const fetchMock = jest.fn().mockImplementation(async (u: string) =>
+      redirect(`https://upload.wikimedia.org/next${u}.jpg`),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    const out = await service.getCuratedImage(item('https://commons.wikimedia.org/a.jpg'));
+
+    expect(out).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(4); // initial + 3 hops, then stop
+  });
+
+  it('never fetches non-https, unknown-host or IP-literal targets at all', async () => {
+    const fetchMock = jest.fn();
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    for (const bad of [
+      'http://upload.wikimedia.org/x.jpg', // plaintext
+      'https://evil.example.com/x.jpg', // not on the allowlist
+      'https://127.0.0.1/x.jpg', // loopback literal
+      'https://10.0.0.8:8080/x.jpg', // private range + non-443 port
+      'https://[::1]/x.jpg', // IPv6 literal
+      'https://localhost/x.jpg',
+    ]) {
+      expect(await service.getCuratedImage(item(bad))).toBeNull();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

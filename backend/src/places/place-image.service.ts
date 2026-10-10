@@ -35,11 +35,55 @@ export const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 const USER_AGENT = 'VazhiApp/1.0 (place-photo-proxy; contact: support@vazhi.app)';
 
 // Only these hosts may be downloaded (prevents the proxy being used for SSRF).
+// Google photos never arrive here — GooglePlacesService fetches them from
+// fixed, Google-hosted endpoints itself — so the download allowlist is exactly
+// the Wikimedia set the curated URLs use.
 const ALLOWED_HOSTS = new Set([
   'upload.wikimedia.org',
   'thumb.wikimedia.org',
   'commons.wikimedia.org',
 ]);
+
+// SEC-3: redirects are followed by hand (see download) — every hop re-enters
+// isAllowedImageUrl, so at most this many allowlisted hops may be chained.
+const MAX_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** SEC-3: dotted-quad IPv4, or any IPv6/bracketed form (hostnames never carry ':'). */
+function isIpLiteral(host: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+}
+
+function hostOf(raw: string): string {
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return '(unparseable)';
+  }
+}
+
+/**
+ * SEC-3: the single gate for every URL this service downloads — the initial
+ * URL AND each redirect hop. Only https, only the explicit host allowlist,
+ * port 443 only, never an IP literal or localhost — so an allowlisted host
+ * that turns malicious cannot bounce the proxy onto cloud metadata or
+ * internal services (the classic SSRF-via-redirect).
+ */
+function isAllowedImageUrl(raw: string): URL | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:') return null;
+  if (parsed.port && parsed.port !== '443') return null;
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return null;
+  if (isIpLiteral(host)) return null;
+  if (!ALLOWED_HOSTS.has(host)) return null;
+  return parsed;
+}
 
 /**
  * Turns a curated Wikimedia URL into the list of URLs worth trying.
@@ -218,29 +262,22 @@ export class PlaceImageService {
     return null;
   }
 
-  /** Download one image with a proper User-Agent. Returns null on any problem. */
+  /**
+   * Download one image with a proper User-Agent. Returns null on any problem.
+   * Redirects are followed BY HAND (max MAX_REDIRECTS hops, each re-validated
+   * through isAllowedImageUrl) — fetch's own `redirect: 'follow'` would accept
+   * a hop to an internal address without ever asking us (SEC-3).
+   */
   private async download(url: string, logId: string): Promise<PlaceImageBytes | null> {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return null;
-    }
-    if (parsed.protocol !== 'https:' || !ALLOWED_HOSTS.has(parsed.hostname)) {
-      this.logger.warn(`[${logId}] blocked image host: ${parsed.hostname}`);
+    if (!isAllowedImageUrl(url)) {
+      this.logger.warn(`[${logId}] blocked image host: ${hostOf(url)}`);
       return null;
     }
 
     for (let attempt = 0; attempt < 2; attempt++) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       try {
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: { 'User-Agent': USER_AGENT, Accept: 'image/*' },
-          redirect: 'follow',
-          signal: controller.signal,
-        });
+        const res = await this.fetchFollowingRedirects(url, logId);
+        if (!res) return null; // a hop was blocked / too many redirects — nothing to retry
         const contentType = res.headers.get('content-type') ?? '';
         if (res.status === 429 || res.status >= 500) {
           // transient — wait and retry once
@@ -259,10 +296,55 @@ export class PlaceImageService {
         return { body, contentType };
       } catch (err) {
         this.logger.warn(`[${logId}] image download error: ${(err as Error)?.message ?? err} ${url}`);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * GET the URL with `redirect: 'manual'` and follow at most MAX_REDIRECTS
+   * Location hops — EVERY hop re-validated by isAllowedImageUrl (SEC-3).
+   * Resolves with the first non-redirect response; null when a hop is blocked
+   * or the chain is too long. Network errors reject (the caller's retry loop
+   * handles them exactly like the old single-fetch failures).
+   */
+  private async fetchFollowingRedirects(url: string, logId: string): Promise<Response | null> {
+    let current = url;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      try {
+        const res = await fetch(current, {
+          method: 'GET',
+          headers: { 'User-Agent': USER_AGENT, Accept: 'image/*' },
+          redirect: 'manual',
+          signal: controller.signal,
+        });
+        if (!REDIRECT_STATUSES.has(res.status)) return res;
+
+        const location = res.headers.get('location');
+        if (!location) {
+          this.logger.warn(`[${logId}] redirect without Location header`);
+          return null;
+        }
+        let next: URL | null;
+        try {
+          next = new URL(location, current);
+        } catch {
+          next = null;
+        }
+        // SEC-3: re-validate EVERY hop — an allowlisted host must not be able
+        // to bounce the proxy to an internal/metadata address.
+        if (!next || !isAllowedImageUrl(next.toString())) {
+          this.logger.warn(`[${logId}] blocked redirect target: ${hostOf(location)}`);
+          return null;
+        }
+        current = next.toString();
       } finally {
         clearTimeout(timer);
       }
     }
+    this.logger.warn(`[${logId}] too many redirects (max ${MAX_REDIRECTS})`);
     return null;
   }
 }
