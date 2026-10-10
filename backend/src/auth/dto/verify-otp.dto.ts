@@ -1,4 +1,4 @@
-import { IsOptional, IsString, Matches } from 'class-validator';
+import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export class VerifyOtpDto {
   @IsString()
@@ -17,6 +17,9 @@ export class VerifyOtpDto {
 
   @IsOptional()
   @IsString()
+  // SEC-2: stored as the new user's display name on first login — same cap
+  // the profile-update endpoint uses.
+  @MaxLength(120)
   name?: string;
 
   /**
