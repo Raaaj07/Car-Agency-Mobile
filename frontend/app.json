@@ -67,6 +67,7 @@
           "android": {
             "enableProguardInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
+            "usesCleartextTraffic": false,
             "buildArchs": [
               "arm64-v8a",
               "armeabi-v7a"
