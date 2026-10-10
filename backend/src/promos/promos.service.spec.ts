@@ -1,4 +1,4 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { EntityManager, Repository } from 'typeorm';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { PromoAdminDto } from './dto/promo-admin.dto';
@@ -377,6 +377,54 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
         { id: 'p1' },
       );
       expect(qb.execute).toHaveBeenCalled();
+    });
+
+    it('does NOT record a redemption when the cap was reached before completion', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      try {
+        const rows = [promoRow({ maxRedemptions: 5, redemptionCount: 5 })];
+        const { service } = buildService(rows);
+        const qb = counterQb();
+        qb.execute.mockResolvedValue({ affected: 0 }); // conditional increment lost the race
+        const manager = {
+          findOne: jest.fn().mockResolvedValue(rows[0]),
+          insert: jest.fn().mockResolvedValue({}),
+          createQueryBuilder: jest.fn().mockReturnValue(qb),
+        } as unknown as EntityManager;
+
+        // The ride still completes at the already-quoted fare — never a throw.
+        await expect(
+          service.recordRedemption(' VAZHI20 ', 'ride-9', 'rider-9', manager),
+        ).resolves.toBeUndefined();
+
+        expect(manager.insert).not.toHaveBeenCalled(); // nothing recorded
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('hit its redemption cap'));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('never lets two completing rides push the counter past the cap', async () => {
+      // Both rides passed the booking-time check (1 redemption left). On
+      // completion exactly ONE conditional increment may win; the loser
+      // records nothing — the count cannot exceed the cap.
+      const rows = [promoRow({ maxRedemptions: 2, redemptionCount: 1 })];
+      const { service } = buildService(rows);
+      const results = [{ affected: 1 }, { affected: 0 }];
+      const qb = counterQb();
+      qb.execute.mockImplementation(() => Promise.resolve(results.shift() ?? { affected: 0 }));
+      const insert = jest.fn().mockResolvedValue({});
+      const manager = {
+        findOne: jest.fn().mockResolvedValue(rows[0]),
+        insert,
+        createQueryBuilder: jest.fn().mockReturnValue(qb),
+      } as unknown as EntityManager;
+
+      await service.recordRedemption('VAZHI20', 'ride-a', 'rider-a', manager);
+      await service.recordRedemption('VAZHI20', 'ride-b', 'rider-b', manager);
+
+      expect(qb.execute).toHaveBeenCalledTimes(2);
+      expect(insert).toHaveBeenCalledTimes(1); // only the winner records its ride
     });
   });
 

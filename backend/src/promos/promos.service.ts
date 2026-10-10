@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { ACTIVE_RIDE_STATUSES, RideEntity } from '../rides/entities/ride.entity';
@@ -41,6 +41,8 @@ function isUniqueViolation(e: unknown): boolean {
  */
 @Injectable()
 export class PromosService {
+  private readonly logger = new Logger(PromosService.name);
+
   constructor(
     @InjectRepository(RideEntity)
     private readonly rides: Repository<RideEntity>,
@@ -226,9 +228,10 @@ export class PromosService {
 
   /**
    * Records the redemption atomically with ride completion — pass the
-   * completion's transaction `manager` so the row insert and the cap counter
+   * completion's transaction `manager` so the counter and the row insert
    * commit (or roll back) together with the fare write. Best-effort by
-   * contract: a promo deleted since booking just isn't counted.
+   * contract: a promo deleted since booking just isn't counted, and a promo
+   * that hit its cap in the meantime completes at the already-quoted fare.
    */
   async recordRedemption(
     code: string,
@@ -239,19 +242,11 @@ export class PromosService {
     const em = manager ?? this.promos.manager;
     const promo = await em.findOne(PromoEntity, { where: { code: this.normalize(code) } });
     if (!promo) return;
-    await em.insert(PromoRedemptionEntity, {
-      promoId: promo.id,
-      code: promo.code,
-      rideId,
-      riderId,
-      discountAmount: promo.discountAmount,
-    });
-    // SEC-9: a single CONDITIONAL increment — the counter can never be
-    // pushed past the declared cap (an admin lowering maxRedemptions below
-    // the current count would otherwise keep climbing past it). affected=0
-    // at the cap is NOT an error: the discount was promised at booking, so
-    // ride completion must never fail over a counter.
-    await em
+    // SEC-9: CONDITIONAL increment FIRST — the counter can never be pushed
+    // past the declared cap (an admin lowering maxRedemptions below the
+    // current count, or two rides that both passed the booking-time check
+    // completing together, would otherwise climb past it).
+    const { affected } = await em
       .createQueryBuilder()
       .update(PromoEntity)
       .set({ redemptionCount: () => '"redemptionCount" + 1' })
@@ -260,6 +255,24 @@ export class PromosService {
         { id: promo.id },
       )
       .execute();
+    if (!affected) {
+      // Cap reached between booking and completion. NOT an error: the
+      // discount was promised at booking, so the ride completes at the
+      // already-quoted fare — we only skip recording the redemption.
+      // Log ids, never rider identity (no PII).
+      this.logger.warn(
+        `promo ${promo.code} hit its redemption cap before ride ${rideId} completed — discount honored, no redemption recorded`,
+      );
+      return;
+    }
+    // The increment won the race — record WHICH ride earned it.
+    await em.insert(PromoRedemptionEntity, {
+      promoId: promo.id,
+      code: promo.code,
+      rideId,
+      riderId,
+      discountAmount: promo.discountAmount,
+    });
   }
 
   // ── Admin CRUD (AdminPromosController) ──
