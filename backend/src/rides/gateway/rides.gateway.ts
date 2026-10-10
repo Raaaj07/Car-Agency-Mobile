@@ -49,6 +49,16 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(RidesGateway.name);
   // Basic per-socket rate limit for driver:location (max 1 msg / 2s).
   private readonly lastLocationAt = new WeakMap<object, number>();
+  // SEC: join/leave churn budget —20 events/minute per socket, then we
+  // disconnect (the app reconnects cleanly; the HTTP side keeps its own
+  // throttles). WeakMap so a disconnected socket's counter is collectable.
+  private readonly joinLeaveBudget = new WeakMap<object, { windowStart: number; count: number }>();
+
+  private static readonly JOIN_LEAVE_LIMIT = 20;
+  private static readonly JOIN_LEAVE_WINDOW_MS = 60_000;
+  // Same shape ParseUUIDPipe accepts; a malformed id must not reach findOne.
+  private static readonly UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   constructor(
     private readonly jwt: JwtService,
@@ -108,28 +118,74 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   // Riders and drivers both call this once they know the rideId, so
   // driver:location broadcasts within a trip only reach that trip's pair.
-  // Membership-verified: only the ride's rider or its assigned (approved)
-  // driver may join. (B9 fix.)
+  // Membership-verified: only the ride's rider, its assigned (approved)
+  // driver, or an admin may join — everyone else gets an explicit ack error
+  // instead of a silent no-op. (B9 fix.)
   @SubscribeMessage('ride:join')
-  async onJoinRide(@ConnectedSocket() client: AuthedSocket, @MessageBody() data: { rideId: string }): Promise<void> {
+  async onJoinRide(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() data: { rideId: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!this.consumeJoinLeaveBudget(client)) return { ok: false, error: 'rate_limited' };
     const userId = client.data.userId;
-    if (!userId) return;
-    if (!data?.rideId || typeof data.rideId !== 'string') return;
+    if (!userId) return { ok: false, error: 'unauthenticated' };
+    if (!data?.rideId || typeof data.rideId !== 'string' || !RidesGateway.UUID_RE.test(data.rideId)) {
+      return { ok: false, error: 'invalid_ride_id' };
+    }
     const ride = await this.rides.findOne({ where: { id: data.rideId } }).catch(() => null);
-    if (!ride) return;
-    if (ride.riderId === userId) {
+    if (!ride) return { ok: false, error: 'ride_not_found' };
+    if (ride.riderId === userId || client.data.role === 'admin') {
       client.join(this.rideRoom(data.rideId));
-      return;
+      return { ok: true };
     }
     const driver = await this.drivers.findOne({ where: { userId } }).catch(() => null);
     if (driver && ride.driverId === driver.id) {
       client.join(this.rideRoom(data.rideId));
+      return { ok: true };
     }
+    // SEC: never join someone else's room — the ack lets a debugging client
+    // tell "denied" apart from "the server never saw this".
+    return { ok: false, error: 'not_a_participant' };
   }
 
+  // Leaving is permissive by design (leaving a room you are not in is a
+  // no-op), but it still requires the same authenticated socket and a
+  // well-formed ride id — and it spends the same join/leave budget.
   @SubscribeMessage('ride:leave')
-  onLeaveRide(@ConnectedSocket() client: AuthedSocket, @MessageBody() data: { rideId: string }): void {
+  onLeaveRide(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() data: { rideId: string },
+  ): { ok: boolean; error?: string } {
+    if (!this.consumeJoinLeaveBudget(client)) return { ok: false, error: 'rate_limited' };
+    const userId = client.data.userId;
+    if (!userId) return { ok: false, error: 'unauthenticated' };
+    if (!data?.rideId || typeof data.rideId !== 'string' || !RidesGateway.UUID_RE.test(data.rideId)) {
+      return { ok: false, error: 'invalid_ride_id' };
+    }
     client.leave(this.rideRoom(data.rideId));
+    return { ok: true };
+  }
+
+  /**
+   * SEC: shared join/leave budget — JOIN_LEAVE_LIMIT events per
+   * JOIN_LEAVE_WINDOW_MS per socket. Over budget the socket is disconnected
+   * (the app reconnects cleanly, and every reconnect re-verifies auth), so a
+   * looping client cannot churn ride-row lookups and room state for free.
+   */
+  private consumeJoinLeaveBudget(client: AuthedSocket): boolean {
+    const now = Date.now();
+    const entry = this.joinLeaveBudget.get(client);
+    if (!entry || now - entry.windowStart >= RidesGateway.JOIN_LEAVE_WINDOW_MS) {
+      this.joinLeaveBudget.set(client, { windowStart: now, count: 1 });
+      return true;
+    }
+    entry.count += 1;
+    if (entry.count <= RidesGateway.JOIN_LEAVE_LIMIT) return true;
+    this.logger.warn(
+      `join/leave budget exceeded — disconnecting socket ${client.id} (user ${client.data?.userId ?? 'none'})`,
+    );
+    client.disconnect(true);
+    return false;
   }
 
   // Driver app streams its position while a ride is active; relayed 1:1 to
