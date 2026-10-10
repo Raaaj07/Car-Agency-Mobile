@@ -467,7 +467,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       where: { riderId, status: In([...ACTIVE_RIDE_STATUSES]) },
     });
     if (active > 0) {
-      throw new BadRequestException('You already have an active ride. Cancel or complete it first.');
+      // 409 (not 400): "the resource is in a state that rejects this
+      // request" — the frontend surfaces the message either way.
+      throw new ConflictException('You already have an active ride. Cancel or complete it first.');
     }
     const ownDriver = await this.drivers.findByUserId(riderId).catch(() => null);
     if (ownDriver?.isOnline) {
@@ -506,11 +508,12 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         // SEC-4: two concurrent POST /rides both passed the count() pre-check
         // above — the partial unique index UQ_rides_active_per_rider rejects
         // the second INSERT (Postgres 23505). The database is the only place
-        // this race can be closed; map its violation onto the same friendly
-        // message the pre-check uses. Anything else still surfaces as-is.
+        // this race can be closed; map its violation onto the same conflict
+        // (409) + friendly message the pre-check uses. Anything else still
+        // surfaces as-is.
         const e = err as { code?: string; driverError?: { code?: string } };
         if (e.code === '23505' || e.driverError?.code === '23505') {
-          throw new BadRequestException('You already have an active ride. Cancel or complete it first.');
+          throw new ConflictException('You already have an active ride. Cancel or complete it first.');
         }
         throw err;
       }

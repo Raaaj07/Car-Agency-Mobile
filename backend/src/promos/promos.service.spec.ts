@@ -428,6 +428,54 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
     });
   });
 
+  describe('promo cap invariant across booking + completion (Task 10)', () => {
+    it('completed + in-flight redemptions never exceed the cap', async () => {
+      const promo = promoRow({ maxRedemptions: 2, redemptionCount: 0 });
+      const { service } = buildService([promo], 0);
+
+      // One fake transaction manager shared by booking and completion;
+      // issued = completed redemptions + in-flight rides, live.
+      let inFlight = 0;
+      let completed = 0;
+      const qb = counterQb(); // conditional increment (affected:1 while room remains)
+      const em = {
+        findOne: jest.fn().mockResolvedValue(promo),
+        count: jest
+          .fn()
+          .mockImplementation((_cls: unknown, opts: { where?: { riderId?: string } }) =>
+            Promise.resolve(opts?.where?.riderId ? completed : inFlight),
+          ),
+        insert: jest.fn().mockResolvedValue({}),
+        createQueryBuilder: jest.fn().mockReturnValue(qb),
+      } as unknown as EntityManager;
+
+      // A and B book while there is room (issued 0, then 1 — always < 2)...
+      await service.assertBookable(em, 'VAZHI20', 'rider-a');
+      inFlight++;
+      await service.assertBookable(em, 'VAZHI20', 'rider-b');
+      inFlight++;
+
+      // ...C is refused: completed (0) + in-flight (2) fill the cap.
+      await expect(service.assertBookable(em, 'VAZHI20', 'rider-c')).rejects.toThrow(
+        'has reached its redemption limit.',
+      );
+
+      // A completes: the conditional increment wins, the ride leaves the
+      // in-flight set. B completes the same way — still under the cap.
+      inFlight--;
+      await service.recordRedemption('VAZHI20', 'ride-a', 'rider-a', em);
+      completed++;
+      inFlight--;
+      await service.recordRedemption('VAZHI20', 'ride-b', 'rider-b', em);
+      completed++;
+
+      // Exactly two increments for cap=2, and the invariant held throughout.
+      expect(qb.execute).toHaveBeenCalledTimes(2);
+      expect(completed + inFlight).toBeLessThanOrEqual(promo.maxRedemptions ?? 2);
+      expect(completed).toBe(2);
+    });
+  });
+
   describe('admin CRUD', () => {
     it('createPromo normalises the code and applies defaults', async () => {
       const rows: PromoRow[] = [];

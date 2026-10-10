@@ -390,7 +390,7 @@ describe('RidesService phase-1 fixes', () => {
       dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
     };
 
-    it('create() losing the race maps the unique violation to the friendly 400', async () => {
+    it('create() losing the race maps the unique violation to a 409 conflict', async () => {
       rides.count.mockResolvedValue(0); // the pre-check saw zero — then lost
       drivers.findByUserId.mockResolvedValue(null);
       rides.save.mockRejectedValueOnce(
@@ -400,9 +400,9 @@ describe('RidesService phase-1 fixes', () => {
         ),
       );
 
-      await expect(service.create('u1', bookingDto)).rejects.toThrow(
-        'You already have an active ride',
-      );
+      const err = await service.create('u1', bookingDto).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException); // 409, not 400
+      expect((err as Error).message).toContain('You already have an active ride');
       // The loser never reaches the driver search — no second offer storm.
       expect(drivers.findNearby).not.toHaveBeenCalled();
       expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
