@@ -11,6 +11,7 @@ import { PaymentStatus, RideEntity, RideStatus } from '../rides/entities/ride.en
 import { PaymentEntity } from '../payments/entities/payment.entity';
 import { RidesService } from '../rides/rides.service';
 import { appTimezone, zonedStartOfDay, zonedStartOfDayAgo } from '../common/timezone';
+import { maskPhone, last4 } from '../common/log-hygiene';
 import { RouteDistanceService } from '../rides/route-distance.service';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminAuditLogEntity } from './entities/admin-audit-log.entity';
@@ -74,13 +75,7 @@ const RIDE_CSV_HEADERS = [
   'cancellationReason',
 ];
 
-/** Ride list/detail never expose raw phone numbers — only this masked form. */
-function maskPhone(phone?: string | null): string {
-  const digits = (phone ?? '').replace(/\D/g, '');
-  if (!digits) return '';
-  if (digits.length < 5) return '•'.repeat(digits.length);
-  return `${digits.slice(0, 3)}•••••${digits.slice(-2)}`;
-}
+/** Ride list/detail never expose raw phone numbers — only the shared masked form. */
 
 @Injectable()
 export class AdminService implements OnApplicationBootstrap {
@@ -114,7 +109,7 @@ export class AdminService implements OnApplicationBootstrap {
         .catch(() => null);
       if (user && (user.role as string) !== 'admin') {
         await this.users.update({ id: user.id }, { role: 'admin' as any }).catch(() => {});
-        this.logger.log(`Promoted ${user.phone} to admin via ADMIN_PHONES`);
+        this.logger.log(`Promoted •••••${last4(user.phone)} to admin via ADMIN_PHONES`);
       }
     }
   }
