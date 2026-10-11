@@ -209,6 +209,10 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!driver || (driver as any).status !== 'approved') return;
     const ride = await this.rides.findOne({ where: { id: data.rideId } }).catch(() => null);
     if (!ride || ride.driverId !== driver.id) return;
+    // Pass-4 (task 7): relay only while the trip is live — a completed /
+    // cancelled ride must stop leaking positions (the driver app can keep
+    // streaming for a moment after the trip ends).
+    if (!['matched', 'driver_en_route', 'in_progress'].includes(ride.status)) return;
     client.to(this.rideRoom(data.rideId)).emit('driver:location', {
       rideId: data.rideId,
       lat: data.lat,
@@ -222,7 +226,19 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() data: { rideId: string },
   ): void {
-    this.logger.log(`Driver ${client.data.userId} acknowledged ride request ${data?.rideId}`);
+    // Pass-4 (task 7): an ack must come from an authenticated socket and
+    // carry a UUID ride id — anything else is ignored, and only the
+    // VALIDATED id ever reaches the log (never attacker-controlled input).
+    const userId = client.data?.userId;
+    if (!userId) return;
+    if (
+      !data?.rideId ||
+      typeof data.rideId !== 'string' ||
+      !RidesGateway.UUID_RE.test(data.rideId)
+    ) {
+      return;
+    }
+    this.logger.log(`Driver ${userId} acknowledged ride request ${data.rideId}`);
   }
 
   // SEC-11: the old `nearby:subscribe` / `nearby:unsubscribe` handlers and

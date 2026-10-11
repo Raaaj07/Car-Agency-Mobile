@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import { Logger } from '@nestjs/common';
 import { RidesGateway } from './rides.gateway';
 
 const RIDE_ID = '11111111-2222-3333-4444-555555555555';
@@ -154,5 +155,114 @@ describe('RidesGateway room guards (SEC)', () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+});
+
+/**
+ * Pass-4 (task 7): driver:location relays only while the trip is live, and
+ * ride:request:ack accepts only an authenticated socket carrying a UUID —
+ * the log line never sees attacker-controlled input.
+ */
+describe('RidesGateway trip-live relay + ack validation (pass-4 task-7)', () => {
+  let gateway: RidesGateway;
+  let rides: { findOne: jest.Mock };
+  let drivers: { findOne: jest.Mock };
+  let client: TestClient & { to: jest.Mock };
+  let roomEmit: jest.Mock;
+
+  const locSocket = () => client as unknown as Parameters<RidesGateway['onDriverLocation']>[0];
+
+  beforeEach(() => {
+    rides = { findOne: jest.fn() };
+    drivers = { findOne: jest.fn() };
+    gateway = new RidesGateway(
+      { verifyAsync: jest.fn() } as never,
+      { get: jest.fn() } as never,
+      { register: jest.fn(), createRideEvent: jest.fn() } as never,
+      rides as never,
+      drivers as never,
+      { findOne: jest.fn() } as never,
+    );
+    roomEmit = jest.fn();
+    client = {
+      id: 'socket-1',
+      data: { userId: 'user-1', role: null },
+      join: jest.fn(),
+      leave: jest.fn(),
+      disconnect: jest.fn(),
+      to: jest.fn(() => ({ emit: roomEmit })),
+    };
+  });
+
+  const armTrip = (status: string) => {
+    drivers.findOne.mockResolvedValue({ id: 'driver-9', userId: 'user-1', status: 'approved' });
+    rides.findOne.mockResolvedValue({
+      id: RIDE_ID,
+      riderId: 'rider-1',
+      driverId: 'driver-9',
+      status,
+    });
+  };
+
+  it('relays driver:location while the trip is live', async () => {
+    armTrip('in_progress');
+
+    await gateway.onDriverLocation(locSocket(), { rideId: RIDE_ID, lat: 12.9, lng: 77.6 });
+
+    expect(client.to).toHaveBeenCalledWith(expect.stringContaining(RIDE_ID));
+    expect(roomEmit).toHaveBeenCalledWith(
+      'driver:location',
+      expect.objectContaining({ rideId: RIDE_ID, lat: 12.9, lng: 77.6 }),
+    );
+  });
+
+  it('refuses the relay for a completed ride', async () => {
+    armTrip('completed');
+
+    await gateway.onDriverLocation(locSocket(), { rideId: RIDE_ID, lat: 12.9, lng: 77.6 });
+
+    expect(client.to).not.toHaveBeenCalled();
+    expect(roomEmit).not.toHaveBeenCalled();
+  });
+
+  it('refuses the relay for a cancelled ride too', async () => {
+    armTrip('cancelled');
+
+    await gateway.onDriverLocation(locSocket(), { rideId: RIDE_ID, lat: 12.9, lng: 77.6 });
+
+    expect(roomEmit).not.toHaveBeenCalled();
+  });
+
+  describe('ride:request:ack', () => {
+    let logSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => logSpy.mockRestore());
+
+    it('ignores an object payload instead of logging attacker input', () => {
+      gateway.onRideRequestAck(
+        locSocket(),
+        { rideId: { evil: 'payload' } } as unknown as { rideId: string },
+      );
+
+      expect(logSpy).not.toHaveBeenCalled();
+    });
+
+    it('ignores an unauthenticated socket', () => {
+      client.data = {};
+
+      gateway.onRideRequestAck(locSocket(), { rideId: RIDE_ID });
+
+      expect(logSpy).not.toHaveBeenCalled();
+    });
+
+    it('logs only the validated UUID from an authenticated socket', () => {
+      gateway.onRideRequestAck(locSocket(), { rideId: RIDE_ID });
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining(RIDE_ID));
+    });
   });
 });
