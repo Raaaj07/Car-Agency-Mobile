@@ -40,6 +40,11 @@ export const authApi = {
     ).data,
   updateMe: async (patch: { name?: string; email?: string }) =>
     (await api.patch<User>('/auth/me', patch)).data,
+  // Pass-4 (task 12): compliance account deletion. The server anonymises the
+  // row (no PII remains) and frees the phone number for re-sign-up, so after
+  // this returns there is nothing left to revoke — call logout(false).
+  // Returns the 409 message cleanly via getApiError when an active ride blocks it.
+  deleteMe: async () => (await api.delete('/auth/me')).data as { ok: true },
   uploadAvatar: async (file: { uri: string; name: string; type: string }) => {
     const form = new FormData();
     form.append('avatar', file as any);

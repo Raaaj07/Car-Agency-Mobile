@@ -15,6 +15,7 @@ import {
   HelpCircle,
   ArrowLeftRight,
   Megaphone,
+  Trash2,
 } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { colors, radii, typography } from '../../theme/theme';
@@ -98,6 +99,9 @@ export const ProfileScreen: React.FC = () => {
   // Server-truth online flag (fetched with the application) so switching
   // back to Rider can take an online driver offline first.
   const [isDriverOnline, setIsDriverOnline] = useState(false);
+  // Pass-4 (task 12): guards the destructive delete so a double-tap can't
+  // fire two DELETE requests; also drives the spinner on the row.
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const loadApp = useCallback(async () => {
     try {
@@ -199,6 +203,37 @@ export const ProfileScreen: React.FC = () => {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Log out', style: 'destructive', onPress: handleLogout },
     ]);
+  };
+
+  // Pass-4 (task 12): compliance account deletion (Google Play data-safety +
+  // Apple 5.1.1(v)). The server anonymises the row in one transaction and
+  // frees the phone number for re-sign-up, so once it returns there is
+  // nothing left to revoke locally -> logout(false) clears tokens/state only.
+  const handleDelete = async () => {
+    if (isDeleting) return; // ignore double-taps
+    setIsDeleting(true);
+    try {
+      await authApi.deleteMe();
+      resetRide();
+      logout(false); // no server revoke: the account is already gone
+    } catch (err) {
+      // 409 (active ride) surfaces its message verbatim; anything else uses
+      // the generic API error string.
+      Alert.alert("Can't delete account", getApiError(err));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const confirmDelete = () => {
+    Alert.alert(
+      'Delete account?',
+      'This permanently erases your profile, saved places and driver documents. It cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: handleDelete },
+      ],
+    );
   };
 
   // Active trip blocks any mode switch (both directions) — the trip has to
@@ -372,6 +407,13 @@ export const ProfileScreen: React.FC = () => {
               title="Sign out"
               danger
               onPress={confirmLogout}
+            />
+            <MenuRow
+              icon={<Trash2 size={20} color={colors.danger} />}
+              title={isDeleting ? 'Deleting…' : 'Delete account'}
+              subtitle="Permanently erase your account and data"
+              danger
+              onPress={confirmDelete}
               last
             />
           </Card>
@@ -458,6 +500,14 @@ export const ProfileScreen: React.FC = () => {
               title="Sign out"
               danger
               onPress={confirmLogout}
+            />
+            <MenuRow
+              plain
+              icon={<Trash2 size={20} color={colors.danger} />}
+              title={isDeleting ? 'Deleting…' : 'Delete account'}
+              subtitle="Permanently erase your account and data"
+              danger
+              onPress={confirmDelete}
               last
             />
           </Card>
