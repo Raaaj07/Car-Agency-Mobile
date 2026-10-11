@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -10,10 +11,14 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { createHash } from 'crypto';
-import { Repository } from 'typeorm';
+import { createHash, randomUUID } from 'crypto';
+import { FindOptionsWhere, In, Repository } from 'typeorm';
 import { User as FrontendUser } from '../common/frontend-contracts';
 import { DriverEntity } from '../drivers/entities/driver.entity';
+import { GeoService } from '../drivers/geo.service';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
+import { SavedPlaceEntity } from '../places/entities/saved-place.entity';
+import { ACTIVE_RIDE_STATUSES, RideEntity } from '../rides/entities/ride.entity';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { UserEntity } from './entities/user.entity';
@@ -61,6 +66,9 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly jwt: JwtService,
     private readonly storage: StorageService,
+    // Pass-4 (task 12): account deletion must also drop a driver from the
+    // Redis geo-sets (force offline), so a deleted driver stops matching.
+    private readonly geo: GeoService,
   ) {}
 
   // Matches MobileNumberScreen -> POST /auth/otp/send
@@ -355,6 +363,104 @@ export class AuthService {
 
   async logout(userId: string): Promise<{ ok: true }> {
     await this.users.update({ id: userId }, { refreshTokenHash: null });
+    return { ok: true };
+  }
+
+  /**
+   * Pass-4 (task 12): compliance account deletion (Google Play data-safety /
+   * Apple App Store Review Guideline 5.1.1(v)).
+   *
+   * - refuses (409) while the user holds an active ride as rider OR driver;
+   * - anonymises the user row in ONE transaction (name / email / social ids /
+   *   avatar / refresh-hash cleared, phone replaced by a non-reusable
+   *   tombstone so the real number can sign up again), deletes saved places,
+   *   and writes an `account_delete` audit row;
+   * - rides/payments rows are KEPT — financial records must survive — but now
+   *   point at the anonymised user;
+   * - a driver row is additionally suspended + forced offline, its document
+   *   columns and UPI VPA cleared, and the stored files purged AFTER the
+   *   commit (storage side effects never hold the transaction open).
+   */
+  async deleteMe(userId: string): Promise<{ ok: true }> {
+    const manager = this.users.manager;
+    const user = await manager.findOne(UserEntity, { where: { id: userId } });
+    if (!user) throw new UnauthorizedException('User not found');
+
+    const driver = await manager.findOne(DriverEntity, { where: { userId } });
+
+    // Tombstone: `deleted:<uuid>` truncated to the column length. Unique so
+    // the index can't collide, and the real number is free again instantly.
+    const tombstonePhone = `deleted:${randomUUID().replace(/-/g, '')}`.slice(0, 20);
+
+    await manager.transaction(async (tx) => {
+      // Re-check inside the transaction: a ride booked between the first read
+      // and this write must still block the deletion (rollback via throw).
+      const rideWhere: FindOptionsWhere<RideEntity>[] = [
+        { riderId: userId, status: In(ACTIVE_RIDE_STATUSES) },
+      ];
+      if (driver) rideWhere.push({ driverId: driver.id, status: In(ACTIVE_RIDE_STATUSES) });
+      const active = await tx.findOne(RideEntity, { where: rideWhere });
+      if (active) {
+        throw new ConflictException('Finish or cancel your active ride before deleting your account');
+      }
+
+      await tx.update(
+        UserEntity,
+        { id: userId },
+        {
+          isActive: false,
+          refreshTokenHash: null,
+          name: 'Deleted user',
+          email: null,
+          emailVerified: false,
+          googleId: null,
+          appleId: null,
+          avatar: null,
+          phone: tombstonePhone,
+        },
+      );
+      await tx.delete(SavedPlaceEntity, { userId });
+
+      if (driver) {
+        await tx.update(
+          DriverEntity,
+          { id: driver.id },
+          {
+            status: 'suspended',
+            isOnline: false,
+            isAvailable: false,
+            upiVpa: null,
+            profilePhotoUrl: null,
+            carImageUrl: null,
+            drivingLicenceImageUrl: null,
+            rcImageUrl: null,
+            drivingLicenceNumber: null,
+            rcNumber: null,
+            licenseImagePath: null,
+            rcImagePath: null,
+            vehiclePhotoPath: null,
+          },
+        );
+      }
+
+      await tx.save(
+        tx.create(AdminAuditLogEntity, {
+          actorUserId: userId,
+          actorName: user.name,
+          action: 'account_delete',
+          targetType: 'user',
+          targetId: userId,
+          meta: { driverId: driver?.id ?? null },
+        }),
+      );
+    });
+
+    if (driver) {
+      await this.geo.removeDriver(driver.id, driver.vehicleType).catch(() => undefined);
+      for (const docPath of [driver.licenseImagePath, driver.rcImagePath, driver.vehiclePhotoPath]) {
+        await this.storage.deleteDocument(docPath).catch(() => undefined);
+      }
+    }
     return { ok: true };
   }
 

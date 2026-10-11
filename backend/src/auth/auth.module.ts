@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { DriversModule } from '../drivers/drivers.module';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { StorageService } from '../drivers/storage.service';
 import { AuthController } from './auth.controller';
@@ -21,6 +22,10 @@ import { TokensService } from './tokens.service';
 @Module({
   imports: [
     TypeOrmModule.forFeature([UserEntity, DriverEntity]),
+    // Pass-4 (task 12): account deletion needs GeoService (drop the driver
+    // from the Redis geo-sets) — no cycle: DriversModule imports nothing
+    // from auth.
+    DriversModule,
     PassportModule,
     HttpModule,
     JwtModule.registerAsync({

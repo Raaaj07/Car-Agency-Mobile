@@ -4,6 +4,8 @@ import { JwtService } from '@nestjs/jwt';
 import { Repository } from 'typeorm';
 import appleSignin from 'apple-signin-auth';
 import { DriverEntity } from '../drivers/entities/driver.entity';
+import { GeoService } from '../drivers/geo.service';
+import { SavedPlaceEntity } from '../places/entities/saved-place.entity';
 import { StorageService } from '../drivers/storage.service';
 import { AuthService } from './auth.service';
 import { UserEntity } from './entities/user.entity';
@@ -29,7 +31,19 @@ describe('AuthService', () => {
     save: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
+    manager: { findOne: jest.Mock; transaction: jest.Mock };
   };
+  // Pass-4 (task 12): transaction double — `users.manager.transaction(cb)`
+  // hands the callback this `tx`, which records every write it performs.
+  let tx: {
+    findOne: jest.Mock;
+    update: jest.Mock;
+    delete: jest.Mock;
+    save: jest.Mock;
+    create: jest.Mock;
+  };
+  let geo: { removeDriver: jest.Mock };
+  let storage: { deleteDocument: jest.Mock };
   let otp: {
     verify: jest.Mock;
     assertCanSend: jest.Mock;
@@ -110,7 +124,24 @@ describe('AuthService', () => {
       save: jest.fn().mockImplementation(async (u: unknown) => u),
       create: jest.fn().mockImplementation((u: unknown) => u),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      manager: { findOne: jest.fn(), transaction: jest.fn() },
     };
+    // Transaction double for deleteMe: run the callback with `tx`, which
+    // records every write. findOne dispatches by entity (RideEntity only).
+    tx = {
+      findOne: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+      save: jest.fn().mockImplementation(async (row: unknown) => row),
+      // TypeORM's create(entityClass, obj) returns the object as an entity.
+      create: jest.fn().mockImplementation((_entity: unknown, row: unknown) => row),
+    };
+    users.manager.transaction.mockImplementation(
+      async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
+    );
+    users.manager.findOne.mockResolvedValue(null);
+    geo = { removeDriver: jest.fn().mockResolvedValue(undefined) };
+    storage = { deleteDocument: jest.fn().mockResolvedValue(undefined) };
     otp = {
       verify: jest.fn().mockResolvedValue({ ok: true }),
       assertCanSend: jest.fn().mockResolvedValue(undefined),
@@ -132,7 +163,8 @@ describe('AuthService', () => {
       { sendOtp: jest.fn().mockResolvedValue(undefined) } as unknown as SmsProvider,
       { get: configGet } as unknown as ConfigService,
       {} as unknown as JwtService,
-      {} as unknown as StorageService,
+      storage as unknown as StorageService,
+      geo as unknown as GeoService,
     );
   });
 
@@ -397,6 +429,152 @@ describe('AuthService', () => {
       await service.updateMe('u-1', { email: 'A@EXAMPLE.com' });
 
       expect(user.emailVerified).toBe(true);
+    });
+  });
+
+  /**
+   * Pass-4 (task 12): compliance account deletion. One transaction, no data
+   * resurrection through the old phone, and driver document files purged.
+   */
+  describe('deleteMe (pass-4 task-12)', () => {
+    const makeDriver = (overrides: Record<string, unknown> = {}) => ({
+      id: 'drv-1',
+      userId: 'u-1',
+      vehicleType: 'sedan',
+      status: 'approved',
+      isOnline: true,
+      isAvailable: true,
+      upiVpa: 'ok@upi',
+      licenseImagePath: 'uploads/lic.png',
+      rcImagePath: 'uploads/rc.png',
+      vehiclePhotoPath: 'uploads/car.png',
+      ...overrides,
+    });
+
+    // users.manager.findOne dispatches by entity: UserEntity -> the user row,
+    // DriverEntity -> the driver row, RideEntity -> the active-ride probe.
+    const setManagerReads = (opts: {
+      user?: unknown;
+      driver?: unknown;
+      activeRide?: unknown;
+    }) => {
+      users.manager.findOne.mockImplementation(
+        async (entity: { name?: string }, _where?: unknown) => {
+          if (entity.name?.includes('User')) return opts.user ?? null;
+          if (entity.name?.includes('Driver')) return opts.driver ?? null;
+          return opts.activeRide ?? null; // RideEntity probe (also the tx one via tx.findOne)
+        },
+      );
+      tx.findOne.mockResolvedValue(opts.activeRide ?? null);
+    };
+
+    it('refuses with 409 while the user has an active ride as rider', async () => {
+      setManagerReads({ user: makeRider(), activeRide: { id: 'ride-1' } });
+
+      await expect(service.deleteMe('u-1')).rejects.toMatchObject({ status: 409 });
+      // The in-transaction re-check threw — nothing was ever written.
+      expect(tx.update).not.toHaveBeenCalled();
+      expect(tx.save).not.toHaveBeenCalled();
+    });
+
+    it('refuses with 409 while the user has an active ride as driver', async () => {
+      setManagerReads({
+        user: makeRider(),
+        driver: makeDriver(),
+        activeRide: { id: 'ride-2' },
+      });
+
+      await expect(service.deleteMe('u-1')).rejects.toMatchObject({ status: 409 });
+      expect(tx.update).not.toHaveBeenCalled();
+      expect(tx.save).not.toHaveBeenCalled();
+    });
+
+    it('anonymises the user row, deletes saved places and audits — in one transaction', async () => {
+      setManagerReads({
+        user: makeRider({ email: 'keep@example.com' }),
+        driver: null,
+        activeRide: null,
+      });
+
+      const result = await service.deleteMe('u-1');
+
+      expect(result).toEqual({ ok: true });
+      // tx.update(entity, where, patch) — patch is the THIRD argument.
+      const [, userWhere, userPatch] = tx.update.mock.calls.find(
+        (c: unknown[]) => (c[0] as { name?: string })?.name?.includes('User'),
+      )!;
+      expect(userWhere).toEqual({ id: 'u-1' });
+      expect(userPatch).toMatchObject({
+        isActive: false,
+        refreshTokenHash: null,
+        name: 'Deleted user',
+        email: null,
+        emailVerified: false,
+        googleId: null,
+        appleId: null,
+        avatar: null,
+      });
+      // Phone is a non-reusable tombstone (see next test) — never the old number.
+      expect(userPatch.phone).toMatch(/^deleted:/);
+
+      expect(tx.delete).toHaveBeenCalledWith(SavedPlaceEntity, { userId: 'u-1' });
+
+      const audit = tx.save.mock.calls[0][0];
+      expect(audit).toMatchObject({
+        action: 'account_delete',
+        targetType: 'user',
+        targetId: 'u-1',
+        actorUserId: 'u-1',
+      });
+      // No PII in the audit row beyond ids.
+      expect(JSON.stringify(audit)).not.toMatch(/example\.com/);
+    });
+
+    it('frees the phone number for re-signup (tombstone, column-safe length)', async () => {
+      setManagerReads({ user: makeRider(), driver: null, activeRide: null });
+
+      await service.deleteMe('u-1');
+
+      const patch = tx.update.mock.calls.find(
+        (c: unknown[]) => (c[0] as { name?: string })?.name?.includes('User'),
+      )![2] as { phone: string };
+      expect(patch.phone).not.toBe(adminPhone); // the real number is reusable
+      expect(patch.phone.length).toBeLessThanOrEqual(20); // fits varchar(20)
+      expect(patch.phone).toMatch(/^deleted:[0-9a-f]+$/); // unique per deletion
+    });
+
+    it('suspends the driver, forces offline, clears doc columns + VPA, purges files', async () => {
+      setManagerReads({ user: makeRider(), driver: makeDriver(), activeRide: null });
+
+      await service.deleteMe('u-1');
+
+      const patch = tx.update.mock.calls.find(
+        (c: unknown[]) => (c[0] as { name?: string })?.name?.includes('Driver'),
+      )![2] as Record<string, unknown>;
+      expect(patch).toMatchObject({
+        status: 'suspended',
+        isOnline: false,
+        isAvailable: false,
+        upiVpa: null,
+        licenseImagePath: null,
+        rcImagePath: null,
+        vehiclePhotoPath: null,
+      });
+
+      // Forced offline in the Redis geo-sets; files purged AFTER the commit.
+      expect(geo.removeDriver).toHaveBeenCalledWith('drv-1', 'sedan');
+      expect(storage.deleteDocument).toHaveBeenCalledWith('uploads/lic.png');
+      expect(storage.deleteDocument).toHaveBeenCalledWith('uploads/rc.png');
+      expect(storage.deleteDocument).toHaveBeenCalledWith('uploads/car.png');
+      expect(storage.deleteDocument).toHaveBeenCalledTimes(3);
+    });
+
+    it('never blocks deletion on geo/storage failures (best-effort after commit)', async () => {
+      setManagerReads({ user: makeRider(), driver: makeDriver(), activeRide: null });
+      geo.removeDriver.mockRejectedValue(new Error('redis down'));
+      storage.deleteDocument.mockRejectedValue(new Error('disk gone'));
+
+      await expect(service.deleteMe('u-1')).resolves.toEqual({ ok: true });
     });
   });
 });

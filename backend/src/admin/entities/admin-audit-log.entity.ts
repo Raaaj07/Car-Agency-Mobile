@@ -13,9 +13,13 @@ export type AuditAction =
   // distance_inflated / location_jump) — never block a trip, just leave a
   // trace the admin ride detail surfaces as `flags[]`.
   | 'ride_flag'
-  | 'upi_update';
+  | 'upi_update'
+  // Pass-4 (task 12): self-service compliance account deletion.
+  | 'account_delete';
 
-export type AuditTargetType = 'driver' | 'ride';
+// Pass-4 (task 12): account deletion targets the USER row (targetId = userId);
+// driver-specific effects are recorded in `meta.driverId`.
+export type AuditTargetType = 'driver' | 'ride' | 'user';
 
 @Entity('admin_audit_logs')
 @Index(['targetType', 'targetId'])

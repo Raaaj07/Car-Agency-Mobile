@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Ip, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Ip, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
@@ -81,6 +81,16 @@ export class AuthController {
   @Patch('me')
   updateMe(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateMeDto) {
     return this.auth.updateMe(user.userId, dto);
+  }
+
+  // Pass-4 (task 12): compliance account deletion (Play + Apple 5.1.1(v)).
+  // 3/hour: destructive + audit-writing — a scripted loop is never a
+  // legitimate user action. Refuses with 409 while an active ride is held.
+  @Throttle({ default: { limit: 3, ttl: 3_600_000 } })
+  @Delete('me')
+  @HttpCode(HttpStatus.OK)
+  deleteMe(@CurrentUser() user: AuthenticatedUser) {
+    return this.auth.deleteMe(user.userId);
   }
 
   // Route throttle: 5/min — an avatar is a human-paced action, but the

@@ -64,4 +64,15 @@ describe('route-level @Throttle overrides (SEC-9)', () => {
   it('every override is stricter than the 300 req/min global default', () => {
     for (const route of ROUTES) expect(route.limit).toBeLessThan(300);
   });
+
+  // Account deletion is destructive + audit-writing and runs at most 3 times
+  // per HOUR, so it lives outside the per-minute `ROUTES` list above.
+  it('DELETE /auth/me is capped at 3 requests/hour (pass-4 task-12)', () => {
+    expect(
+      Reflect.getMetadata(`${THROTTLER_LIMIT}default`, AuthController.prototype.deleteMe),
+    ).toBe(3);
+    expect(
+      Reflect.getMetadata(`${THROTTLER_TTL}default`, AuthController.prototype.deleteMe),
+    ).toBe(3_600_000);
+  });
 });
