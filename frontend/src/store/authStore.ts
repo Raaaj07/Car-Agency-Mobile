@@ -196,6 +196,31 @@ export const useAuthStore = create<AuthState>((set) => ({
         });
       }
       if (mode === 'driver') set({ activeMode: 'driver' });
+      // Pass-4 (task 11): a stored access token may be absent or already
+      // wiped (it was expired / cleared), while the refresh token survives.
+      // Do NOT log the user out in that case — mint a fresh access token via
+      // the normal client path, then continue as authenticated below.
+      if (!access && refresh) {
+        tokenManager.setTokens({ refreshToken: refresh });
+        set({ refreshToken: refresh });
+        const { authApi } = await import('../api/auth');
+        try {
+          const tokens = await authApi.refresh(refresh);
+          access = tokens.accessToken;
+          refresh = tokens.refreshToken ?? refresh;
+          tokenManager.setTokens({ accessToken: access, refreshToken: refresh });
+        } catch (e) {
+          if (isHttpResponseError(e)) {
+            // 401/403 = the refresh token is dead → treat as logged out.
+            // (remote=false: nothing to revoke server-side on a dead token.)
+            useAuthStore.getState().logout(false);
+            return;
+          }
+          // No response (airplane mode / backend asleep) → offline retry screen.
+          set({ bootOffline: true });
+          return;
+        }
+      }
       if (!access) return;
       // Validate against the server; refresh happens via the 401 interceptor.
       const { authApi } = await import('../api/auth');

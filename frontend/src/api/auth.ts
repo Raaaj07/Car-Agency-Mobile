@@ -27,6 +27,17 @@ export const authApi = {
   appleSignIn: async (identityToken: string, fullName?: string) =>
     (await api.post<VerifyOtpResponse>('/auth/apple', { identityToken, fullName })).data,
   me: async () => (await api.get<User>('/auth/me')).data,
+  // Pass-4 (task 11): explicit refresh for the refresh-only cold-start path
+  // (access token missing/expired+cleared, refresh still stored). The axios
+  // interceptor would normally drive this via a 401, but on restore there is
+  // no access token to send, so we refresh up front. New tokens land in
+  // tokenManager via setTokens (onTokensChanged wiring).
+  refresh: async (refreshToken: string) =>
+    (
+      await api.post<{ accessToken: string; refreshToken: string }>('/auth/refresh', {
+        refreshToken,
+      })
+    ).data,
   updateMe: async (patch: { name?: string; email?: string }) =>
     (await api.patch<User>('/auth/me', patch)).data,
   uploadAvatar: async (file: { uri: string; name: string; type: string }) => {

@@ -48,9 +48,12 @@ export function connectSocket(token: string, role?: 'rider' | 'driver' | 'admin'
 
   // Expired/revoked JWT: stop infinite reconnect loop and force re-login.
   // Uses tokenManager (not authStore) to avoid a require cycle.
+  // Pass-4 (task 11): match only real auth failures. The old pattern matched
+  // the bare substring "token", so an unrelated server message like
+  // "tokens busy" (or "no token in cache") forced a spurious logout.
   socket.on('connect_error', (err: any) => {
     const msg = String(err?.message ?? '');
-    if (/jwt|unauthorized|401|token/i.test(msg)) {
+    if (/\bjwt\b|unauthorized|401|expired/i.test(msg)) {
       socket.disconnect();
       tokenManager.handleUnauthorized();
     }
