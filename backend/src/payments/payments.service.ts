@@ -165,42 +165,57 @@ export class PaymentsService {
     if (ride.paymentStatus === 'disputed') {
       throw new ConflictException('Payment is disputed — an admin must resolve it first');
     }
-    if (payment.status === 'paid' || ride.paymentStatus === 'paid') {
-      // Idempotent: double-tap / retry after success.
-      return {
-        paid: true,
-        total: ride.fareBreakdown.total + (ride.tipAmount ?? 0),
-        receiptId: payment.id,
-      };
-    }
+    // Hardening: the whole check-and-settle runs under the ride row lock and
+    // re-reads the ride AND payment inside it. Unlocked, a verify racing the
+    // Razorpay webhook, a driver's "Amount Received" or an admin dispute could
+    // act on a stale snapshot and overwrite the other path's decision.
+    const outcome = await this.withRideLock(ride.id, async (lockedRide, manager) => {
+      const lockedPayment = await manager.findOne(PaymentEntity, { where: { id: payment.id } });
+      if (!lockedPayment) {
+        throw new NotFoundException('Payment order not found');
+      }
+      if (lockedRide.paymentStatus === 'disputed') {
+        throw new ConflictException('Payment is disputed — an admin must resolve it first');
+      }
+      const total = lockedRide.fareBreakdown.total;
+      // Include tip so receipt matches what was charged (total + tip).
+      const charged = total + (lockedRide.tipAmount ?? 0);
+      if (lockedPayment.status === 'paid' || lockedRide.paymentStatus === 'paid') {
+        // Idempotent: double-tap / retry after success (or the webhook won).
+        return { kind: 'paid' as const, total: charged, receiptId: lockedPayment.id };
+      }
+      if (lockedPayment.amount < total || lockedPayment.amount > charged) {
+        throw new BadRequestException(
+          `Order amount ₹${lockedPayment.amount} does not match ride fare ₹${total}`,
+        );
+      }
 
-    const total = ride.fareBreakdown.total;
-    if (payment.amount < total || payment.amount > total + (ride.tipAmount ?? 0)) {
-      throw new BadRequestException(
-        `Order amount ₹${payment.amount} does not match ride fare ₹${total}`,
+      const verified = await this.provider.verifyPayment({
+        orderId: dto.orderId,
+        paymentId: dto.paymentId ?? '',
+        signature: dto.signature ?? '',
+      });
+
+      lockedPayment.status = verified ? 'paid' : 'failed';
+      lockedPayment.providerPaymentId = dto.paymentId ?? null;
+      await manager.save(lockedPayment);
+      if (!verified) {
+        // The 'failed' row must COMMIT, so the 400 is thrown after the lock.
+        return { kind: 'failed' as const };
+      }
+
+      await manager.update(
+        RideEntity,
+        { id: lockedRide.id },
+        { paymentStatus: 'paid', paymentMarkedBy: 'provider' },
       );
-    }
-
-    const verified = await this.provider.verifyPayment({
-      orderId: dto.orderId,
-      paymentId: dto.paymentId ?? '',
-      signature: dto.signature ?? '',
+      return { kind: 'paid' as const, total: charged, receiptId: lockedPayment.id };
     });
 
-    payment.status = verified ? 'paid' : 'failed';
-    payment.providerPaymentId = dto.paymentId ?? null;
-    await this.payments.save(payment);
-
-    if (!verified) {
+    if (outcome.kind === 'failed') {
       throw new BadRequestException('Payment verification failed');
     }
-
-    await this.rides.update(
-      { id: ride.id },
-      { paymentStatus: 'paid', paymentMarkedBy: 'provider' },
-    );
-    // Include tip so receipt matches what was charged (total + tip).
-    return { paid: true, total: ride.fareBreakdown.total + (ride.tipAmount ?? 0), receiptId: payment.id };
+    return { paid: true, total: outcome.total, receiptId: outcome.receiptId };
   }
 
   // POST /payments/webhook/razorpay — the gateway → server settlement path
@@ -269,26 +284,35 @@ export class PaymentsService {
     // silently overwrite the admin's dispute from a gateway event.
     if (ride.paymentStatus === 'disputed') return { received: true };
 
-    // Amount gate — same rule as verify(): the ordered amount must be the
-    // ride total, with the tip as an upper bound only. A mismatch means a
-    // wrong or tampered charge: reject loudly (400) instead of settling.
-    const total = ride.fareBreakdown.total;
-    if (payment.amount < total || payment.amount > total + (ride.tipAmount ?? 0)) {
-      throw new BadRequestException(
-        `Order amount ₹${payment.amount} does not match ride fare ₹${total}`,
-      );
-    }
+    // Hardening: settle under the ride row lock, re-checking the LOCKED ride,
+    // so a webhook racing /payments/verify, a driver confirmation or an admin
+    // dispute cannot overwrite the other path's decision.
+    await this.withRideLock(ride.id, async (lockedRide, manager) => {
+      if (lockedRide.paymentStatus === 'paid' || lockedRide.paymentStatus === 'disputed') return;
 
-    if (payment.status !== 'paid') {
-      await this.payments.update(
-        { id: payment.id },
-        providerPaymentId ? { status: 'paid', providerPaymentId } : { status: 'paid' },
+      // Amount gate — same rule as verify(): the ordered amount must be the
+      // ride total, with the tip as an upper bound only. A mismatch means a
+      // wrong or tampered charge: reject loudly (400) instead of settling.
+      const total = lockedRide.fareBreakdown.total;
+      if (payment.amount < total || payment.amount > total + (lockedRide.tipAmount ?? 0)) {
+        throw new BadRequestException(
+          `Order amount ₹${payment.amount} does not match ride fare ₹${total}`,
+        );
+      }
+
+      if (payment.status !== 'paid') {
+        await manager.update(
+          PaymentEntity,
+          { id: payment.id },
+          providerPaymentId ? { status: 'paid', providerPaymentId } : { status: 'paid' },
+        );
+      }
+      await manager.update(
+        RideEntity,
+        { id: lockedRide.id },
+        { paymentStatus: 'paid', paymentMarkedBy: 'provider' },
       );
-    }
-    await this.rides.update(
-      { id: ride.id },
-      { paymentStatus: 'paid', paymentMarkedBy: 'provider' },
-    );
+    });
     return { received: true };
   }
 

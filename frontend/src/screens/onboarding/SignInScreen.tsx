@@ -1,13 +1,24 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform } from 'react-native';
 import { Phone, ShieldCheck } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
-import * as Google from 'expo-auth-session/providers/google';
+import {
+  GoogleSignin,
+  isErrorWithCode,
+  isSuccessResponse,
+  statusCodes,
+} from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
-import * as WebBrowser from 'expo-web-browser';
 
-WebBrowser.maybeCompleteAuthSession();
+// Native Google sign-in. The ID token it returns is issued for the WEB client
+// id (webClientId), which is exactly the audience the backend verifies
+// (GOOGLE_WEB_CLIENT_ID). The Android OAuth client in Google Cloud (package +
+// SHA-1) is what authorises this app to ask; it is never sent to the backend.
+GoogleSignin.configure({
+  webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  scopes: ['profile', 'email'],
+});
 
 interface Props {
   onMobileSignIn: () => void;
@@ -24,45 +35,31 @@ export const SignInScreen: React.FC<Props> = ({
   isAuthenticating,
   authError,
 }) => {
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    clientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-    responseType: 'id_token',
-    scopes: ['openid', 'profile', 'email'],
-  });
+  const [googleBusy, setGoogleBusy] = useState(false);
 
-  // Always-fresh callback for the response effect (exhaustive-deps): adding
-  // onGoogleToken to the deps would re-submit the same token on every parent
-  // re-render, so the effect reads a ref instead.
-  const onGoogleTokenRef = useRef(onGoogleToken);
-  useEffect(() => {
-    onGoogleTokenRef.current = onGoogleToken;
-  });
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      // Depending on how the response is shaped, the token can land in
-      // either place — check both so we're not silently missing it.
-      const idToken = response.authentication?.idToken ?? (response.params as any)?.id_token;
-      if (idToken) {
-        onGoogleTokenRef.current(idToken);
+  const handleGoogle = async () => {
+    if (googleBusy) return;
+    setGoogleBusy(true);
+    try {
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      const response = await GoogleSignin.signIn();
+      if (isSuccessResponse(response) && response.data.idToken) {
+        onGoogleToken(response.data.idToken);
       } else if (__DEV__) {
-        // SEC-10: never log the full auth response — it can carry identity
-        // claims (names, emails, tokens) into logcat/release logs. The key
-        // names are enough to debug which response shape arrived.
-        console.warn(
-          '[auth] Google auth succeeded but no idToken found; response keys:',
-          Object.keys(response).join(','),
-        );
+        // SEC-10: never log the response itself — it carries identity claims.
+        console.warn('[auth] Google sign-in returned no idToken');
       }
-    } else if (response?.type === 'error') {
-      // SEC-10: dev-only, and only the error message (the OAuth error code /
-      // description) — never the full error object, which can embed the
-      // redirect URL (codes, claims, state).
-      if (__DEV__) console.warn('[auth] Google auth error:', response.error?.message ?? 'unknown');
-    } else if (response) {
-      if (__DEV__) console.log('[auth] Google auth response type:', response.type);
+    } catch (err) {
+      // SEC-10: dev-only, and only the status code — never the error object.
+      // DEVELOPER_ERROR (code 10) = package/SHA-1 not registered on the
+      // Android OAuth client, or webClientId missing from this build.
+      if (__DEV__ && !(isErrorWithCode(err) && err.code === statusCodes.SIGN_IN_CANCELLED)) {
+        console.warn('[auth] Google sign-in failed', isErrorWithCode(err) ? err.code : 'unknown');
+      }
+    } finally {
+      setGoogleBusy(false);
     }
-  }, [response]);
+  };
 
   const handleApple = async () => {
     try {
@@ -124,8 +121,8 @@ export const SignInScreen: React.FC<Props> = ({
           <View style={styles.socialButtons}>
             <TouchableOpacity
               style={styles.socialBtn}
-              disabled={!request || isAuthenticating}
-              onPress={() => promptAsync()}
+              disabled={googleBusy || isAuthenticating}
+              onPress={handleGoogle}
             >
               <Text style={styles.socialIconText}>G</Text>
               <Text style={styles.socialBtnText}>Google</Text>

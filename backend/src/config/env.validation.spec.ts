@@ -33,6 +33,9 @@ describe('validateEnv (SEC-2a social sign-in audiences)', () => {
     // Pass-4 (task 5): webhook signing secret — required in production
     // (obvious fake, never a real secret).
     RAZORPAY_WEBHOOK_SECRET: 'whsec_test_fake',
+    // OTP SMS delivery keys — required in production (obvious fakes).
+    MSG91_AUTH_KEY: 'msg91_test_fake',
+    MSG91_OTP_TEMPLATE_ID: 'tpl_test_fake',
   });
 
   it('fails boot when GOOGLE_WEB_CLIENT_ID is missing in production', () => {
@@ -64,6 +67,23 @@ describe('validateEnv (SEC-2a social sign-in audiences)', () => {
     env.APPLE_CLIENT_ID = 'com.example.app';
     delete env.RAZORPAY_WEBHOOK_SECRET;
     expect(() => validateEnv(env)).toThrow('RAZORPAY_WEBHOOK_SECRET is required in production');
+  });
+
+  // Without these Msg91SmsProvider silently returns { sent: false } and no
+  // login code ever reaches a user.
+  it.each(['MSG91_AUTH_KEY', 'MSG91_OTP_TEMPLATE_ID'])(
+    'fails boot when %s is missing in production',
+    (key) => {
+      const env = prodBase();
+      env.GOOGLE_WEB_CLIENT_ID = 'gid.apps.example.com';
+      env.APPLE_CLIENT_ID = 'com.example.app';
+      delete env[key];
+      expect(() => validateEnv(env)).toThrow(`${key} is required in production`);
+    },
+  );
+
+  it('keeps the MSG91 keys optional outside production', () => {
+    expect(() => validateEnv({ ...required, NODE_ENV: 'development' })).not.toThrow();
   });
 
   it('keeps the webhook secret optional outside production', () => {

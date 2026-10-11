@@ -317,6 +317,19 @@ export function validateEnv(config: Record<string, unknown>) {
         'Invalid environment configuration:\nRAZORPAY_WEBHOOK_SECRET is required in production when PAYMENTS_DEV_MODE is false',
       );
     }
+    // OTP login is the primary sign-in path. OTP_DEV_MODE is already refused
+    // in production above, so the real SMS provider is the only one in use —
+    // without these keys Msg91SmsProvider silently returns { sent: false } and
+    // every login code is lost. Fail at boot instead of at the first login.
+    const rawEnv = config as Record<string, unknown>;
+    for (const key of ['MSG91_AUTH_KEY', 'MSG91_OTP_TEMPLATE_ID'] as const) {
+      const v = rawEnv[key];
+      if (typeof v !== 'string' || v.trim() === '') {
+        throw new Error(
+          `Invalid environment configuration:\n${key} is required in production (OTP SMS delivery)`,
+        );
+      }
+    }
     const publicUrl = (validated as unknown as Record<string, unknown>).PUBLIC_API_URL;
     if (!publicUrl || typeof publicUrl !== 'string' || !publicUrl.startsWith('https://')) {
       throw new Error('Invalid environment configuration:\nPUBLIC_API_URL must be a valid https:// URL in production');
