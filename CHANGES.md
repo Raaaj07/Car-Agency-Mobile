@@ -317,3 +317,54 @@ frontend caller update.
 7. **Confirm `EXPO_PUBLIC_API_URL` is an https URL in the EAS build env** - task 5's
    `usesCleartextTraffic: false` makes an http API base fail closed on every Android
    version (intended, but it must be the https Render URL, not the localhost fallback).
+
+---
+
+## Security hardening pass 4 (2026-10-11) - isolation, races, payments, hygiene
+
+Fifth pass, 14 tasks, one commit per task, branch `security-hardening-4` (not pushed).
+Ground rules as before: no `.env*`/keystore/`uploads/` reads or edits (`.env.example`
+template excepted - names and comments only), no edits to existing migrations (new files
+only), no `any` in new code, legacy `role` fields kept in auth DTOs, no response-shape
+changes without the matching frontend caller update.
+
+### Status table
+
+| # | Task | Status | Commit | Notes |
+|---|------|--------|--------|-------|
+| 1 | Dev/prod database isolation guards | **Done** | `e297695` | New `config/db-guard.ts` `assertSafeForScript({destructive})` reads the datasource host + `NODE_ENV` (never the password) and refuses (throw / exit 1) when `NODE_ENV=production` or the host is not localhost/127.0.0.1/::1/postgres/db, unless started with `--i-understand-this-is-a-remote-database` and (for destructive ops) `ALLOW_REMOTE_DB_WRITES=true`. Wired into every `database/scripts/*`, `seeds/seed.ts`, `backend/scripts/{repair-schema,remove-seed-drivers}.ts`. `db-helpers.ts` gained `testDbTargetProblem`; `diagnose-render.mjs` rewritten to honour the same rule. Optional env `ALLOW_REMOTE_DB_WRITES` / `TEST_DB_ALLOW_REMOTE` documented in env.validation, `.env.example`, ADMIN.md. |
+| 2 | Ride state races (timers, sweeps, mutations) | **Done** | `98b55f7` | `markPaymentReceived`, decline and the timer/sweep handlers now run under `withRideLock` + conditional `manager.update` (affected-row check) so a concurrent transition can't double-apply; side effects moved post-commit. `markPaymentReceived` writes its `admin_audit_logs` row (`payment_driver_confirm`) in the SAME transaction, guarded by `result.affected` (no flag, no commit). `AuditAction` union extended with `'payment_driver_confirm'`. e2e `manager.save` fake fixed for the two-arg form. |
+| 3 | Account state, atomic OTP verify, Apple edge case | **Done** | `31d98fc` | Disabled accounts (`isActive=false`) are refused with 403 on OTP verify + Google + Apple sign-in (previously only the JWT strategy checked). OTP verify uses a Lua `OTP_VERIFY_SCRIPT` (read-count-increment + compare atomically). `JwtPayload.phone` is optional and dropped from newly-minted tokens. Apple sign-in with an email that already links another account now stores `email: null` instead of colliding. |
+| 4 | Per-IP OTP verify cap + generic lockout message | **Done** | `baef720` | Failed OTP verifies capped per IP (`otp:ipfail:<ip>`, 20/hour) in addition to the per-phone cap, bounding an attacker rotating victim numbers. `verify(phone, code, ip?)` takes the optional IP; a single generic 429 message is returned (no oracle on which limit tripped). `main.ts` warns (does not fail) in production when `OTP_LENGTH < 6`. |
+| 5 | Payments throttles, atomic order creation, Razorpay webhook | **Done** | `4a418c7` | `@Throttle` 10/min on `create-order` + `verify`, 60/min on the webhook. `createOrder` runs "existing pending order or create" under a private `withRideLock` (uses `rides.manager.connection.createQueryRunner()`), re-validates `paymentStatus` + amount under the lock. New `POST /payments/webhook/razorpay` (`@Public()`) verifies `X-Razorpay-Signature` (HMAC-SHA256 of the RAW body via `timingSafeEqual`) against `RAZORPAY_WEBHOOK_SECRET` (401 when unset/wrong/missing); `payment.captured`/`order.paid` are idempotent (skip paid/disputed), amount gate `[total, total+tip]` else 400, `paymentMarkedBy='provider'`, unknown/uncorrelatable events → 200 `{received:true}`. `rawBody: true` in `NestFactory.create`. Webhook DTO declares the top-level Razorpay keys so `forbidNonWhitelisted` doesn't 400 real deliveries. New env `RAZORPAY_WEBHOOK_SECRET` (optional dev, required in production when `PAYMENTS_DEV_MODE !== 'true'`). |
+| 6 | Trip fraud limits (hard caps + soft flags) | **Done** | `2128399` | Hard caps in `create()` checked before the routed call: pickup==dropoff (haversine <100 m), `SERVICE_AREA_BBOX` both points, `MAX_TRIP_KM` (default 150) after `routedKm`; `allowUpgrade` got `@IsBoolean()`. Soft flags as `ride_flag` audit rows (dedup per target+reason, jump once/hour): `pickup_far` on pickup-OTP ok, `dropoff_far` + `distance_inflated` (unclamped `claimedKm` vs `estimateKm`*1.15) on complete, `location_jump` in `updateLocation` via `flagLocationJump` (1-hour dedup). Admin `getRideDetail` returns additive `flags: string[]`. Env `MAX_TRIP_KM` + `SERVICE_AREA_BBOX` (bbox format validated at boot). |
+| 7 | Gateway location relay + ack payload validation | **Done** | `d6e069b` | `driver:location` relays only when `ride.status` ∈ `['matched','driver_en_route','in_progress']` (refused for completed/cancelled rides). `ride:request:ack` requires an authenticated socket + a UUID `rideId` (validated via `RidesGateway.UUID_RE` before any logging, so only a validated id is logged). Existing 1-per-2s `driver:location` budget left as-is. |
+| 8 | Redis-backed rate limiter storage | **Done** | `dc48e83` | In-memory throttler store replaced with a small custom `ThrottlerStorage` over the existing `REDIS_CLIENT` (key prefix `throttle:`) so counters survive restarts and are shared across instances. When Redis is down it FAILS OPEN (allows) and logs at most once per minute. `UserKeyedThrottlerGuard` behaviour and its spec unchanged; counters increment across two guard instances sharing one fake Redis. |
+| 9 | Schema check before listen, public `/health`, HTTP timeouts | **Done** | `ddd572f` | The `findSchemaProblems` boot check now runs BEFORE `app.listen` (production refuses to start on a mismatch; development keeps the auto-repair). New `GET /health` (`@Public()`, 60/min) returns `{status:'ok'}` or 503 `{status:'degraded'}` when a trivial `SELECT 1` or Redis `PING` fails — no version/host/error text in the body (written directly, bypassing the exception filter). `server.requestTimeout = 30_000` / `headersTimeout = 35_000` set after listen; `/health` excluded from the global API prefix. |
+| 10 | Optional auth for the photo proxy | **Done** | `ea4c569` | New env `REQUIRE_AUTH_FOR_PHOTOS` (default `false`). When `true`, `/places/photo/*` verifies an `Authorization: Bearer <access token>` inside the handler with the same `JwtService`/secret (route stays `@Public()` so the default-off rollout and RN `<Image source={{uri,headers}}>` both work). Frontend `PlaceImage.tsx` attaches the token for URLs starting with `API_URL` only (never to third-party hosts); covers all four photo consumers. |
+| 11 | Frontend session fixes | **Done** | `395a082` | `restoreSession` handles a refresh-only cold start: when only a refresh token is stored (access missing/expired+wiped) it sets the token in `tokenManager`, calls `POST /auth/refresh` via the normal client path and continues authenticated; a 401/403 logs out, a network error → `bootOffline`. Added `authApi.refresh(refreshToken)`. `socket.ts` `connect_error` regex narrowed to `jwt|unauthorized|401|expired` (word-boundary on `jwt`) so "tokens busy"-style messages can't force a logout. Manual test steps are in the commit body. |
+| 12 | Compliance account deletion (`DELETE /auth/me`) | **Done** | `6a7f1ec` (backend) `de0e58d` (frontend) | Authenticated `DELETE /auth/me` at 3/hour. Refuses 409 while the user holds an active ride as rider OR driver. Otherwise, one transaction: `isActive=false`, `refreshTokenHash=null`, name → "Deleted user", email/googleId/appleId/avatar nulled, phone replaced by a non-reusable `deleted:<uuid>` tombstone (column-length truncated so the real number can sign up again), saved places deleted; rides/payments rows KEPT (financial records) but now point at the anonymised user. Driver rows additionally suspended + forced offline (`GeoService.removeDriver`), document paths/`upiVpa` cleared, and `StorageService.deleteDocument` called for each stored file AFTER the commit. Writes an `admin_audit_logs` row (`action:'account_delete'`). Frontend Profile shows a destructive "Delete account" row (both rider + driver layouts) with a confirmation Alert (says what's erased, cannot be undone), calls the endpoint then `logout(false)`, and surfaces the 409 message. |
+| 13 | Log hygiene | **Done** | `8eab1de` | New shared `common/log-hygiene.ts` (`last4`, `maskPhone`, `maskEmail`). Masked the full phone in `msg91-sms.provider` failure log and `admin.service`'s "Promoted … to admin" log; `maskPhone` moved to the shared helper (same signature, rides mapping unchanged). `DevSmsProvider` now throws if `NODE_ENV=production` (keeps the dev-only OTP print otherwise). **Skipped** the MSG91 authkey-in-URL change: `authkey` as a header is confirmed by the official docs and the trufflehog validator, but the exact v5 `/api/v5/otp` request-body shape could not be read from the (JS-rendered) docs, so per the spec's own guidance the request shape was left untouched to avoid an SMS outage. Spec covers the helpers (+6 tests). |
+
+### Verification (this pass)
+
+- Backend: `npm run build` 0 errors; `npm test` **353 tests / 29 suites** green after every
+  task (was 253/22 at the end of pass 3; +100 tests, +7 suites).
+- Frontend: `npx tsc --noEmit` 0 errors; `npx eslint src` 0 warnings/errors.
+- One commit per task on `security-hardening-4`; never pushed.
+
+### Remaining owner actions
+
+1. **Create a SEPARATE dev Postgres + Redis + Cloudinary folder + JWT secrets**; stop using
+   the Render database from your laptop. Rotate the production `JWT_ACCESS_SECRET` and
+   `JWT_REFRESH_SECRET` afterwards (this logs everyone out once).
+2. **Delete `@vijayrajvj__CarAgencyMobile_OLD_1.jks` and `_OLD_2.jks`** from the working
+   folder after backing them up offline; run
+   `git log --all --oneline -- '*.jks' '.env*'` and confirm it prints nothing.
+3. **Set `RAZORPAY_WEBHOOK_SECRET`** and register the webhook URL in the Razorpay
+   dashboard (events: `payment.captured`, `order.paid`).
+4. **After the new APK is live:** `OTP_LENGTH=6`, then `REQUIRE_AUTH_FOR_PHOTOS=true`.
+5. **Distribute only EAS-signed builds** (`eas build`). A local
+   `expo run:android --variant release` signs with the DEBUG key — never ship it.
+6. **Publish a privacy policy URL and a data-retention statement** for driver documents
+   (licence, RC) — required by the stores and by India's DPDP Act.
