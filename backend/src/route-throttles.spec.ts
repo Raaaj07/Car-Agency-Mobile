@@ -2,6 +2,7 @@
 import { THROTTLER_LIMIT, THROTTLER_TTL } from '@nestjs/throttler/dist/throttler.constants';
 import { AuthController } from './auth/auth.controller';
 import { DriversController } from './drivers/drivers.controller';
+import { HealthController } from './common/health.controller';
 import { PaymentsController } from './payments/payments.controller';
 import { PlacesController } from './places/places.controller';
 import { PromosController } from './promos/promos.controller';
@@ -47,6 +48,9 @@ describe('route-level @Throttle overrides (SEC-9)', () => {
     { name: 'POST /payments/create-order', handler: PaymentsController.prototype.createOrder, limit: 10 },
     { name: 'POST /payments/verify', handler: PaymentsController.prototype.verify, limit: 10 },
     { name: 'POST /payments/webhook/razorpay', handler: PaymentsController.prototype.razorpayWebhook, limit: 60 },
+    // Health: public, no secrets in the body, but still per-IP limited so a
+    // scanner can't use it as a free liveness oracle / request amplifier.
+    { name: 'GET /health', handler: HealthController.prototype.check, limit: 60 },
   ];
 
   it.each(ROUTES)('$name allows at most $limit requests/minute', ({ handler, limit }) => {

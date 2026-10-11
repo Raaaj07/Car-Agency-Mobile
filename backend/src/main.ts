@@ -60,22 +60,25 @@ async function findSchemaProblems(ds: DataSource): Promise<string[]> {
 }
 
 /**
- * Verifies the DB matches the code. In development the idempotent repair is
- * applied automatically (DB_AUTO_REPAIR=false disables it); in production it
- * only reports — run `npm run db:repair` deliberately there.
+ * Verifies the DB matches the code, BEFORE the server takes traffic.
+ * In development the idempotent repair is applied automatically
+ * (DB_AUTO_REPAIR=false disables it); in production it only reports.
+ * Returns the problems that remain AFTER any repair:
+ *  - empty array → schema is fine, start normally;
+ *  - non-empty → the caller decides (production exits, dev warns).
  */
-async function ensureSchema(app: INestApplication, autoRepair: boolean): Promise<void> {
+async function findSchemaForBoot(app: INestApplication, autoRepair: boolean): Promise<string[]> {
   try {
     const ds = app.get(DataSource);
     let problems = await findSchemaProblems(ds);
-    if (problems.length === 0) return;
+    if (problems.length === 0) return [];
 
     // eslint-disable-next-line no-console
     console.error('\n[SCHEMA] Database does not match the code:\n  - ' + problems.join('\n  - '));
     if (!autoRepair) {
       // eslint-disable-next-line no-console
-      console.error('[SCHEMA] Fix: stop the server, run `npm run db:repair` in backend/, then start again.\n');
-      return;
+      console.error('[SCHEMA] Fix: run `npm run db:repair` in backend/ (or apply the migration), then start again.\n');
+      return problems;
     }
 
     // eslint-disable-next-line no-console
@@ -100,9 +103,13 @@ async function ensureSchema(app: INestApplication, autoRepair: boolean): Promise
       // eslint-disable-next-line no-console
       console.error('[SCHEMA] Still mismatched after repair:\n  - ' + problems.join('\n  - ') + '\n');
     }
+    return problems;
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(`[SCHEMA] Could not verify/repair schema: ${(err as Error).message}`);
+    // Production fails closed: an UNVERIFIED schema must not take traffic.
+    // Development keeps the old behaviour (warn and start).
+    return autoRepair ? [] : [`schema check failed: ${(err as Error).message}`];
   }
 }
 
@@ -114,7 +121,11 @@ async function bootstrap() {
   const config = app.get(ConfigService);
   const isProd = (config.get<string>('NODE_ENV') ?? 'development') === 'production';
 
-  app.setGlobalPrefix(config.get<string>('API_PREFIX') ?? 'api/v1');
+  app.setGlobalPrefix(config.get<string>('API_PREFIX') ?? 'api/v1', {
+    // Pass-4 (task 9): keep /health at the root so the platform / load
+    // balancer can probe it without knowing the API prefix.
+    exclude: ['health'],
+  });
   // AU-1: baseline security headers (CSP/HSTS/frame options etc.) — harmless
   // for a JSON API, meaningful for any HTML/error pages it might serve.
   app.use(helmet());
@@ -171,12 +182,39 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
   app.enableShutdownHooks();
 
+  // Pass-4 (task 9): verify the schema BEFORE app.listen. A wrong-schema
+  // server would accept traffic and then 500 on every ride INSERT / payment
+  // read, so in production a mismatch is fatal; development keeps the
+  // idempotent auto-repair below.
+  const autoRepair = !isProd && (config.get<string>('DB_AUTO_REPAIR') ?? 'true') !== 'false';
+  const schemaProblems = await findSchemaForBoot(app, autoRepair);
+  if (schemaProblems.length > 0 && isProd) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[SCHEMA] Refusing to start: database does not match the code —\n  - ${schemaProblems.join('\n  - ')}`,
+    );
+    // eslint-disable-next-line no-console
+    console.error('[SCHEMA] Fix: run `npm run db:repair` in backend/ (or apply the migration), then restart.\n');
+    // Immediate exit — closing gracefully could hang on a broken DB pool.
+    process.exit(1);
+  }
+  if (schemaProblems.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[SCHEMA] Starting anyway (development): ${schemaProblems.length} problem(s) remain — see above.`,
+    );
+  }
+
   const port = Number(config.get<string>('PORT') ?? 3000);
   await app.listen(port);
+  // Pass-4 (task 9): slowloris protection — a request must complete within
+  // 30 s and headers arrive within 35 s, so a stalled peer cannot hold a
+  // connection (and its worker) open indefinitely.
+  const server = app.getHttpServer();
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 35_000;
   // eslint-disable-next-line no-console
   console.log(`Vazhi backend listening on :${port}`);
-  const autoRepair = !isProd && (config.get<string>('DB_AUTO_REPAIR') ?? 'true') !== 'false';
-  await ensureSchema(app, autoRepair);
 }
 
 bootstrap();
