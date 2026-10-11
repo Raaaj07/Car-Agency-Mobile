@@ -15,10 +15,18 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 // id (webClientId), which is exactly the audience the backend verifies
 // (GOOGLE_WEB_CLIENT_ID). The Android OAuth client in Google Cloud (package +
 // SHA-1) is what authorises this app to ask; it is never sent to the backend.
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+
 GoogleSignin.configure({
-  webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  webClientId: GOOGLE_WEB_CLIENT_ID,
   scopes: ['profile', 'email'],
 });
+
+// A client ID is a public identifier (not a secret). Showing its first part in
+// the error tells us, without a debugger, which value this build baked in.
+const webClientHint = GOOGLE_WEB_CLIENT_ID
+  ? `${GOOGLE_WEB_CLIENT_ID.slice(0, 22)}…`
+  : 'NOT SET';
 
 interface Props {
   onMobileSignIn: () => void;
@@ -36,25 +44,41 @@ export const SignInScreen: React.FC<Props> = ({
   authError,
 }) => {
   const [googleBusy, setGoogleBusy] = useState(false);
+  // Release builds have no visible console, so a Google failure used to look
+  // like "nothing happened". Show a short, non-sensitive reason on screen
+  // (status code only — never tokens or the raw error object).
+  const [googleError, setGoogleError] = useState<string | undefined>();
 
   const handleGoogle = async () => {
     if (googleBusy) return;
     setGoogleBusy(true);
+    setGoogleError(undefined);
     try {
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
       const response = await GoogleSignin.signIn();
-      if (isSuccessResponse(response) && response.data.idToken) {
+      if (!isSuccessResponse(response)) {
+        // User dismissed the account picker — not an error.
+        return;
+      }
+      if (response.data.idToken) {
         onGoogleToken(response.data.idToken);
-      } else if (__DEV__) {
-        // SEC-10: never log the response itself — it carries identity claims.
-        console.warn('[auth] Google sign-in returned no idToken');
+      } else {
+        // No idToken almost always means webClientId was undefined in this
+        // build (EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID missing at bundle time).
+        setGoogleError(
+          'Google did not return a sign-in token. This build is missing the Google web client ID — rebuild the app.',
+        );
       }
     } catch (err) {
-      // SEC-10: dev-only, and only the status code — never the error object.
-      // DEVELOPER_ERROR (code 10) = package/SHA-1 not registered on the
-      // Android OAuth client, or webClientId missing from this build.
-      if (__DEV__ && !(isErrorWithCode(err) && err.code === statusCodes.SIGN_IN_CANCELLED)) {
-        console.warn('[auth] Google sign-in failed', isErrorWithCode(err) ? err.code : 'unknown');
+      if (isErrorWithCode(err)) {
+        if (err.code === statusCodes.SIGN_IN_CANCELLED || err.code === statusCodes.IN_PROGRESS) return;
+        // DEVELOPER_ERROR ("10") = package name / SHA-1 not registered on the
+        // Android OAuth client, or webClientId missing from this build.
+        setGoogleError(
+          `Google sign-in failed (code ${String(err.code)}). Web client in this build: ${webClientHint}`,
+        );
+      } else {
+        setGoogleError('Google sign-in failed. Please try again.');
       }
     } finally {
       setGoogleBusy(false);
@@ -101,7 +125,9 @@ export const SignInScreen: React.FC<Props> = ({
           <Text style={styles.welcomeText}>Welcome Back!</Text>
           <Text style={styles.subText}>Sign in or create an account to start booking rides</Text>
 
-          {authError ? <Text style={styles.authErrorText}>{authError}</Text> : null}
+          {authError || googleError ? (
+            <Text style={styles.authErrorText}>{authError ?? googleError}</Text>
+          ) : null}
 
           <Button
             title="Continue with Mobile Number"

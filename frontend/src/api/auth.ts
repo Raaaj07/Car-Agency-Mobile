@@ -22,10 +22,19 @@ export const authApi = {
     ).data,
   verifyOtp: async (input: { phone: string; otp: string; name?: string }) =>
     (await api.post<VerifyOtpResponse>('/auth/otp/verify', input)).data,
+  // 60 s (not the global 15 s) for the same reason as sendOtp: an idle
+  // free-tier Render server needs 30-60 s to wake, and a timed-out sign-in
+  // used to look like "it just doesn't log in".
   googleSignIn: async (idToken: string) =>
-    (await api.post<VerifyOtpResponse>('/auth/google', { idToken })).data,
+    (await api.post<VerifyOtpResponse>('/auth/google', { idToken }, { timeout: 60_000 })).data,
   appleSignIn: async (identityToken: string, fullName?: string) =>
-    (await api.post<VerifyOtpResponse>('/auth/apple', { identityToken, fullName })).data,
+    (
+      await api.post<VerifyOtpResponse>(
+        '/auth/apple',
+        { identityToken, fullName },
+        { timeout: 60_000 },
+      )
+    ).data,
   me: async () => (await api.get<User>('/auth/me')).data,
   // Pass-4 (task 11): explicit refresh for the refresh-only cold-start path
   // (access token missing/expired+cleared, refresh still stored). The axios
