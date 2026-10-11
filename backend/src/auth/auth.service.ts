@@ -94,8 +94,9 @@ export class AuthService {
   }
 
   // Single login for everyone: new users are riders with profileComplete=false.
-  async verifyOtp({ phone, otp, name }: VerifyOtpDto): Promise<VerifyOtpResult> {
-    const result = await this.otp.verify(phone, otp);
+  // Pass-4 (task 4): `ip` feeds the per-IP failed-verify cap in OtpService.
+  async verifyOtp({ phone, otp, name }: VerifyOtpDto, ip?: string): Promise<VerifyOtpResult> {
+    const result = await this.otp.verify(phone, otp, ip);
     if (!result.ok) {
       throw new BadRequestException(result.reason ?? 'Invalid OTP');
     }

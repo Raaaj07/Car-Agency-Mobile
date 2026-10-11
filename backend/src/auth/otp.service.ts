@@ -9,6 +9,7 @@ const OTP_ATTEMPTS_PREFIX = 'otp:attempts:';
 const OTP_SEND_COUNT_PREFIX = 'otp:sendcount:';
 const OTP_SEND_COOLDOWN_PREFIX = 'otp:sendcool:';
 const OTP_FAIL_PREFIX = 'otp:fail:';
+const OTP_IP_FAIL_PREFIX = 'otp:ipfail:';
 const MAX_VERIFY_ATTEMPTS = 5;
 // SEC-1: per-phone failed-verify lockout. The per-code attempts counter is
 // useless against an attacker who just re-sends (issue() resets it), so this
@@ -17,6 +18,13 @@ const MAX_VERIFY_ATTEMPTS = 5;
 // clears it.
 const MAX_FAIL_PER_WINDOW = 10;
 const FAIL_WINDOW_SECONDS = 3600;
+// Pass-4 (task 4): per-IP failed-verify cap. The per-phone lockout alone
+// still lets an attacker rotate through MANY victim numbers (10 guesses each
+// — ~2.4%/day takeover odds per number with a 4-digit code). Capping total
+// failures per IP bounds the whole campaign; legitimate callers never come
+// close (20 failures/hour from one address is far beyond human typos).
+const MAX_IP_FAIL_PER_WINDOW = 20;
+const IP_FAIL_WINDOW_SECONDS = 3600;
 
 /**
  * Pass-4 (task 3): ONE atomic read+compare+consume. Two round-trips (GET,
@@ -88,6 +96,10 @@ export class OtpService {
     return `${OTP_FAIL_PREFIX}${phone}`;
   }
 
+  private ipFailKey(ip: string) {
+    return `${OTP_IP_FAIL_PREFIX}${ip}`;
+  }
+
   /**
    * SEC-1: current failed-verify count for the phone (0 when never failed).
    * Read from its own key precisely so issue() cannot reset it.
@@ -98,9 +110,19 @@ export class OtpService {
     return Number.isFinite(n) ? n : 0;
   }
 
+  /** Pass-4 (task 4): current failed-verify count for the IP. */
+  private async ipFailCount(ip: string): Promise<number> {
+    const raw = await this.redis.get(this.ipFailKey(ip));
+    const n = Number(raw ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+
   private lockout(): HttpException {
+    // Pass-4 (task 4): ONE generic message shared by the failure lockout,
+    // the send lockout and the IP cap — a caller must never learn whether a
+    // phone was locked by wrong guesses or by too many sends.
     return new HttpException(
-      'Too many failed OTP attempts. Please try again later.',
+      'Too many attempts. Please try again later.',
       HttpStatus.TOO_MANY_REQUESTS,
     );
   }
@@ -108,9 +130,18 @@ export class OtpService {
   /**
    * SEC-1: every failed verify counts toward the phone's lockout window.
    * Reaching the cap turns THIS failure into a 429 for the rest of the window.
+   * Pass-4 (task 4): the same failure also counts toward the caller's IP cap.
    */
-  private async failVerify(phone: string, reason: string): Promise<{ ok: boolean; reason?: string }> {
+  private async failVerify(
+    phone: string,
+    reason: string,
+    ip?: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
     const fails = await this.recordFailure(phone);
+    if (ip !== undefined) {
+      const ipFails = await this.recordIpFailure(ip);
+      if (ipFails > MAX_IP_FAIL_PER_WINDOW) throw this.lockout();
+    }
     if (fails >= MAX_FAIL_PER_WINDOW) throw this.lockout();
     return { ok: false, reason };
   }
@@ -120,6 +151,14 @@ export class OtpService {
     const count = await this.redis.incr(key);
     // Same crash-safe window pattern as the send counter (see ensureWindow).
     await this.ensureWindow(key, count, FAIL_WINDOW_SECONDS);
+    return count;
+  }
+
+  /** Pass-4 (task 4): same window pattern as recordFailure, keyed by IP. */
+  private async recordIpFailure(ip: string): Promise<number> {
+    const key = this.ipFailKey(ip);
+    const count = await this.redis.incr(key);
+    await this.ensureWindow(key, count, IP_FAIL_WINDOW_SECONDS);
     return count;
   }
 
@@ -181,18 +220,27 @@ export class OtpService {
     return code;
   }
 
-  async verify(phone: string, code: string): Promise<{ ok: boolean; reason?: string }> {
+  async verify(
+    phone: string,
+    code: string,
+    ip?: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
     // SEC-1: once the phone is locked, NO comparison runs — the window must
     // actually cap guesses, not just label them. Only time or a prior
     // successful verify can have cleared the counter (issue() never does).
     if ((await this.failCount(phone)) >= MAX_FAIL_PER_WINDOW) {
       throw this.lockout();
     }
+    // Pass-4 (task 4): once the CALLER'S IP is capped, nothing runs either —
+    // this bounds an attacker rotating through many victim numbers.
+    if (ip !== undefined && (await this.ipFailCount(ip)) >= MAX_IP_FAIL_PER_WINDOW) {
+      throw this.lockout();
+    }
 
     const attempts = await this.redis.incr(this.attemptsKey(phone));
     await this.ensureWindow(this.attemptsKey(phone), attempts, this.ttlSeconds);
     if (attempts > MAX_VERIFY_ATTEMPTS) {
-      return this.failVerify(phone, 'Too many attempts, request a new OTP');
+      return this.failVerify(phone, 'Too many attempts, request a new OTP', ip);
     }
 
     // Pass-4 (task 3): atomic redeem — one code can never be redeemed twice
@@ -201,10 +249,10 @@ export class OtpService {
       await this.redis.eval(OTP_VERIFY_SCRIPT, 1, this.key(phone), code),
     );
     if (outcome === -1) {
-      return this.failVerify(phone, 'OTP expired or not found, request a new one');
+      return this.failVerify(phone, 'OTP expired or not found, request a new one', ip);
     }
     if (outcome !== 1) {
-      return this.failVerify(phone, 'Incorrect OTP');
+      return this.failVerify(phone, 'Incorrect OTP', ip);
     }
 
     // SEC-1: success is the ONLY thing that clears the lockout counter.

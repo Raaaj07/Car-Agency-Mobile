@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Ip, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
@@ -28,12 +28,14 @@ export class AuthController {
 
   // Verification is capped per IP too; per-phone brute force is stopped by
   // OtpService's 5-attempts-per-code counter + the send window cap.
+  // Pass-4 (task 4): the client IP also feeds OtpService's per-IP
+  // failed-verify cap (bounds an attacker rotating through many numbers).
   @Public()
   @Throttle({ default: { limit: 30, ttl: 300_000 } })
   @Post('otp/verify')
   @HttpCode(HttpStatus.OK)
-  verifyOtp(@Body() dto: VerifyOtpDto) {
-    return this.auth.verifyOtp(dto);
+  verifyOtp(@Body() dto: VerifyOtpDto, @Ip() ip: string) {
+    return this.auth.verifyOtp(dto, ip);
   }
 
   // SEC-3: refresh presents a refresh token (not a bearer), so it stays

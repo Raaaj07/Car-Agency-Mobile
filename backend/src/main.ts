@@ -140,6 +140,19 @@ async function bootstrap() {
         'reachable, in which case keep it false so X-Forwarded-For cannot be spoofed.',
     );
   }
+  // Pass-4 (task 4): warn, don't fail — the shipped APK still uses 4-digit
+  // OTP entry, so a hard boot refusal would take the app offline. The risk
+  // is real (10 guesses/hour/phone is ~2.4%/day per number with 4 digits),
+  // and admin promotion at OTP login is already disabled for short codes.
+  const otpLength = Number(config.get<string>('OTP_LENGTH') ?? 4);
+  if (isProd && otpLength < 6) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[OTP] OTP_LENGTH=${otpLength} in production: phones with ${otpLength}-digit codes are ` +
+        'brute-forceable (per-IP and per-phone caps limit the rate but not the risk), and admin ' +
+        'promotion at OTP login is disabled for them. Set OTP_LENGTH=6 once the updated APK is out.',
+    );
+  }
   // CORS_ORIGIN may be "*" in dev, or a comma-separated allowlist in prod.
   const rawOrigin = config.get<string>('CORS_ORIGIN') ?? '*';
   const origin =

@@ -21,7 +21,7 @@ describe('OtpService', () => {
     redis = {
       ttl: jest.fn().mockResolvedValue(-2), // key does not exist
       incr: jest.fn().mockImplementation(async (key: string) => {
-        if (key.startsWith('otp:fail:')) {
+        if (key.startsWith('otp:fail:') || key.startsWith('otp:ipfail:')) {
           const next = (failCounters.get(key) ?? 0) + 1;
           failCounters.set(key, next);
           return next;
@@ -31,7 +31,7 @@ describe('OtpService', () => {
       expire: jest.fn().mockResolvedValue(1),
       set: jest.fn().mockResolvedValue('OK'),
       get: jest.fn().mockImplementation(async (key: string) => {
-        if (key.startsWith('otp:fail:')) {
+        if (key.startsWith('otp:fail:') || key.startsWith('otp:ipfail:')) {
           const n = failCounters.get(key);
           return n === undefined ? null : String(n);
         }
@@ -173,6 +173,56 @@ describe('OtpService', () => {
     });
   });
 
+  describe('per-IP failed-verify cap (pass-4)', () => {
+    it('triggers at the 21st failure across DIFFERENT phones', async () => {
+      // Per-code attempts stay at 1; fail/ipfail keys count up in the shared
+      // counter store (a plain mockResolvedValue would clobber that logic).
+      redis.incr.mockImplementation(async (key: string) => {
+        if (key.startsWith('otp:attempts:')) return 1;
+        const next = (failCounters.get(key) ?? 0) + 1;
+        failCounters.set(key, next);
+        return next;
+      });
+      // 20 wrong guesses spread over 20 victim numbers — each phone is far
+      // below its own lockout, so only the IP cap can stop the campaign.
+      for (let i = 0; i < 20; i++) {
+        issuedCode = '1234';
+        const phone = `900000${String(i).padStart(4, '0')}`;
+        await expect(service.verify(phone, '9999', '203.0.113.7')).resolves.toEqual({
+          ok: false,
+          reason: 'Incorrect OTP',
+        });
+      }
+      // The 21st guess from the same IP is refused outright (no comparison).
+      const err = await service
+        .verify('9000009999', '9999', '203.0.113.7')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(HttpException);
+      expect((err as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+
+    it('a capped IP cannot verify even with the CORRECT code; another IP can', async () => {
+      failCounters.set('otp:ipfail:203.0.113.7', 20);
+      redis.incr.mockResolvedValue(1);
+      issuedCode = '1234';
+
+      // The capped IP is refused before any comparison runs...
+      await expect429(service.verify('9876543210', '1234', '203.0.113.7'));
+      // ...and the code is untouched, so another IP redeems it normally.
+      await expect(service.verify('9876543210', '1234', '198.51.100.9')).resolves.toEqual({
+        ok: true,
+      });
+    });
+
+    it('verify without an IP stays backwards compatible (no IP counter)', async () => {
+      redis.incr.mockResolvedValue(1);
+      issuedCode = '1234';
+
+      await expect(service.verify('9876543210', '1234')).resolves.toEqual({ ok: true });
+      expect(failCounters.has('otp:ipfail:undefined')).toBe(false);
+    });
+  });
+
   describe('failed-verify lockout (SEC-1)', () => {
     const failKey = 'otp:fail:9876543210';
 
@@ -194,7 +244,8 @@ describe('OtpService', () => {
     it('refuses to send new codes while locked, without spending budget', async () => {
       failCounters.set(failKey, 10);
 
-      await expect429(service.assertCanSend('9876543210'), 'failed OTP');
+      // Generic message: the caller cannot tell failure-lock from send-lock.
+      await expect429(service.assertCanSend('9876543210'), 'Too many attempts');
       expect(redis.incr).not.toHaveBeenCalled(); // window counter untouched
       expect(redis.set).not.toHaveBeenCalled(); // no cooldown consumed
     });
