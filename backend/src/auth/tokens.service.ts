@@ -18,9 +18,13 @@ export class TokensService {
   ) {}
 
   issueTokens(user: UserEntity): TokenPair {
+    // Pass-4 (task 3): `phone` is no longer put into NEW tokens — a bearer
+    // token ends up in logs, proxies, crash reports and the clipboard, and
+    // nothing reads the claim (JwtStrategy and the socket gateway both load
+    // the user row instead). JwtPayload.phone stays optional so OLD tokens
+    // that still carry it keep parsing until they expire (<= 30 d).
     const payload: JwtPayload = {
       sub: user.id,
-      phone: user.phone ?? '',
       role: (user.role ?? 'rider') as 'rider' | 'driver' | 'admin',
     };
 

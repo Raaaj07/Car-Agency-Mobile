@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomInt, timingSafeEqual } from 'crypto';
+import { randomInt } from 'crypto';
 import type Redis from 'ioredis';
 import { REDIS_CLIENT } from '../config/redis.module';
 
@@ -17,6 +17,27 @@ const MAX_VERIFY_ATTEMPTS = 5;
 // clears it.
 const MAX_FAIL_PER_WINDOW = 10;
 const FAIL_WINDOW_SECONDS = 3600;
+
+/**
+ * Pass-4 (task 3): ONE atomic read+compare+consume. Two round-trips (GET,
+ * then DEL after a Node-side compare) let two parallel requests redeem the
+ * same code: both read it, both compare OK, both succeed. Redis 7
+ * (docker-compose) has GETDEL, but that would consume the code even on a
+ * WRONG guess, breaking the attempts-per-code semantics above; this script
+ * deletes ONLY on a match, preserving every existing behaviour. The compare
+ * runs inside Redis: constant-time string equality under network jitter —
+ * no prefix-length timing signal measurable at the HTTP layer. Returns
+ * 1 (match) / 0 (mismatch) / -1 (nothing stored).
+ */
+export const OTP_VERIFY_SCRIPT = `
+local stored = redis.call('GET', KEYS[1])
+if not stored then return -1 end
+if stored == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+`;
 
 @Injectable()
 export class OtpService {
@@ -174,23 +195,20 @@ export class OtpService {
       return this.failVerify(phone, 'Too many attempts, request a new OTP');
     }
 
-    const stored = await this.redis.get(this.key(phone));
-    if (!stored) {
+    // Pass-4 (task 3): atomic redeem — one code can never be redeemed twice
+    // by parallel requests (see OTP_VERIFY_SCRIPT).
+    const outcome = Number(
+      await this.redis.eval(OTP_VERIFY_SCRIPT, 1, this.key(phone), code),
+    );
+    if (outcome === -1) {
       return this.failVerify(phone, 'OTP expired or not found, request a new one');
     }
-    // AU-2: constant-time comparison — a plain !== leaks prefix matches via
-    // response timing. Length mismatch is rejected without timingSafeEqual
-    // (it throws on unequal lengths).
-    const storedBuf = Buffer.from(stored, 'utf8');
-    const codeBuf = Buffer.from(code, 'utf8');
-    const matches =
-      storedBuf.length === codeBuf.length && timingSafeEqual(storedBuf, codeBuf);
-    if (!matches) {
+    if (outcome !== 1) {
       return this.failVerify(phone, 'Incorrect OTP');
     }
 
     // SEC-1: success is the ONLY thing that clears the lockout counter.
-    await this.redis.del(this.key(phone));
+    // (The stored code itself was already consumed inside the script.)
     await this.redis.del(this.attemptsKey(phone));
     await this.redis.del(this.failKey(phone));
     return { ok: true };

@@ -1,7 +1,8 @@
-import { Logger, ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Repository } from 'typeorm';
+import appleSignin from 'apple-signin-auth';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { StorageService } from '../drivers/storage.service';
 import { AuthService } from './auth.service';
@@ -9,6 +10,10 @@ import { UserEntity } from './entities/user.entity';
 import { OtpService } from './otp.service';
 import { SmsProvider } from './providers/sms-provider.interface';
 import { TokensService } from './tokens.service';
+
+// Pass-4: the Apple identity-token path gets real tests (collision + disabled
+// account) — the library call is driven through this mock.
+jest.mock('apple-signin-auth', () => ({ verifyIdToken: jest.fn() }));
 
 /**
  * SEC-1: admin promotion through OTP login requires a code that is not
@@ -31,6 +36,7 @@ describe('AuthService', () => {
     issue: jest.Mock;
     otpLength: number;
   };
+  let issueTokens: jest.Mock;
   let warnSpy: jest.SpyInstance;
   let configValues: Record<string, string | undefined>;
   let configGet: jest.Mock;
@@ -48,6 +54,8 @@ describe('AuthService', () => {
       email?: string | null;
       emailVerified?: boolean;
       googleId?: string | null;
+      appleId?: string | null;
+      isActive?: boolean;
     } = {},
   ) => {
     const user = {
@@ -61,6 +69,8 @@ describe('AuthService', () => {
       email: overrides.email ?? null,
       emailVerified: overrides.emailVerified ?? false,
       googleId: overrides.googleId ?? null,
+      appleId: overrides.appleId ?? null,
+      isActive: overrides.isActive ?? true,
       toFrontendUser: () => ({
         id: 'u-1',
         phone: user.phone,
@@ -86,6 +96,13 @@ describe('AuthService', () => {
     return client;
   };
 
+  // Pass-4: drives the Apple payload branch through the jest.mock above.
+  const setApplePayload = (payload: Record<string, unknown> | null) => {
+    const verify = appleSignin.verifyIdToken as jest.Mock;
+    verify.mockResolvedValue(payload);
+    return verify;
+  };
+
   beforeEach(() => {
     warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     users = {
@@ -106,13 +123,12 @@ describe('AuthService', () => {
       APPLE_CLIENT_ID: 'aid-test',
     };
     configGet = jest.fn().mockImplementation((key: string) => configValues[key]);
+    issueTokens = jest.fn().mockReturnValue({ accessToken: 'a', refreshToken: 'r' });
     service = new AuthService(
       users as unknown as Repository<UserEntity>,
       { findOne: jest.fn().mockResolvedValue(null) } as unknown as Repository<DriverEntity>,
       otp as unknown as OtpService,
-      {
-        issueTokens: jest.fn().mockReturnValue({ accessToken: 'a', refreshToken: 'r' }),
-      } as unknown as TokensService,
+      { issueTokens } as unknown as TokensService,
       { sendOtp: jest.fn().mockResolvedValue(undefined) } as unknown as SmsProvider,
       { get: configGet } as unknown as ConfigService,
       {} as unknown as JwtService,
@@ -283,6 +299,83 @@ describe('AuthService', () => {
 
       await expect(service.googleSignIn('tok')).rejects.toThrow('Google email not verified');
       expect(users.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('disabled accounts are refused at every sign-in (pass-4)', () => {
+    it('verifyOtp: 403 before any token is issued or row saved', async () => {
+      users.findOne.mockResolvedValue(makeRider({ isActive: false }));
+
+      const err = await service.verifyOtp({ phone: adminPhone, otp: '1234' }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getStatus()).toBe(403);
+      expect(issueTokens).not.toHaveBeenCalled();
+      expect(users.save).not.toHaveBeenCalled(); // no state change either
+    });
+
+    it('googleSignIn: 403 before any token is issued', async () => {
+      setGooglePayload({ sub: 'g-1', email: 'x@example.com', email_verified: true });
+      users.findOne.mockResolvedValueOnce(makeRider({ googleId: 'g-1', isActive: false }));
+
+      const err = await service.googleSignIn('tok').catch((e) => e);
+
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getStatus()).toBe(403);
+      expect(issueTokens).not.toHaveBeenCalled();
+    });
+
+    it('appleSignIn: 403 before any token is issued', async () => {
+      setApplePayload({ sub: 'ap-1', email: null });
+      users.findOne.mockResolvedValueOnce(makeRider({ appleId: 'ap-1', isActive: false }));
+
+      const err = await service.appleSignIn('tok', undefined).catch((e) => e);
+
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getStatus()).toBe(403);
+      expect(issueTokens).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('apple sign-in email collisions (pass-4)', () => {
+    beforeEach(() => {
+      configValues.ADMIN_PHONES = ''; // promotion is covered above, not here
+      users.create.mockImplementation((data: Record<string, unknown>) => {
+        const created = makeRider();
+        Object.assign(created, data);
+        return created;
+      });
+    });
+
+    it('never links by Apple email: an address another row owns is stored as null', async () => {
+      setApplePayload({ sub: 'ap-1', email: 'Victim@Example.com' });
+      users.findOne
+        .mockResolvedValueOnce(null) // no appleId match
+        .mockResolvedValueOnce(makeRider({ email: 'victim@example.com' })); // address owned
+
+      const result = await service.appleSignIn('tok', 'Vic Tor');
+
+      expect(users.findOne).toHaveBeenNthCalledWith(2, { where: { email: 'victim@example.com' } });
+      expect(users.create).toHaveBeenCalledWith(
+        expect.objectContaining({ appleId: 'ap-1', email: null, name: 'Vic Tor' }),
+      );
+      expect(result.isNewUser).toBe(true);
+    });
+
+    it('stores the Apple email when free, and never flags it verified', async () => {
+      setApplePayload({ sub: 'ap-2', email: 'New@Example.com' });
+      users.findOne.mockResolvedValue(null);
+
+      const result = await service.appleSignIn('tok', undefined);
+
+      const created = users.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(created).toEqual(
+        expect.objectContaining({ appleId: 'ap-2', email: 'new@example.com' }),
+      );
+      // Apple's claim is not independently verified here — the flag must
+      // never be set true by the sign-in itself.
+      expect(created.emailVerified ?? false).toBe(false);
+      expect(result.isNewUser).toBe(true);
     });
   });
 

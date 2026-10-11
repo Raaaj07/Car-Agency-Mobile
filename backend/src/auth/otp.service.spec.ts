@@ -42,6 +42,17 @@ describe('OtpService', () => {
         failCounters.delete(key); // only ever holds fail keys here
         return 1;
       }),
+      // Models the atomic verify script (OTP_VERIFY_SCRIPT): GET + compare +
+      // DEL-on-match inside ONE call — exactly one caller can redeem a code.
+      eval: jest.fn(async (_script: string, _numKeys: number, key: string, arg: string) => {
+        if (!issuedCode) return -1;
+        if (issuedCode === arg) {
+          issuedCode = null; // consumed by the script
+          await redis.del(key);
+          return 1;
+        }
+        return 0;
+      }),
     };
     service = new OtpService(
       redis as unknown as Redis,
@@ -143,6 +154,23 @@ describe('OtpService', () => {
         reason: 'OTP expired or not found, request a new one',
       });
     });
+
+    it('a code can be redeemed exactly ONCE, even by parallel requests', async () => {
+      redis.incr.mockResolvedValue(1); // both callers see "first attempt"
+      issuedCode = '1234';
+
+      const results = await Promise.all([
+        service.verify('9876543210', '1234'),
+        service.verify('9876543210', '1234'),
+      ]);
+
+      const successes = results.filter((r) => r.ok);
+      const failures = results.filter((r) => !r.ok);
+      expect(successes).toHaveLength(1);
+      // The loser redeemed nothing: the atomic consume already took the code.
+      expect(failures).toHaveLength(1);
+      expect(failures[0].reason).toBe('OTP expired or not found, request a new one');
+    });
   });
 
   describe('failed-verify lockout (SEC-1)', () => {
@@ -187,6 +215,9 @@ describe('OtpService', () => {
       expect(failCounters.has(failKey)).toBe(false); // deleted on success
 
       // The next failure starts a fresh count at 1 — not an instant re-lock.
+      // (The successful verify consumed the stored code, so a fresh one is
+      // needed for a WRONG guess to reach the comparison at all.)
+      issuedCode = '1234';
       await expect(service.verify('9876543210', '9999')).resolves.toEqual({
         ok: false,
         reason: 'Incorrect OTP',

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -113,6 +114,10 @@ export class AuthService {
     } else if (!user.role) {
       user.role = 'rider';
     }
+    // Pass-4 (task 3): a disabled account is refused BEFORE any token is
+    // issued — previously the tokens were minted here and only the NEXT
+    // request was rejected by JwtStrategy.
+    if (user.isActive === false) throw new ForbiddenException('This account has been disabled');
     user = await this.users.save(user);
     // First admin(s) can also be promoted at OTP login (covers phones that
     // signed up after the last server start; ADMIN_PHONES is 10-digit).
@@ -220,6 +225,8 @@ export class AuthService {
         user.emailVerified = true;
       }
     }
+    // Pass-4 (task 3): disabled account → 403 before any token is issued.
+    if (user.isActive === false) throw new ForbiddenException('This account has been disabled');
     user = await this.users.save(user);
     // A-1: ADMIN_PHONES promotion must also run at social sign-in, not just
     // OTP login — otherwise an owner who signs up after boot never gets in.
@@ -247,10 +254,19 @@ export class AuthService {
     let user = await this.users.findOne({ where: { appleId: payload.sub } });
     let isNewUser = !user;
     if (!user) {
+      // Pass-4 (task 3): mirror the Google rule — never LINK by Apple email.
+      // The claim is unverified here, Apple may send a private relay address,
+      // and a raw save on an address another row already owns throws 23505 →
+      // an unhandled 500. When any row owns the address, store null instead
+      // (the account still starts; Apple sign-in resumes via appleId).
+      let email = (payload as { email?: string }).email?.toLowerCase() ?? null;
+      if (email && (await this.users.findOne({ where: { email } }))) {
+        email = null;
+      }
       user = this.users.create({
         appleId: payload.sub,
-        // SEC-2b: canonical lowercase form — same reason as googleSignIn.
-        email: (payload as { email?: string }).email?.toLowerCase() ?? null,
+        // Canonical lowercase form — same reason as googleSignIn.
+        email,
         // Apple only sends fullName on the FIRST sign-in ever — capture it now or lose it.
         name: fullName?.trim() || 'New Rider',
         role: 'rider',
@@ -259,6 +275,9 @@ export class AuthService {
       });
       isNewUser = true;
     }
+    // Pass-4 (task 3): disabled account → 403 before any token is issued.
+    // (New rows never hit this — they are created active.)
+    if (user.isActive === false) throw new ForbiddenException('This account has been disabled');
     if (!user.role) user.role = 'rider';
     user = await this.users.save(user);
     // A-1: same promotion pass as OTP/Google sign-in.

@@ -8,7 +8,10 @@ import { UserEntity } from '../entities/user.entity';
 
 export interface JwtPayload {
   sub: string; // user id
-  phone: string;
+  /** Old tokens carried the phone number; nothing reads it (pass-4: PII out
+   *  of new tokens) and new tokens omit it — kept optional so old tokens
+   *  still parse until they expire. */
+  phone?: string;
   role: 'rider' | 'driver' | 'admin';
 }
 
