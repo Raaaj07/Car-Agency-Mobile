@@ -85,31 +85,63 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         where: { status: 'requested' },
       });
       const now = Date.now();
-      for (const ride of pendingRides) {
-        if (ride.driverId && ride.offerExpiresAt && ride.offerExpiresAt.getTime() > now) {
-          const remainingMs = ride.offerExpiresAt.getTime() - now;
-          this.logger.log(`Re-arming offer timeout for ride ${ride.id} (${remainingMs}ms remaining)`);
-          await this.scheduleOfferTimeout(ride.id, remainingMs);
-        } else {
-          // Expired during server downtime
-          if (ride.driverId) {
-            await this.drivers.setAvailability(ride.driverId, true).catch(() => {});
-            ride.declinedDriverIds = [...(ride.declinedDriverIds || []), ride.driverId];
-            ride.driverId = null;
+      for (const loaded of pendingRides) {
+        if (loaded.driverId && loaded.offerExpiresAt && loaded.offerExpiresAt.getTime() > now) {
+          const remainingMs = loaded.offerExpiresAt.getTime() - now;
+          this.logger.log(`Re-arming offer timeout for ride ${loaded.id} (${remainingMs}ms remaining)`);
+          await this.scheduleOfferTimeout(loaded.id, remainingMs);
+          continue;
+        }
+        // Offer expired during downtime: release the driver and re-offer or
+        // cancel. Pass-4 (task 2): the write runs under the row lock against
+        // the FRESH row (the loaded one may be minutes stale) as a
+        // conditional update — never save() of a row read before the lock.
+        try {
+          const outcome = await this.withRideLock(loaded.id, async (ride, manager) => {
+            if (ride.status !== 'requested') return null; // progressed while booting
+            const expiredDriverId = ride.driverId ?? null;
+            const declined = expiredDriverId
+              ? [...(ride.declinedDriverIds || []), expiredDriverId]
+              : ride.declinedDriverIds || [];
+            const giveUp = declined.length >= 3;
+            const result = await manager.update(
+              RideEntity,
+              { id: ride.id, status: 'requested', driverId: ride.driverId },
+              {
+                declinedDriverIds: declined,
+                driverId: null,
+                ...(giveUp
+                  ? {
+                      status: 'cancelled' as const,
+                      cancellationReason: 'no_drivers_available',
+                      cancelledBy: 'system',
+                      cancelledAt: new Date(),
+                    }
+                  : {}),
+              },
+            );
+            if (!result.affected) return null;
+            return { rideId: ride.id, expiredDriverId, giveUp };
+          });
+          if (!outcome) continue;
+          if (outcome.expiredDriverId) {
+            await this.drivers.setAvailability(outcome.expiredDriverId, true).catch(() => {});
           }
-          if ((ride.declinedDriverIds?.length ?? 0) >= 3) {
-            ride.status = 'cancelled';
-            ride.cancellationReason = 'no_drivers_available';
-            ride.cancelledBy = 'system';
-            ride.cancelledAt = new Date();
-            await this.rides.save(ride);
-            this.pushStatus(ride);
-          } else {
-            await this.rides.save(ride);
-            this.matchNearestDriver(ride).catch((err) => {
-              this.logger.error(`Startup sweep re-match failed for ride ${ride.id}`, err);
-            });
+          const fresh = await this.rides.findOne({ where: { id: outcome.rideId } });
+          if (!fresh) continue;
+          if (outcome.giveUp) {
+            this.pushStatus(fresh);
+          } else if (fresh.status === 'requested' && !fresh.driverId) {
+            // rematch() re-reads the ride under the lock before offering
+            // again — the pre-lock snapshot is stale by definition.
+            try {
+              await this.rematch(fresh.id, fresh.riderId);
+            } catch (err) {
+              this.logger.error(`Startup sweep re-match failed for ride ${fresh.id}`, err as Error);
+            }
           }
+        } catch (err) {
+          this.logger.error(`Startup sweep failed for ride ${loaded.id}`, err as Error);
         }
       }
     } catch (err) {
@@ -196,11 +228,13 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       try {
         // Captured before mutation so the log shows the real previous status.
         const previousStatus = ride.status;
-        // Conditional update: only cancel if the status is still the exact
-        // one we judged stale, so a ride that progressed between find() and
-        // now (e.g. matched -> driver_en_route) is never touched.
+        // Conditional update: only cancel if the status AND driver are still
+        // the exact ones we judged stale, so a ride that progressed between
+        // find() and now (e.g. matched -> driver_en_route) or that got
+        // re-offered to a DIFFERENT driver is never touched — and the
+        // driver we free below is always the driver still on the row.
         const result = await this.rides.update(
-          { id: ride.id, status: previousStatus },
+          { id: ride.id, status: previousStatus, driverId: ride.driverId ?? IsNull() },
           {
             status: 'cancelled',
             cancelledBy: 'system',
@@ -357,24 +391,32 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   /** Fires once after the search window (claimed from `ride:timers`). */
   private async fireSearchTimeout(rideId: string): Promise<void> {
     try {
-      const ride = await this.rides.findOne({ where: { id: rideId } });
-      if (!ride || ride.status !== 'requested' || ride.driverId) return;
-      const result = await this.rides.update(
-        { id: rideId, status: 'requested', driverId: IsNull() },
-        {
-          status: 'cancelled',
-          cancelledBy: 'system',
-          cancellationReason: 'no_drivers_available',
-          cancelledAt: new Date(),
-        },
-      );
-      if (!result.affected) return;
-      ride.status = 'cancelled';
-      ride.cancelledBy = 'system';
-      ride.cancellationReason = 'no_drivers_available';
-      ride.cancelledAt = new Date();
+      // Pass-4 (task 2): the check + write run under the ride row lock, so a
+      // driver appearing (or the rider cancelling) between the read and the
+      // write can never be overwritten by a stale update.
+      const cancelled = await this.withRideLock(rideId, async (ride, manager) => {
+        if (ride.status !== 'requested' || ride.driverId) return false;
+        const result = await manager.update(
+          RideEntity,
+          { id: rideId, status: 'requested', driverId: IsNull() },
+          {
+            status: 'cancelled',
+            cancelledBy: 'system',
+            cancellationReason: 'no_drivers_available',
+            cancelledAt: new Date(),
+          },
+        );
+        return result.affected === 1;
+      }).catch((err) => {
+        // The ride is gone (cancelled+deleted) — nothing left to time out.
+        if (err instanceof NotFoundException) return false;
+        throw err;
+      });
+      if (!cancelled) return;
       this.logger.warn(`Ride ${rideId} search timed out after ${this.searchTimeoutSeconds}s (no drivers)`);
-      this.pushStatus(ride);
+      // Reload after commit (withRideLock contract) for the status push.
+      const ride = await this.rides.findOne({ where: { id: rideId } });
+      if (ride) this.pushStatus(ride);
     } catch (err) {
       this.logger.error(`Search timeout failed for ride ${rideId}`, err as Error);
     }
@@ -383,25 +425,57 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   /** Releases the offered driver and re-matches (claimed from `ride:timers`). */
   private async fireOfferTimeout(rideId: string): Promise<void> {
     try {
-      const ride = await this.rides.findOne({ where: { id: rideId } });
-      if (!ride || ride.status !== 'requested' || !ride.driverId) return;
-      const driverId = ride.driverId;
-      this.logger.warn(`Offer timed out for ride ${rideId} with driver ${driverId}`);
-      await this.drivers.setAvailability(driverId, true);
-      ride.driverId = null;
-      ride.declinedDriverIds = [...(ride.declinedDriverIds || []), driverId];
-      await this.rides.save(ride);
+      // Pass-4 (task 2): check + write under the row lock. The old
+      // findOne-then-save sequence could undo a driver's accept or a rider's
+      // cancel that landed in between — flipping the ride back to
+      // `requested` or resurrecting a cancelled one.
+      const outcome = await this.withRideLock(rideId, async (ride, manager) => {
+        // Accepted (status matched) or cancelled meanwhile → no-op.
+        if (ride.status !== 'requested' || !ride.driverId) return null;
+        const driverId = ride.driverId;
+        const declined = [...(ride.declinedDriverIds || []), driverId];
+        const giveUp = declined.length >= 3;
+        // Only the timer's own fields, re-validated against the locked row.
+        const result = await manager.update(
+          RideEntity,
+          { id: ride.id, status: 'requested', driverId },
+          {
+            declinedDriverIds: declined,
+            driverId: null,
+            ...(giveUp
+              ? {
+                  status: 'cancelled' as const,
+                  cancellationReason: 'no_drivers_available',
+                  cancelledBy: 'system',
+                  cancelledAt: new Date(),
+                }
+              : {}),
+          },
+        );
+        if (!result.affected) return null;
+        return { giveUp, driverId };
+      }).catch((err) => {
+        if (err instanceof NotFoundException) return null; // ride deleted
+        throw err;
+      });
+      if (!outcome) return;
 
-      if (ride.declinedDriverIds.length >= 3) {
-        ride.status = 'cancelled';
-        ride.cancellationReason = 'no_drivers_available';
-        ride.cancelledBy = 'system';
-        ride.cancelledAt = new Date();
-        await this.rides.save(ride);
+      this.logger.warn(`Offer timed out for ride ${rideId} with driver ${outcome.driverId}`);
+      // Side effects AFTER commit (withRideLock contract): free the driver,
+      // then re-match on a FRESH read — never the pre-lock snapshot.
+      await this.drivers.setAvailability(outcome.driverId, true);
+      const ride = await this.rides.findOne({ where: { id: rideId } });
+      if (!ride) return;
+      if (outcome.giveUp) {
         this.pushStatus(ride);
         this.logger.warn(`Ride ${rideId} cancelled after 3 failed/expired driver offers`);
-      } else {
-        await this.matchNearestDriver(ride);
+      } else if (ride.status === 'requested' && !ride.driverId) {
+        // rematch() re-reads the ride under the lock before offering again.
+        try {
+          await this.rematch(ride.id, ride.riderId);
+        } catch (err) {
+          this.logger.error(`Re-match after timed-out offer failed for ride ${rideId}`, err as Error);
+        }
       }
     } catch (err) {
       this.logger.error(`Error in offer timeout handler for ride ${rideId}`, err as Error);
@@ -793,19 +867,28 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // commit so a failed decline keeps the offer alive.
   async decline(rideId: string, driverUserId: string): Promise<any> {
     const driver = await this.drivers.findByUserId(driverUserId);
-    const locked = await this.withRideLock(rideId, async (ride, manager) => {
+    // Pass-4 (task 2): the re-match runs INSIDE the lock on the same fresh
+    // row (mirrors rematch()). It used to run after the lock was released,
+    // on the stale in-memory copy, so a cancel/accept landing in between
+    // could be overwritten by the re-offer.
+    await this.withRideLock(rideId, async (ride, manager) => {
       if (ride.status !== 'requested' || ride.driverId !== driver.id) {
         throw new BadRequestException('Nothing to decline');
       }
       ride.driverId = null;
       ride.declinedDriverIds = [...(ride.declinedDriverIds || []), driver.id];
       await manager.save(ride);
-      return ride;
+      try {
+        await this.matchNearestDriver(ride, false, manager);
+      } catch (error) {
+        this.logger.error(`matchNearestDriver failed for decline of ride ${ride.id}`, error as Error);
+      }
     });
 
-    await this.clearOfferTimeout(rideId);
+    // Side effects AFTER commit (withRideLock contract). The offer/search
+    // timers were already transitioned by matchNearestDriver under the lock,
+    // so only the declining driver needs freeing here.
     await this.drivers.setAvailability(driver.id, true);
-    await this.matchNearestDriver(locked);
     const updated = await this.getOrThrow(rideId);
     return this.toDriverView(updated);
   }
@@ -1008,34 +1091,59 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // P-1: this is the ONLY rider/driver path that can settle a ride (a rider's
   // own claim only reaches `rider_claimed`), and it records who confirmed.
   async markPaymentReceived(rideId: string, driverUserId: string): Promise<any> {
-    const ride = await this.getOrThrow(rideId);
-    await this.assertOwningDriver(ride, driverUserId);
-    if (ride.status !== 'completed') {
-      throw new BadRequestException(`Ride is ${ride.status}, payment can only be collected after completion`);
-    }
-    if (ride.paymentStatus === 'disputed') {
-      throw new ConflictException('Payment is disputed — only an admin can resolve it');
-    }
-    if (ride.paymentStatus !== 'paid') {
-      ride.paymentStatus = 'paid';
-      ride.paymentMarkedBy = 'driver';
-      await this.rides.save(ride);
-    }
-    // Keep the payment rows consistent with the ride (the admin resolve path
-    // already does this). Without it the cash order stayed 'rider_claimed' /
-    // 'pending' forever, so the admin ride detail showed a PAID ride next to
-    // an unsettled payment. rides.paymentStatus stays the source of truth, so
-    // this is best-effort and never fails the driver's confirmation.
-    try {
-      await this.rides.manager.update(
-        PaymentEntity,
-        { rideId: ride.id, status: In(['pending', 'rider_claimed']) },
-        { status: 'paid' },
+    // Resolve the driver before the lock (same discipline as accept/decline).
+    const driver = await this.drivers.findByUserId(driverUserId);
+    // Pass-4 (task 2): the check + write run under the row lock as a
+    // conditional update, so the lock-serialised second caller sees `paid`
+    // and skips — exactly one transition and exactly one audit row.
+    const confirmed = await this.withRideLock(rideId, async (ride, manager) => {
+      if (ride.driverId !== driver.id) throw new ForbiddenException('Not your ride');
+      if (ride.status !== 'completed') {
+        throw new BadRequestException(
+          `Ride is ${ride.status}, payment can only be collected after completion`,
+        );
+      }
+      if (ride.paymentStatus === 'disputed') {
+        throw new ConflictException('Payment is disputed — only an admin can resolve it');
+      }
+      if (ride.paymentStatus === 'paid') return false; // idempotent re-tap
+      const result = await manager.update(
+        RideEntity,
+        { id: ride.id, status: 'completed', paymentStatus: ride.paymentStatus },
+        { paymentStatus: 'paid', paymentMarkedBy: 'driver' },
       );
-    } catch (err) {
-      this.logger.warn(`Could not sync payment rows for ride ${ride.id}: ${(err as Error).message}`);
+      if (!result.affected) return false;
+      // Audit INSIDE the same transaction: every driver self-confirmation of
+      // a cash fare must be traceable in the admin console.
+      await manager.save(AdminAuditLogEntity, {
+        actorUserId: driver.userId,
+        actorName: null,
+        action: 'payment_driver_confirm',
+        targetType: 'ride',
+        targetId: ride.id,
+        meta: { rideId: ride.id, amount: ride.fareBreakdown?.total ?? null },
+      });
+      return true;
+    });
+    if (confirmed) {
+      // Keep the payment rows consistent with the ride (the admin resolve
+      // path already does this). Without it the cash order stayed
+      // 'rider_claimed' / 'pending' forever. rides.paymentStatus stays the
+      // source of truth, so this is best-effort and never fails the driver's
+      // confirmation.
+      try {
+        await this.rides.manager.update(
+          PaymentEntity,
+          { rideId, status: In(['pending', 'rider_claimed']) },
+          { status: 'paid' },
+        );
+      } catch (err) {
+        this.logger.warn(`Could not sync payment rows for ride ${rideId}: ${(err as Error).message}`);
+      }
     }
-    return this.toDriverView(ride);
+    // Reload after commit (withRideLock contract) for the driver view.
+    const updated = await this.getOrThrow(rideId);
+    return this.toDriverView(updated);
   }
 
   // PATCH /rides/:id/cancel — CancelRideConfirmationScreen.

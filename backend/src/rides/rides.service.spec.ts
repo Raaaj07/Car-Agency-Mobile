@@ -1,10 +1,11 @@
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { FakeRedis } from '../test/fake-redis';
 import { RIDE_TIMERS_KEY, RidesService } from './rides.service';
 import { RideEntity } from './entities/ride.entity';
+import { PaymentEntity } from '../payments/entities/payment.entity';
 import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
@@ -33,7 +34,7 @@ type QueryRunnerStub = {
   commitTransaction: jest.Mock;
   rollbackTransaction: jest.Mock;
   release: jest.Mock;
-  manager: { findOne: jest.Mock; save: jest.Mock };
+  manager: { findOne: jest.Mock; save: jest.Mock; update: jest.Mock };
 };
 
 describe('RidesService phase-1 fixes', () => {
@@ -90,6 +91,18 @@ describe('RidesService phase-1 fixes', () => {
     ...overrides,
   });
 
+  /**
+   * Makes the lock-manager UPDATE behave like a real one: applies the patch
+   * to the ride object, so the post-commit reload and a second locked call
+   * see the new state (pass-4 task-2 tests).
+   */
+  const applyLockUpdates = (ride: Record<string, unknown>) => {
+    queryRunner.manager.update.mockImplementation(async (_entity, _where, patch) => {
+      Object.assign(ride, patch);
+      return { affected: 1 };
+    });
+  };
+
   beforeEach(() => {
     rides = {
       findOne: jest.fn(),
@@ -128,6 +141,9 @@ describe('RidesService phase-1 fixes', () => {
       manager: {
         findOne: jest.fn(),
         save: jest.fn(async (r) => r),
+        // lock-manager UPDATE: resolves affected without touching any object;
+        // tests that model the locked row call applyLockUpdates(ride).
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       },
     };
     (rides.manager.connection.createQueryRunner as jest.Mock).mockReturnValue(queryRunner);
@@ -163,6 +179,9 @@ describe('RidesService phase-1 fixes', () => {
       expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).not.toBeNull();
 
       // Window elapsed → the 5 s sweep claims the due member and fires it.
+      // Pass-4: the search timeout now runs under the ride row lock.
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      applyLockUpdates(ride);
       expect(await internals.sweepDueTimers(Date.now() + 90_001)).toBe(1);
 
       expect(ride.status).toBe('cancelled');
@@ -185,11 +204,13 @@ describe('RidesService phase-1 fixes', () => {
       await internals.matchNearestDriver(ride as unknown as RideEntity);
       // A driver appeared before the window elapsed (offer made elsewhere).
       ride.driverId = 'drv-1';
+      queryRunner.manager.findOne.mockResolvedValue(ride); // locked read sees the offer
 
       await internals.sweepDueTimers(Date.now() + 90_001);
 
       expect(ride.status).toBe('requested');
       expect(rides.update).not.toHaveBeenCalled();
+      expect(queryRunner.manager.update).not.toHaveBeenCalled(); // locked write refused too
       expect(gateway.emitRideStatus).not.toHaveBeenCalled();
       expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).toBeNull(); // claimed, no-op
     });
@@ -208,7 +229,9 @@ describe('RidesService phase-1 fixes', () => {
 
       expect(cancelled).toBe(1);
       expect(rides.update).toHaveBeenCalledWith(
-        { id: 'r2', status: 'requested' },
+        // Pass-4: the condition now pins the driver too, so a re-offer to a
+        // different driver between find() and update() is never cancelled.
+        { id: 'r2', status: 'requested', driverId: IsNull() },
         expect.objectContaining({
           status: 'cancelled',
           cancelledBy: 'system',
@@ -602,43 +625,92 @@ describe('RidesService phase-1 fixes', () => {
         ...overrides,
       });
 
+    // Pass-4 (task 2): the confirmation runs under the ride row lock — the
+    // locked read is queryRunner.manager.findOne, the write a conditional
+    // manager.update, and the audit row joins the same transaction.
+    const lockCompletedRide = (ride: Record<string, unknown>) => {
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      applyLockUpdates(ride);
+      rides.findOne.mockResolvedValue(ride); // post-commit reload for the view
+      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1', user: { name: 'Driver' } });
+    };
+
     it('settles a pending ride and records paymentMarkedBy=driver', async () => {
       const ride = completedRide();
-      rides.findOne.mockResolvedValue(ride);
-      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1', user: { name: 'Driver' } });
+      lockCompletedRide(ride);
 
       await service.markPaymentReceived('r5', 'du1');
 
       expect(ride.paymentStatus).toBe('paid');
       expect(ride.paymentMarkedBy).toBe('driver');
-      expect(rides.save).toHaveBeenCalledWith(ride);
+      // Conditional write on the validated row — never a whole-entity save.
+      expect(rides.save).not.toHaveBeenCalled();
+      expect(queryRunner.manager.update).toHaveBeenCalledWith(
+        RideEntity,
+        { id: 'r5', status: 'completed', paymentStatus: 'pending' },
+        { paymentStatus: 'paid', paymentMarkedBy: 'driver' },
+      );
+      // The audit row is written in the SAME transaction (admin console
+      // must see every driver self-confirmation).
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        AdminAuditLogEntity,
+        expect.objectContaining({
+          action: 'payment_driver_confirm',
+          targetType: 'ride',
+          targetId: 'r5',
+          meta: { rideId: 'r5', amount: 240 },
+        }),
+      );
+      // Payment rows stay consistent with the ride (P-1 regression).
+      expect(rides.manager.update).toHaveBeenCalledWith(
+        PaymentEntity,
+        { rideId: 'r5', status: expect.anything() },
+        { status: 'paid' },
+      );
     });
 
     it('is idempotent when already paid', async () => {
       const ride = completedRide({ paymentStatus: 'paid', paymentMarkedBy: 'driver' });
-      rides.findOne.mockResolvedValue(ride);
-      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1', user: { name: 'Driver' } });
+      lockCompletedRide(ride);
 
       await service.markPaymentReceived('r5', 'du1');
 
-      expect(rides.save).not.toHaveBeenCalled();
+      expect(queryRunner.manager.update).not.toHaveBeenCalled(); // no re-transition
+      expect(queryRunner.manager.save).not.toHaveBeenCalled(); // no second audit row
       expect(ride.paymentMarkedBy).toBe('driver');
+    });
+
+    it('two rapid confirmations produce exactly ONE audit row', async () => {
+      const ride = completedRide();
+      lockCompletedRide(ride);
+
+      // The pessimistic row lock serialises the two calls in production;
+      // sequential calls through the mocked lock model that ordering.
+      await service.markPaymentReceived('r5', 'du1');
+      await service.markPaymentReceived('r5', 'du1');
+
+      expect(ride.paymentStatus).toBe('paid');
+      expect(queryRunner.manager.update).toHaveBeenCalledTimes(1); // one transition
+      expect(queryRunner.manager.save).toHaveBeenCalledTimes(1); // one audit row
     });
 
     it('refuses to settle a disputed payment', async () => {
       const ride = completedRide({ paymentStatus: 'disputed' });
-      rides.findOne.mockResolvedValue(ride);
-      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1', user: { name: 'Driver' } });
+      lockCompletedRide(ride);
 
       await expect(service.markPaymentReceived('r5', 'du1')).rejects.toThrow(ConflictException);
       expect(ride.paymentStatus).toBe('disputed');
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
     });
 
     it("refuses a driver who does not own the ride", async () => {
-      rides.findOne.mockResolvedValue(completedRide());
+      const ride = completedRide();
+      lockCompletedRide(ride);
       drivers.findByUserId.mockResolvedValue({ id: 'drv-other', userId: 'du2', user: { name: 'Other' } });
 
       await expect(service.markPaymentReceived('r5', 'du2')).rejects.toThrow(ForbiddenException);
+      expect(queryRunner.manager.update).not.toHaveBeenCalled();
     });
   });
 
@@ -648,6 +720,8 @@ describe('RidesService phase-1 fixes', () => {
       const ride = requestedRide({ driverId: 'drv-1' });
       rides.findOne.mockResolvedValue(ride);
       drivers.findNearby.mockResolvedValue([]); // re-match after release finds nobody
+      queryRunner.manager.findOne.mockResolvedValue(ride); // locked read (pass-4)
+      applyLockUpdates(ride);
 
       await internals.scheduleOfferTimeout('r1', 15_000);
       expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
@@ -668,6 +742,8 @@ describe('RidesService phase-1 fixes', () => {
       const ride = requestedRide({ driverId: 'drv-1' });
       rides.findOne.mockResolvedValue(ride);
       drivers.findNearby.mockResolvedValue([]);
+      queryRunner.manager.findOne.mockResolvedValue(ride); // locked read (pass-4)
+      applyLockUpdates(ride);
 
       await internals.scheduleOfferTimeout('r1', 15_000);
       // Second process: same mocks, SAME FakeRedis = a shared Redis server.
@@ -707,6 +783,8 @@ describe('RidesService phase-1 fixes', () => {
       const ride = requestedRide({ driverId: 'drv-1' });
       rides.findOne.mockResolvedValue(ride);
       drivers.findNearby.mockResolvedValue([]);
+      queryRunner.manager.findOne.mockResolvedValue(ride); // locked read (pass-4)
+      applyLockUpdates(ride);
       expect(await (s2 as unknown as RidesInternals).sweepDueTimers(Date.now() + 8_000)).toBe(1);
       expect(drivers.setAvailability).toHaveBeenCalledWith('drv-1', true);
 
@@ -722,6 +800,52 @@ describe('RidesService phase-1 fixes', () => {
       expect(await fake.zcard(RIDE_TIMERS_KEY)).toBe(0);
       // A sweep afterwards finds nothing to fire.
       expect(await internals.sweepDueTimers(Date.now() + 120_000)).toBe(0);
+    });
+  });
+
+  // Pass-4 (task 2): timer handlers re-validate the ride under the row lock,
+  // so a timer firing after the state already moved is a strict no-op.
+  describe('pass-4 task-2: timer/mutation races', () => {
+    it('offer timer firing after the driver already accepted is a no-op', async () => {
+      // The driver accepted between arming and firing: by claim time the
+      // status is no longer `requested`.
+      const accepted = requestedRide({ driverId: 'drv-1', status: 'matched' });
+      queryRunner.manager.findOne.mockResolvedValue(accepted);
+
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      expect(await internals.sweepDueTimers(Date.now() + 16_000)).toBe(1); // claimed
+
+      expect(queryRunner.manager.update).not.toHaveBeenCalled(); // no stale write
+      expect(drivers.setAvailability).not.toHaveBeenCalled(); // driver stays reserved
+      expect(gateway.emitRideStatus).not.toHaveBeenCalled();
+      expect(accepted.status).toBe('matched'); // ride untouched
+    });
+
+    it('search timer on a cancelled ride is a no-op', async () => {
+      const cancelled = requestedRide({ status: 'cancelled', cancelledBy: 'rider' });
+      queryRunner.manager.findOne.mockResolvedValue(cancelled);
+      // The search window came due after the rider had cancelled the ride.
+      await fake.zadd(RIDE_TIMERS_KEY, Date.now(), 'search:r1');
+
+      expect(await internals.sweepDueTimers(Date.now() + 1)).toBe(1); // claimed
+
+      expect(queryRunner.manager.update).not.toHaveBeenCalled();
+      expect(gateway.emitRideStatus).not.toHaveBeenCalled();
+      expect(cancelled.status).toBe('cancelled');
+    });
+
+    it('a conditional write that matched no row releases nothing', async () => {
+      const ride = requestedRide({ driverId: 'drv-1' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      // Belt-and-braces: even under the lock the write is conditional on the
+      // exact status+driver; affected=0 means "someone beat us to it".
+      queryRunner.manager.update.mockResolvedValueOnce({ affected: 0 });
+
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      expect(await internals.sweepDueTimers(Date.now() + 16_000)).toBe(1); // claimed
+
+      expect(drivers.setAvailability).not.toHaveBeenCalled(); // nothing committed
+      expect(gateway.emitRideStatus).not.toHaveBeenCalled();
     });
   });
 });

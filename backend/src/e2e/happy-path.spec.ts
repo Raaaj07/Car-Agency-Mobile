@@ -206,9 +206,12 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       release: jest.fn().mockResolvedValue(undefined),
       manager: {
         findOne: jest.fn(async () => rideRow),
-        save: jest.fn(async (r: RideRow) => {
-          rideRow = r;
-          return r;
+        save: jest.fn(async (a: RideRow, b?: Record<string, unknown>) => {
+          // save(ride) — single-arg form (accept/start) mutates the shared row;
+          // save(EntityClass, dto) — e.g. the in-txn audit row (pass-4) does not.
+          if (b) return { ...a, ...b };
+          rideRow = a;
+          return a;
         }),
         // accept()/start() write with a targeted UPDATE under the row lock
         // (PERF) instead of save(); mirror it onto the shared row.

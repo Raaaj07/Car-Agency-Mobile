@@ -8,6 +8,7 @@ export type AuditAction =
   | 'reinstate'
   | 'ride_cancel'
   | 'payment_resolve'
+  | 'payment_driver_confirm'
   | 'upi_update';
 
 export type AuditTargetType = 'driver' | 'ride';
