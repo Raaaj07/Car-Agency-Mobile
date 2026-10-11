@@ -152,6 +152,34 @@ export class FakeRedis {
     return this.ttls.get(key) ?? -1;
   }
 
+  /** INCR key — parses the stored string (missing = 0), returns the new value. */
+  async incr(key: string): Promise<number> {
+    const next = Number(this.strings.get(key) ?? '0') + 1;
+    this.strings.set(key, String(next));
+    return next;
+  }
+
+  /** PEXPIRE key ms — stores the TTL (seconds, rounded up, like real Redis). */
+  async pexpire(key: string, ms: number): Promise<number> {
+    if (!this.exists(key)) return 0;
+    this.ttls.set(key, Math.ceil(ms / 1000));
+    return 1;
+  }
+
+  /** PTTL key — milliseconds, -1 when the key has no TTL, -2 when missing. */
+  async pttl(key: string): Promise<number> {
+    if (!this.exists(key)) return -2;
+    const seconds = this.ttls.get(key);
+    return seconds === undefined ? -1 : seconds * 1000;
+  }
+
+  /** PSETEX key ms value — set the string value with a millisecond TTL. */
+  async psetex(key: string, ms: number, value: string): Promise<'OK'> {
+    this.strings.set(key, value);
+    this.ttls.set(key, Math.ceil(ms / 1000));
+    return 'OK';
+  }
+
   /** DEL key [key …] — removes zsets/hashes/geo coords/strings (and their TTLs). */
   async del(...keys: string[]): Promise<number> {
     let removed = 0;

@@ -3,11 +3,13 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import Redis from 'ioredis';
 import { validateEnv } from './config/env.validation';
 import { resolveDbSsl } from './config/db-ssl';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { UserKeyedThrottlerGuard } from './common/guards/user-keyed-throttler.guard';
-import { RedisModule } from './config/redis.module';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
+import { REDIS_CLIENT, RedisModule } from './config/redis.module';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
 import { DriversModule } from './drivers/drivers.module';
@@ -28,7 +30,16 @@ import { PromosModule } from './promos/promos.module';
     // tighter per-route overrides on the OTP endpoints. SEC-5: buckets are
     // keyed PER USER for authenticated traffic and per IP for anonymous —
     // see UserKeyedThrottlerGuard (CGNAT/proxy fairness, rotation-proof).
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
+    // Pass-4 (task 8): counters live in REDIS (prefix `throttle:`) so they
+    // survive restarts and are shared across instances; fails OPEN if Redis
+    // is down (logged once/min) so an outage does not lock every rider out.
+    ThrottlerModule.forRootAsync({
+      inject: [REDIS_CLIENT],
+      useFactory: (redis: Redis) => ({
+        throttlers: [{ ttl: 60_000, limit: 300 }],
+        storage: new RedisThrottlerStorage(redis),
+      }),
+    }),
 
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
