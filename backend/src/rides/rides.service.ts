@@ -20,6 +20,7 @@ import { PaymentEntity } from '../payments/entities/payment.entity';
 import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { REDIS_CLIENT } from '../config/redis.module';
 import { toAvatarUrl } from '../common/avatar-url';
+import { haversineKm } from '../common/geo-utils';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
 import { VehicleType } from '../drivers/entities/driver.entity';
@@ -53,9 +54,31 @@ export const RIDE_TIMERS_KEY = 'ride:timers';
 // idempotent (conditional updates / row locks), so nothing can double-fire.
 export const TIMER_SWEEP_MS = 5_000;
 
+// Pass-4 (task 6): hard trip-fraud limits — block only absurd input.
+const DEFAULT_MAX_TRIP_KM = 150;
+const MIN_TRIP_DISTANCE_KM = 0.1; // pickup == dropoff (< 100 m straight-line)
+// Soft flags: a driver ping older than this is too stale to judge.
+const FLAG_FRESH_MS = 5 * 60_000;
+const FLAG_DISTANCE_KM = 1;
+
+type ServiceAreaBbox = { minLat: number; minLng: number; maxLat: number; maxLng: number };
+
+function parseServiceAreaBbox(raw: string | undefined): ServiceAreaBbox | null {
+  if (!raw) return null;
+  const parts = raw
+    .split(',')
+    .map((s) => Number(s.trim()));
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+  const [minLat, minLng, maxLat, maxLng] = parts;
+  return { minLat, minLng, maxLat, maxLng };
+}
+
 @Injectable()
 export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly requestTimeoutSeconds: number;
+  // Pass-4 (task 6): hard booking limits (see module constants).
+  private readonly maxTripKm: number;
+  private readonly serviceAreaBbox: ServiceAreaBbox | null;
   // R-1: max time a ride may sit in `requested` with nobody offering.
   private readonly searchTimeoutSeconds: number;
   private readonly logger = new Logger(RidesService.name);
@@ -75,6 +98,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   ) {
     this.requestTimeoutSeconds = this.config.get<number>('RIDE_REQUEST_TIMEOUT_SECONDS') ?? 15;
     this.searchTimeoutSeconds = this.config.get<number>('RIDE_SEARCH_TIMEOUT_SECONDS') ?? 90;
+    const maxTripKm = Number(this.config.get<string>('MAX_TRIP_KM'));
+    this.maxTripKm = Number.isFinite(maxTripKm) && maxTripKm > 0 ? maxTripKm : DEFAULT_MAX_TRIP_KM;
+    this.serviceAreaBbox = parseServiceAreaBbox(this.config.get<string>('SERVICE_AREA_BBOX'));
   }
 
   // Startup sweep: recover from server restarts so no drivers are permanently reserved
@@ -549,9 +575,37 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (ownDriver?.isOnline) {
       throw new BadRequestException('Go offline as a driver before booking a ride.');
     }
+    // Pass-4 (task 6): hard trip-fraud limits — block only absurd input,
+    // checked BEFORE the routed-distance call so junk never costs a Mapbox
+    // lookup. Pickup == dropoff (< 100 m straight-line) is the classic
+    // fare-manipulation / test-spam shape.
+    const straightKm = haversineKm(dto.pickup, dto.dropoff);
+    if (straightKm < MIN_TRIP_DISTANCE_KM) {
+      throw new BadRequestException('Pickup and dropoff must be at least 100 m apart');
+    }
+    // SERVICE_AREA_BBOX (optional): both trip points must sit inside the
+    // operator's region. Absent → no geographic restriction.
+    if (this.serviceAreaBbox) {
+      const { minLat, minLng, maxLat, maxLng } = this.serviceAreaBbox;
+      const outside = (p: { lat: number; lng: number }): boolean =>
+        p.lat < minLat || p.lat > maxLat || p.lng < minLng || p.lng > maxLng;
+      if (outside(dto.pickup)) {
+        throw new BadRequestException('Pickup is outside the service area');
+      }
+      if (outside(dto.dropoff)) {
+        throw new BadRequestException('Dropoff is outside the service area');
+      }
+    }
     // R-7: fare is based on the ROUTED road distance (Mapbox, 3 s timeout,
     // straight-line x1.3 fallback) — straight-line under-counts detours.
     const distanceKm = await this.routes.routedKm(dto.pickup, dto.dropoff);
+    // Pass-4 (task 6): absurdly long trips (> MAX_TRIP_KM, default 150) are
+    // refused with a clear message instead of silently priced.
+    if (distanceKm > this.maxTripKm) {
+      throw new BadRequestException(
+        `Trip distance ${distanceKm.toFixed(1)} km exceeds the ${this.maxTripKm} km limit`,
+      );
+    }
     const numericPrice = computeNumericPrice(dto.vehicleType, distanceKm);
     // SEC-9: store the code normalised (trim + upper) — the cap accounting
     // counts in-flight rides by exact code equality, and every lookup
@@ -1013,6 +1067,15 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     const fresh = await this.getOrThrow(rideId);
+    // Pass-4 (task 6): soft flag — the driver's fresh ping (> 5 min old is
+    // too stale to judge) sits > 1 km from pickup, e.g. the OTP was read
+    // out over the phone. Never blocks the trip.
+    if (fresh.driverId) {
+      const km = await this.driverFreshKmFrom(fresh.driverId, fresh.pickup);
+      if (km !== null && km > FLAG_DISTANCE_KM) {
+        await this.flagFraud('pickup_far', 'ride', fresh.id, { km: Math.round(km * 10) / 10 });
+      }
+    }
     this.pushStatus(fresh);
     return this.toDriverView(fresh);
   }
@@ -1026,7 +1089,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // R-4: the whole transition runs under the row lock (cancel can no longer
   // interleave between the status check and the fare write).
   async complete(rideId: string, driverUserId: string, dto: CompleteRideDto): Promise<any> {
-    const { driverId, dropoff } = await this.withRideLock(rideId, async (ride, manager) => {
+    const { driverId, dropoff, claimedKm, estimateKm } = await this.withRideLock(rideId, async (ride, manager) => {
       await this.assertOwningDriver(ride, driverUserId);
 
       if (ride.status !== 'in_progress') {
@@ -1038,6 +1101,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       if (!Number.isFinite(finalDistanceKm) || finalDistanceKm <= 0) {
         throw new BadRequestException('Invalid trip distance');
       }
+      // Pass-4 (task 6): the UNCLAMPED distance claim vs the routed distance
+      // recorded at booking — drives the distance_inflated soft flag below.
+      const claimedKm = finalDistanceKm;
       const clampAt = Math.min(Math.max(estimateKm * 1.25, 2), 500);
       finalDistanceKm = Math.min(finalDistanceKm, clampAt);
       const numericPrice = computeNumericPrice(ride.vehicleType, finalDistanceKm);
@@ -1062,7 +1128,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       if (ride.promoCode) {
         await this.promosService.recordRedemption(ride.promoCode, rideId, ride.riderId, manager);
       }
-      return { driverId: ride.driverId!, dropoff: ride.dropoff };
+      return { driverId: ride.driverId!, dropoff: ride.dropoff, claimedKm, estimateKm };
     });
 
     // PERF: these were four sequential awaits. availability + driver lookup are
@@ -1078,6 +1144,23 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       driver.location?.coordinates[1] ?? dropoff?.lat ?? 0,
       driver.location?.coordinates[0] ?? dropoff?.lng ?? 0,
     );
+
+    // Pass-4 (task 6): soft fraud flags (never block): the driver's fresh
+    // last ping sits > 1 km from the dropoff, or the unclamped distance
+    // claim is > 1.15x the routed distance recorded at booking (the fare
+    // was clamped in the lock above; the flag leaves the trace for review).
+    if (dropoff) {
+      const km = await this.driverFreshKmFrom(driverId, dropoff);
+      if (km !== null && km > FLAG_DISTANCE_KM) {
+        await this.flagFraud('dropoff_far', 'ride', rideId, { km: Math.round(km * 10) / 10 });
+      }
+    }
+    if (estimateKm > 0 && claimedKm > estimateKm * 1.15) {
+      await this.flagFraud('distance_inflated', 'ride', rideId, {
+        claimedKm: Math.round(claimedKm * 100) / 100,
+        routedKm: estimateKm,
+      });
+    }
 
     const fresh = await this.loadForDriverView(rideId);
     this.pushStatus(fresh, driverUserId);
@@ -1370,6 +1453,56 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     const driver = await this.drivers.findByUserId(driverUserId);
     if (ride.driverId !== driver.id) {
       throw new ForbiddenException('Not your ride');
+    }
+  }
+
+  // Pass-4 (task 6): soft trip-fraud flags. These NEVER block a trip — they
+  // write one `ride_flag` audit row (reason recorded in both the `reason`
+  // column and `meta.reason`) that GET /admin/rides/:id surfaces as
+  // `flags[]`. Deduplicated per (targetType, targetId, reason) by a
+  // best-effort existence check: soft flags don't justify a unique index.
+  // Failures are swallowed — a flag write must never affect a trip.
+  private async flagFraud(
+    reason: 'pickup_far' | 'dropoff_far' | 'distance_inflated' | 'location_jump',
+    targetType: 'ride' | 'driver',
+    targetId: string,
+    meta: Record<string, unknown> = {},
+  ): Promise<void> {
+    try {
+      const existing = await this.rides.manager.findOne(AdminAuditLogEntity, {
+        where: { action: 'ride_flag', targetType, targetId, reason },
+      });
+      if (existing) return;
+      await this.rides.manager.save(AdminAuditLogEntity, {
+        actorUserId: null,
+        actorName: null,
+        action: 'ride_flag',
+        targetType,
+        targetId,
+        reason,
+        meta: { reason, ...meta },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `fraud flag ${reason} for ${targetType} ${targetId} not recorded: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // Pass-4 (task 6): the driver's last ping measured against `point`, but
+  // only when fresh enough to judge (≤ 5 min old). Null when stale/missing.
+  private async driverFreshKmFrom(
+    driverId: string,
+    point: { lat: number; lng: number },
+  ): Promise<number | null> {
+    try {
+      const driver = await this.drivers.findById(driverId);
+      const loc = driver?.location;
+      const at = driver?.locationUpdatedAt;
+      if (!loc || !at || Date.now() - at.getTime() > FLAG_FRESH_MS) return null;
+      return haversineKm({ lat: loc.coordinates[1], lng: loc.coordinates[0] }, point);
+    } catch {
+      return null;
     }
   }
 

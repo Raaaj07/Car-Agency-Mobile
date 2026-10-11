@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 import { VehicleType } from '../../drivers/entities/driver.entity';
 import { PaymentMethod } from '../entities/ride.entity';
 import { RideLocationDto } from './ride-location.dto';
@@ -30,5 +30,6 @@ export class CreateRideDto {
   paymentMethod?: PaymentMethod;
 
   @IsOptional()
+  @IsBoolean()
   allowUpgrade?: boolean;
 }

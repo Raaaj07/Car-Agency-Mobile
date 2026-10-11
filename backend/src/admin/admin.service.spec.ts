@@ -29,6 +29,8 @@ describe('AdminService status machine (A-2, A-3)', () => {
   let ridesSvc: Record<string, jest.Mock>;
   let payments: Record<string, jest.Mock>;
   let routes: Record<string, jest.Mock>;
+  // pass-4 task-6: rides.manager.find — the ride-flag lookup in getRideDetail.
+  let ridesAuditFind: jest.Mock;
 
   const SUSPEND_REASON = 'Repeated rider cancellations reported';
   const suspendOpts = { reason: SUSPEND_REASON };
@@ -54,6 +56,7 @@ describe('AdminService status machine (A-2, A-3)', () => {
   });
 
   beforeEach(() => {
+    ridesAuditFind = jest.fn().mockResolvedValue([]);
     drivers = {
       findOne: jest.fn(),
       save: jest.fn(async (d) => d),
@@ -62,6 +65,8 @@ describe('AdminService status machine (A-2, A-3)', () => {
     rides = {
       findOne: jest.fn().mockResolvedValue(null),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      // pass-4 task-6: fraud-flag rows for the ride detail `flags[]`.
+      manager: Object.assign(jest.fn(), { find: ridesAuditFind }),
     };
     geo = { removeDriver: jest.fn().mockResolvedValue(undefined) };
     gateway = { emitDriverStatus: jest.fn(), emitRideStatus: jest.fn() };
@@ -421,6 +426,46 @@ describe('AdminService status machine (A-2, A-3)', () => {
       const detail = await service.getRideDetail('ride-9');
 
       expect(detail.distanceOutlier).toBe(false);
+    });
+  });
+
+  // Pass-4 (task 6): the admin ride detail carries the soft trip-fraud
+  // flags (`ride_flag` audit rows for the ride AND its driver) as `flags[]`.
+  describe('ride detail fraud flags (pass-4 task-6)', () => {
+    const rideFixture = () => ({
+      id: 'ride-9',
+      status: 'completed',
+      riderId: 'rider-1',
+      driverId: 'drv-1',
+      vehicleType: 'auto',
+      distanceKm: '5.00',
+      pickup: { address: 'Point A', lat: 12.9, lng: 77.6 },
+      dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
+      fareBreakdown: { total: 250 },
+      paymentStatus: 'paid',
+      createdAt: new Date('2026-01-01'),
+    });
+
+    it('surfaces ride_flag reasons as a distinct flags list', async () => {
+      rides.findOne.mockResolvedValue(rideFixture());
+      ridesAuditFind.mockResolvedValue([
+        { reason: 'pickup_far' },
+        { reason: 'distance_inflated' },
+        { reason: 'pickup_far' }, // duplicate reason collapses
+      ]);
+
+      const detail = await service.getRideDetail('ride-9');
+
+      expect(detail.flags).toEqual(['pickup_far', 'distance_inflated']);
+    });
+
+    it('renders no flags when the audit lookup fails (best-effort)', async () => {
+      rides.findOne.mockResolvedValue(rideFixture());
+      ridesAuditFind.mockRejectedValue(new Error('db down'));
+
+      const detail = await service.getRideDetail('ride-9');
+
+      expect(detail.flags).toEqual([]);
     });
   });
 });

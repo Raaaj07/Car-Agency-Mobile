@@ -227,6 +227,18 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   APP_TIMEZONE?: string;
+
+  // Pass-4 (task 6): hard trip-fraud limits. MAX_TRIP_KM caps the routed
+  // distance a booking may request (default 150); SERVICE_AREA_BBOX
+  // ("minLat,minLng,maxLat,maxLng") restricts both trip points to a region
+  // when set.
+  @IsOptional()
+  @IsNumberString()
+  MAX_TRIP_KM?: string;
+
+  @IsOptional()
+  @IsString()
+  SERVICE_AREA_BBOX?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {
@@ -249,6 +261,20 @@ export function validateEnv(config: Record<string, unknown>) {
     if (typeof v === 'string' && v.startsWith('change_me')) {
       throw new Error(
         `Invalid environment configuration:\n${key} still has placeholder value "change_me_*" — generate a real secret (openssl rand -base64 48)`,
+      );
+    }
+  }
+
+  // Pass-4 (task 6): a malformed SERVICE_AREA_BBOX would silently disable
+  // the service-area check, so fail at boot instead of at trip time.
+  const bbox = (validated as unknown as Record<string, unknown>).SERVICE_AREA_BBOX;
+  if (bbox !== undefined && bbox !== null && bbox !== '') {
+    const parts = String(bbox)
+      .split(',')
+      .map((s) => Number(s.trim()));
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+      throw new Error(
+        'Invalid environment configuration:\nSERVICE_AREA_BBOX must be "minLat,minLng,maxLat,maxLng" (four comma-separated numbers)',
       );
     }
   }

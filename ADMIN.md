@@ -66,6 +66,9 @@ every pull that touches `backend/src/database/migrations/` — they are never au
   production; the app refuses social sign-in with a 503 when unset, and Google/Apple tokens are
   rejected when their `aud` does not match),
   `TIMER_SWEEP_MS` (ride-offer/search timer sweep interval, default 5000), `PRNG_SEED` (deterministic dev seed),
+  `MAX_TRIP_KM` (pass-4: refuse bookings whose routed distance exceeds it, default 150),
+  `SERVICE_AREA_BBOX` (pass-4, optional: `minLat,minLng,maxLat,maxLng` — both trip points must
+  sit inside it; a malformed value fails boot),
   `TRUST_PROXY` (default `false`; set `true` **only** behind a reverse proxy so rate limiting sees real client IPs —
   never enable when the app port is directly reachable, or clients could spoof `X-Forwarded-For` to bypass throttles).
 - Frontend: `EXPO_PUBLIC_API_URL` (must end in `/api/v1`), `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`

@@ -76,7 +76,12 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
     create: jest.Mock;
     save: jest.Mock;
     update: jest.Mock;
-    manager: { connection: { createQueryRunner: jest.Mock }; update: jest.Mock };
+    manager: {
+      connection: { createQueryRunner: jest.Mock };
+      update: jest.Mock;
+      findOne: jest.Mock;
+      save: jest.Mock;
+    };
   };
   let paymentsRepo: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock };
   let geo: Record<string, jest.Mock>;
@@ -189,6 +194,10 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       manager: {
         connection: { createQueryRunner: jest.fn() },
         update: jest.fn(async () => ({ affected: 1 })),
+        // pass-4 task-6: fraud-flag audit rows (dedup lookup + write) — the
+        // e2e trip legitimately trips dropoff_far with the fake coordinates.
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn().mockResolvedValue({}),
       },
     };
 

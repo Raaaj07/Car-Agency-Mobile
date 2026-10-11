@@ -13,6 +13,7 @@ import { RidesService } from '../rides/rides.service';
 import { appTimezone, zonedStartOfDay, zonedStartOfDayAgo } from '../common/timezone';
 import { RouteDistanceService } from '../rides/route-distance.service';
 import { AdminAuditService } from './admin-audit.service';
+import { AdminAuditLogEntity } from './entities/admin-audit-log.entity';
 import { toCsv } from './csv';
 
 type AppStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
@@ -823,6 +824,9 @@ export class AdminService implements OnApplicationBootstrap {
         r.status === 'completed' &&
         routedKm > 0 &&
         Number(r.distanceKm ?? 0) > routedKm * 1.5,
+      // Pass-4 (task 6): soft trip-fraud flags (`ride_flag` audit rows) for
+      // this ride and its driver — additive field, never shown in the app.
+      flags: await this.rideFraudFlags(r.id, r.driverId),
       payments: paymentRows.map((p) => ({
         id: p.id,
         method: p.method,
@@ -833,6 +837,24 @@ export class AdminService implements OnApplicationBootstrap {
         createdAt: p.createdAt,
       })),
     };
+  }
+
+  // Pass-4 (task 6): distinct `ride_flag` reasons recorded against the ride
+  // itself or its driver (arrival order preserved). Best-effort: a failed
+  // read renders as no flags rather than breaking the detail view.
+  private async rideFraudFlags(rideId: string, driverId: string | null | undefined): Promise<string[]> {
+    try {
+      const rows = await this.rides.manager.find(AdminAuditLogEntity, {
+        where: {
+          action: 'ride_flag',
+          targetId: In(driverId ? [rideId, driverId] : [rideId]),
+        },
+        order: { createdAt: 'ASC' },
+      });
+      return [...new Set(rows.map((row) => row.reason).filter((r): r is string => Boolean(r)))];
+    } catch {
+      return [];
+    }
   }
 
   /**

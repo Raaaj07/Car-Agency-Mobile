@@ -47,7 +47,12 @@ describe('RidesService phase-1 fixes', () => {
     update: jest.Mock;
     create: jest.Mock;
     count: jest.Mock;
-    manager: { connection: { createQueryRunner: jest.Mock }; update: jest.Mock };
+    manager: {
+      connection: { createQueryRunner: jest.Mock };
+      update: jest.Mock;
+      findOne: jest.Mock;
+      save: jest.Mock;
+    };
   };
   let drivers: Record<string, jest.Mock>;
   let gateway: Record<string, jest.Mock>;
@@ -57,16 +62,16 @@ describe('RidesService phase-1 fixes', () => {
   // FakeRedis to model multiple backend processes (R-5).
   let fake: FakeRedis;
 
-  const buildService = (): RidesService =>
+  const buildService = (configValues: Record<string, unknown> = {}, routedKm = 5): RidesService =>
     new RidesService(
       rides as unknown as Repository<RideEntity>,
       drivers as unknown as DriversService,
       { removeDriver: jest.fn().mockResolvedValue(undefined), upsertDriverLocation: jest.fn().mockResolvedValue(undefined) } as unknown as GeoService,
       gateway as unknown as RidesGateway,
-      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      { get: jest.fn((key: string) => configValues[key]) } as unknown as ConfigService,
       promos as unknown as PromosService,
       // R-7: routed distance — tests use a fixed estimate (no HTTP).
-      { routedKm: jest.fn().mockResolvedValue(5) } as unknown as RouteDistanceService,
+      { routedKm: jest.fn().mockResolvedValue(routedKm) } as unknown as RouteDistanceService,
       fake as unknown as Redis,
     );
 
@@ -117,6 +122,9 @@ describe('RidesService phase-1 fixes', () => {
         },
         // markPaymentReceived settles the PaymentEntity rows through this.
         update: jest.fn().mockResolvedValue({ affected: 1 }),
+        // pass-4 task-6: fraud-flag audit rows (dedup lookup + write).
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn().mockResolvedValue({}),
       },
     };
     drivers = {
@@ -846,6 +854,202 @@ describe('RidesService phase-1 fixes', () => {
 
       expect(drivers.setAvailability).not.toHaveBeenCalled(); // nothing committed
       expect(gateway.emitRideStatus).not.toHaveBeenCalled();
+    });
+  });
+
+  // Pass-4 (task 6): hard trip limits (block absurd input) + soft fraud
+  // flags (never block — one `ride_flag` audit row per target+reason).
+  describe('pass-4 task-6: trip fraud limits', () => {
+    const booking = (overrides: Record<string, unknown> = {}) => ({
+      vehicleType: 'auto' as const,
+      pickup: { address: 'Point A', lat: 12.9, lng: 77.6 },
+      dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      drivers.findByUserId.mockResolvedValue(null);
+    });
+
+    describe('hard limits on create()', () => {
+      it('refuses pickup == dropoff (< 100 m apart)', async () => {
+        await expect(
+          service.create('u1', booking({ dropoff: { address: 'Here', lat: 12.9, lng: 77.6 } })),
+        ).rejects.toThrow('must be at least 100 m apart');
+        expect(rides.save).not.toHaveBeenCalled();
+      });
+
+      it('refuses a routed distance over MAX_TRIP_KM with a clear message', async () => {
+        service = buildService({}, 200); // routed 200 km > default 150
+
+        await expect(service.create('u1', booking())).rejects.toThrow('exceeds the 150 km limit');
+        expect(rides.save).not.toHaveBeenCalled();
+      });
+
+      it('refuses a pickup outside SERVICE_AREA_BBOX', async () => {
+        service = buildService({ SERVICE_AREA_BBOX: '12.0,76.5,13.0,77.4' }); // pickup lng too far east
+
+        await expect(service.create('u1', booking())).rejects.toThrow(
+          'Pickup is outside the service area',
+        );
+      });
+
+      it('refuses a dropoff outside SERVICE_AREA_BBOX', async () => {
+        service = buildService({ SERVICE_AREA_BBOX: '12.8,77.4,12.95,78.0' }); // dropoff lat too far north
+
+        await expect(service.create('u1', booking())).rejects.toThrow(
+          'Dropoff is outside the service area',
+        );
+      });
+    });
+
+    describe('soft flag: pickup_far (verifyPickupOtp)', () => {
+      const armTripStart = () => {
+        const ride = requestedRide({
+          status: 'driver_en_route',
+          driverId: 'drv-1',
+          pickupOtp: '1234',
+        });
+        queryRunner.manager.findOne.mockResolvedValue(ride);
+        rides.findOne.mockResolvedValue(ride);
+        drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1' });
+        return ride;
+      };
+
+      it('flags a driver > 1 km from pickup when the trip starts', async () => {
+        armTripStart();
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          location: { coordinates: [77.6, 12.911] }, // ~1.2 km north of pickup
+          locationUpdatedAt: new Date(),
+        });
+
+        await service.verifyPickupOtp('r1', 'du1', { otp: '1234' });
+
+        expect(rides.manager.save).toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({
+            action: 'ride_flag',
+            targetType: 'ride',
+            targetId: 'r1',
+            reason: 'pickup_far',
+          }),
+        );
+      });
+
+      it('does NOT flag a driver standing at the pickup', async () => {
+        armTripStart();
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          location: { coordinates: [77.6, 12.9] },
+          locationUpdatedAt: new Date(),
+        });
+
+        await service.verifyPickupOtp('r1', 'du1', { otp: '1234' });
+
+        expect(rides.manager.save).not.toHaveBeenCalled();
+      });
+
+      it('does NOT flag on a stale location (> 5 min old)', async () => {
+        armTripStart();
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          location: { coordinates: [77.6, 12.911] },
+          locationUpdatedAt: new Date(Date.now() - 6 * 60_000),
+        });
+
+        await service.verifyPickupOtp('r1', 'du1', { otp: '1234' });
+
+        expect(rides.manager.save).not.toHaveBeenCalled();
+      });
+
+      it('writes the flag only once per ride+reason (dedup)', async () => {
+        armTripStart();
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          location: { coordinates: [77.6, 12.911] },
+          locationUpdatedAt: new Date(),
+        });
+        rides.manager.findOne.mockResolvedValue({ id: 'audit-1' }); // flag already exists
+
+        await service.verifyPickupOtp('r1', 'du1', { otp: '1234' });
+
+        expect(rides.manager.save).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('soft flags on complete()', () => {
+      const armComplete = (driverAt: [number, number]) => {
+        const ride = requestedRide({
+          status: 'in_progress',
+          driverId: 'drv-1',
+          distanceKm: '5',
+        });
+        queryRunner.manager.findOne.mockResolvedValue(ride);
+        rides.findOne.mockResolvedValue(ride);
+        drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1' });
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          vehicleType: 'auto',
+          location: { coordinates: driverAt }, // [lng, lat]
+          locationUpdatedAt: new Date(),
+        });
+        return ride;
+      };
+
+      it('flags dropoff_far when the driver is > 1 km from the dropoff', async () => {
+        armComplete([77.6, 12.9]); // ~15 km from dropoff (13.0, 77.5)
+
+        await service.complete('r1', 'du1', {});
+
+        expect(rides.manager.save).toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({
+            action: 'ride_flag',
+            targetType: 'ride',
+            targetId: 'r1',
+            reason: 'dropoff_far',
+          }),
+        );
+        // No distance claim given → no inflated flag.
+        expect(rides.manager.save).not.toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({ reason: 'distance_inflated' }),
+        );
+      });
+
+      it('flags distance_inflated when the claim is > 1.15x the routed distance', async () => {
+        armComplete([77.5, 13.0]); // at the dropoff — no dropoff_far
+
+        await service.complete('r1', 'du1', { actualDistanceKm: 10 });
+
+        expect(rides.manager.save).toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({
+            action: 'ride_flag',
+            targetType: 'ride',
+            targetId: 'r1',
+            reason: 'distance_inflated',
+          }),
+        );
+        expect(rides.manager.save).not.toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({ reason: 'dropoff_far' }),
+        );
+      });
+
+      it('does NOT flag a normal completion (at dropoff, honest distance)', async () => {
+        armComplete([77.5, 13.0]);
+
+        await service.complete('r1', 'du1', { actualDistanceKm: 5.2 });
+
+        expect(rides.manager.save).not.toHaveBeenCalled();
+      });
     });
   });
 });

@@ -9,6 +9,10 @@ export type AuditAction =
   | 'ride_cancel'
   | 'payment_resolve'
   | 'payment_driver_confirm'
+  // Pass-4 (task 6): soft trip-fraud flags (pickup_far / dropoff_far /
+  // distance_inflated / location_jump) — never block a trip, just leave a
+  // trace the admin ride detail surfaces as `flags[]`.
+  | 'ride_flag'
   | 'upi_update';
 
 export type AuditTargetType = 'driver' | 'ride';

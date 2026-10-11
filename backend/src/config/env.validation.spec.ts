@@ -69,4 +69,21 @@ describe('validateEnv (SEC-2a social sign-in audiences)', () => {
   it('keeps the webhook secret optional outside production', () => {
     expect(() => validateEnv({ ...required, NODE_ENV: 'development' })).not.toThrow();
   });
+
+  // Pass-4 (task 6): a malformed bbox would silently disable the check.
+  it('fails boot on a malformed SERVICE_AREA_BBOX', () => {
+    expect(() =>
+      validateEnv({ ...required, NODE_ENV: 'development', SERVICE_AREA_BBOX: '12.0,76.5,13.5' }),
+    ).toThrow('SERVICE_AREA_BBOX must be');
+  });
+
+  it('accepts a well-formed SERVICE_AREA_BBOX', () => {
+    expect(() =>
+      validateEnv({
+        ...required,
+        NODE_ENV: 'development',
+        SERVICE_AREA_BBOX: '12.0,76.5,13.5,78.0',
+      }),
+    ).not.toThrow();
+  });
 });

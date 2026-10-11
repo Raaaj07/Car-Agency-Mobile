@@ -1,13 +1,14 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, Repository } from 'typeorm';
+import { EntityManager, In, MoreThan, Repository } from 'typeorm';
 import { DriverEntity, VehicleType } from './entities/driver.entity';
 import { GeoService, NearbyDriverHit } from './geo.service';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { StorageService } from './storage.service';
 import { ApplicationEventsService } from '../common/events/application-events.service';
+import { haversineKm } from '../common/geo-utils';
 import { appTimezone, zonedStartOfDay } from '../common/timezone';
 
 // D-1: the payee VPA must look like `name@bank` (kept in sync with the
@@ -221,6 +222,9 @@ export class DriversService {
   // PATCH /drivers/location — periodic pings from the driver app.
   async updateLocation(userId: string, lat: number, lng: number): Promise<DriverEntity> {
     const driver = await this.findByUserId(userId);
+    // Pass-4 (task 6): the PREVIOUS ping drives the implied-speed soft flag.
+    const prev = driver.location;
+    const prevAt = driver.locationUpdatedAt;
     driver.location = { type: 'Point', coordinates: [lng, lat] };
     driver.locationUpdatedAt = new Date();
     await this.drivers.save(driver);
@@ -228,7 +232,51 @@ export class DriversService {
     if (driver.isOnline) {
       await this.geo.upsertDriverLocation(driver.id, driver.vehicleType, lat, lng);
     }
+
+    // Pass-4 (task 6): soft flag — implied speed between consecutive pings
+    // > 200 km/h (GPS spoofing or a location jump). Never blocks the ping;
+    // at most one `location_jump` row per driver per hour.
+    if (prev && prevAt) {
+      const km = haversineKm(
+        { lat: prev.coordinates[1], lng: prev.coordinates[0] },
+        { lat, lng },
+      );
+      const hours = (driver.locationUpdatedAt.getTime() - prevAt.getTime()) / 3_600_000;
+      if (hours > 0 && km / hours > 200) {
+        await this.flagLocationJump(driver.id, km, hours);
+      }
+    }
     return driver;
+  }
+
+  // Pass-4 (task 6): once-per-hour (per driver) dedup on the location_jump
+  // soft flag — the ping cadence would otherwise flood the audit log. The
+  // row is never allowed to fail the ping itself.
+  private async flagLocationJump(driverId: string, km: number, hours: number): Promise<void> {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60_000);
+      const recent = await this.auditLogs.findOne({
+        where: {
+          action: 'ride_flag',
+          targetType: 'driver',
+          targetId: driverId,
+          reason: 'location_jump',
+          createdAt: MoreThan(oneHourAgo),
+        },
+      });
+      if (recent) return;
+      await this.auditLogs.save({
+        actorUserId: null,
+        actorName: null,
+        action: 'ride_flag',
+        targetType: 'driver',
+        targetId: driverId,
+        reason: 'location_jump',
+        meta: { reason: 'location_jump', km: Math.round(km * 10) / 10, speedKmh: Math.round(km / hours) },
+      });
+    } catch (err) {
+      this.logger.warn(`location_jump flag for driver ${driverId} not recorded: ${(err as Error).message}`);
+    }
   }
   
   // New method — matches GET /drivers/me:
