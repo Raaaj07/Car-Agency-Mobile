@@ -104,6 +104,16 @@ class EnvironmentVariables {
   @IsBooleanString()
   PAYMENTS_DEV_MODE?: string;
 
+  /**
+   * Pass-4 (task 5): Razorpay webhook signing secret. Optional in
+   * development (the webhook endpoint fails closed with 401 when unset);
+   * required in production when PAYMENTS_DEV_MODE is not "true" — see the
+   * production block below.
+   */
+  @IsOptional()
+  @IsString()
+  RAZORPAY_WEBHOOK_SECRET?: string;
+
   @IsOptional()
   @IsString()
   GOOGLE_WEB_CLIENT_ID?: string;
@@ -264,6 +274,14 @@ export function validateEnv(config: Record<string, unknown>) {
           throw new Error(`Invalid environment configuration:\n${key} is required in production (Cloudinary storage)`);
         }
       }
+    }
+    // Pass-4 (task 5): without the webhook secret every delivery would be
+    // rejected (401), so a gateway-settled payment could never reach the
+    // server — required in production unless dev-mode payments are on.
+    if (env.PAYMENTS_DEV_MODE !== 'true' && !env.RAZORPAY_WEBHOOK_SECRET) {
+      throw new Error(
+        'Invalid environment configuration:\nRAZORPAY_WEBHOOK_SECRET is required in production when PAYMENTS_DEV_MODE is false',
+      );
     }
     const publicUrl = (validated as unknown as Record<string, unknown>).PUBLIC_API_URL;
     if (!publicUrl || typeof publicUrl !== 'string' || !publicUrl.startsWith('https://')) {

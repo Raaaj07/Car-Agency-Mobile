@@ -2,6 +2,7 @@
 import { THROTTLER_LIMIT, THROTTLER_TTL } from '@nestjs/throttler/dist/throttler.constants';
 import { AuthController } from './auth/auth.controller';
 import { DriversController } from './drivers/drivers.controller';
+import { PaymentsController } from './payments/payments.controller';
 import { PlacesController } from './places/places.controller';
 import { PromosController } from './promos/promos.controller';
 import { RidesController } from './rides/rides.controller';
@@ -41,6 +42,11 @@ describe('route-level @Throttle overrides (SEC-9)', () => {
     { name: 'DELETE /places/saved/:id', handler: PlacesController.prototype.deleteSaved, limit: 20 },
     // Avatar stores bytes + hits Cloudinary.
     { name: 'POST /auth/me/avatar', handler: AuthController.prototype.uploadAvatar, limit: 5 },
+    // Payments: checkout state changes (pass-4, task 5); the webhook is
+    // signature-authenticated but still per-IP limited against floods.
+    { name: 'POST /payments/create-order', handler: PaymentsController.prototype.createOrder, limit: 10 },
+    { name: 'POST /payments/verify', handler: PaymentsController.prototype.verify, limit: 10 },
+    { name: 'POST /payments/webhook/razorpay', handler: PaymentsController.prototype.razorpayWebhook, limit: 60 },
   ];
 
   it.each(ROUTES)('$name allows at most $limit requests/minute', ({ handler, limit }) => {

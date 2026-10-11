@@ -107,7 +107,10 @@ async function ensureSchema(app: INestApplication, autoRepair: boolean): Promise
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // Pass-4 (task 5): rawBody keeps the exact bytes of every request so the
+  // Razorpay webhook can verify its HMAC signature over what was sent (a
+  // re-serialized JSON body would re-order keys and break the signature).
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const config = app.get(ConfigService);
   const isProd = (config.get<string>('NODE_ENV') ?? 'development') === 'production';
 

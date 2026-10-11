@@ -56,6 +56,10 @@ every pull that touches `backend/src/database/migrations/` — they are never au
 - Backend: `ADMIN_PHONES`, `UPLOAD_DIR`, `MAX_UPLOAD_MB`, `STORAGE_DRIVER` (`local`|`cloudinary`, needs `CLOUDINARY_*` for deploys), `CORS_ORIGIN`,
   `DB_SSL_REJECT_UNAUTHORIZED` (same policy for the app AND `migration:run` — see `config/db-ssl.ts`),
   `OTP_DEV_MODE`, `PAYMENTS_DEV_MODE` (both **refuse to boot in production when `true`**),
+  `RAZORPAY_WEBHOOK_SECRET` (pass-4: signing secret for `POST /payments/webhook/razorpay` —
+  optional in dev, the endpoint **fails closed with 401** when unset; **required in production
+  when `PAYMENTS_DEV_MODE` is false**, and must match the secret configured on Razorpay's
+  webhook, otherwise gateway-settled payments never reach the server),
   `OTP_LENGTH` (4–8, default 4 — the APK shipped 4-digit OTP entry; **flip to 6 once the
   updated app is out** and set `ADMIN_OTP_MIN_LENGTH`-style expectations for phone-based admin promotion, which always requires ≥ 6),
   `GOOGLE_WEB_CLIENT_ID` / `APPLE_CLIENT_ID` (social sign-in **audience** checks — required in

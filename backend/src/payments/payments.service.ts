@@ -5,11 +5,15 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { createHmac, timingSafeEqual } from 'crypto';
+import { EntityManager, QueryRunner, Repository } from 'typeorm';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { RazorpayWebhookDto } from './dto/razorpay-webhook.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { PaymentEntity } from './entities/payment.entity';
 import { PAYMENT_PROVIDER, PaymentProvider } from './providers/payment-provider.interface';
@@ -32,6 +36,7 @@ export class PaymentsService {
     @InjectRepository(PaymentEntity) private readonly payments: Repository<PaymentEntity>,
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
+    private readonly config: ConfigService,
   ) {}
 
   // POST /payments/create-order — a rider *claim* of payment (cash/UPI-QR) or
@@ -48,71 +53,90 @@ export class PaymentsService {
       throw new ConflictException('Payment is disputed — an admin must resolve it first');
     }
 
-    const amount = ride.fareBreakdown.total + (ride.tipAmount ?? 0);
-
-    if (dto.method === 'cash') {
-      // P-1: the rider's claim only reaches rider_claimed — the driver's
-      // "Amount Received" (or an admin) is what settles it.
-      // P-2 idempotency: one deterministic cash order per ride (also what the
-      // unique (rideId, providerOrderId) index enforces).
-      const orderId = `cash_${ride.id}`;
-      let payment = await this.payments.findOne({ where: { rideId: ride.id, providerOrderId: orderId } });
-      if (!payment) {
-        payment = await this.payments.save(
-          this.payments.create({
-            rideId: ride.id,
-            method: 'cash',
-            amount,
-            providerOrderId: orderId,
-            status: 'rider_claimed',
-          }),
-        );
-      } else if (payment.status === 'pending') {
-        payment.status = 'rider_claimed';
-        payment = await this.payments.save(payment);
+    // Pass-4 (task 5): the whole "existing pending order or create" section
+    // runs under a pessimistic lock on the ride row, so two concurrent taps
+    // serialize here — the loser re-reads `payments` UNDER the lock and
+    // reuses the winner's order instead of minting a duplicate gateway order
+    // (or a duplicate cash row that would collide on the unique index).
+    return this.withRideLock(ride.id, async (lockedRide, manager) => {
+      // Re-validate on the LOCKED row: the payment may have settled (driver
+      // "Amount Received", admin, gateway verify) while we waited for it.
+      if (lockedRide.paymentStatus === 'paid') {
+        throw new ConflictException('Payment is already settled for this ride');
       }
-      await this.rides.update(
-        { id: ride.id },
-        { paymentMethod: 'cash', paymentStatus: 'rider_claimed', paymentMarkedBy: 'rider' },
+      if (lockedRide.paymentStatus === 'disputed') {
+        throw new ConflictException('Payment is disputed — an admin must resolve it first');
+      }
+      const amount = lockedRide.fareBreakdown.total + (lockedRide.tipAmount ?? 0);
+
+      if (dto.method === 'cash') {
+        // P-1: the rider's claim only reaches rider_claimed — the driver's
+        // "Amount Received" (or an admin) is what settles it.
+        // P-2 idempotency: one deterministic cash order per ride (also what the
+        // unique (rideId, providerOrderId) index enforces).
+        const orderId = `cash_${lockedRide.id}`;
+        let payment = await manager.findOne(PaymentEntity, {
+          where: { rideId: lockedRide.id, providerOrderId: orderId },
+        });
+        if (!payment) {
+          payment = await manager.save(
+            manager.create(PaymentEntity, {
+              rideId: lockedRide.id,
+              method: 'cash',
+              amount,
+              providerOrderId: orderId,
+              status: 'rider_claimed',
+            }),
+          );
+        } else if (payment.status === 'pending') {
+          payment.status = 'rider_claimed';
+          payment = await manager.save(payment);
+        }
+        await manager.update(
+          RideEntity,
+          { id: lockedRide.id },
+          { paymentMethod: 'cash', paymentStatus: 'rider_claimed', paymentMarkedBy: 'rider' },
+        );
+        return {
+          orderId: payment.providerOrderId,
+          amount: payment.amount,
+          currency: 'INR',
+          providerKey: '',
+          status: 'rider_claimed' as const,
+        };
+      }
+
+      // P-2 idempotency: reuse the ride's existing pending gateway order
+      // instead of minting a duplicate row (and provider order) on every call.
+      // This is exactly the check-then-insert the row lock exists to serialize.
+      const existing = await manager.findOne(PaymentEntity, {
+        where: { rideId: lockedRide.id, method: dto.method, status: 'pending' },
+        order: { createdAt: 'DESC' },
+      });
+      if (existing?.providerOrderId) {
+        return {
+          orderId: existing.providerOrderId,
+          amount: existing.amount,
+          currency: 'INR',
+          providerKey: this.provider.providerKey(),
+          status: 'pending' as const,
+        };
+      }
+
+      const order = await this.provider.createOrder(amount, lockedRide.id);
+      await manager.save(
+        manager.create(PaymentEntity, {
+          rideId: lockedRide.id,
+          method: dto.method,
+          amount,
+          providerOrderId: order.orderId,
+          status: 'pending',
+        }),
       );
-      return {
-        orderId: payment.providerOrderId,
-        amount: payment.amount,
-        currency: 'INR',
-        providerKey: '',
-        status: 'rider_claimed' as const,
-      };
-    }
+      await manager.update(RideEntity, { id: lockedRide.id }, { paymentMethod: dto.method });
 
-    // P-2 idempotency: reuse the ride's existing pending gateway order instead
-    // of minting a duplicate row (and provider order) on every call.
-    const existing = await this.payments.findOne({
-      where: { rideId: ride.id, method: dto.method, status: 'pending' },
-      order: { createdAt: 'DESC' },
+      return { ...order, status: 'pending' as const };
     });
-    if (existing?.providerOrderId) {
-      return {
-        orderId: existing.providerOrderId,
-        amount: existing.amount,
-        currency: 'INR',
-        providerKey: this.provider.providerKey(),
-        status: 'pending' as const,
-      };
-    }
-
-    const order = await this.provider.createOrder(amount, ride.id);
-    await this.payments.save(
-      this.payments.create({
-        rideId: ride.id,
-        method: dto.method,
-        amount,
-        providerOrderId: order.orderId,
-        status: 'pending',
-      }),
-    );
-    await this.rides.update({ id: ride.id }, { paymentMethod: dto.method });
-
-    return { ...order, status: 'pending' as const };
   }
 
   // POST /payments/verify — signature check settles the ride (provider path).
@@ -177,6 +201,127 @@ export class PaymentsService {
     );
     // Include tip so receipt matches what was charged (total + tip).
     return { paid: true, total: ride.fareBreakdown.total + (ride.tipAmount ?? 0), receiptId: payment.id };
+  }
+
+  // POST /payments/webhook/razorpay — the gateway → server settlement path
+  // (pass-4, task 5). Signature FIRST: HMAC-SHA256 over the RAW body with
+  // RAZORPAY_WEBHOOK_SECRET, constant-time compare. The payload is never
+  // logged (it carries payment details); a bad signature answers 401 so the
+  // delivery shows as failed in Razorpay's dashboard.
+  async handleRazorpayWebhook(
+    rawBody: Buffer | undefined,
+    signature: string | undefined,
+    event: RazorpayWebhookDto,
+  ): Promise<{ received: true }> {
+    const secret = this.config.get<string>('RAZORPAY_WEBHOOK_SECRET');
+    if (!secret) {
+      // Fail closed: without the secret nothing can be authenticated.
+      throw new UnauthorizedException('Webhook secret not configured');
+    }
+    if (!rawBody || !signature) {
+      throw new UnauthorizedException('Missing webhook signature');
+    }
+    const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
+    const expectedBuf = Buffer.from(expected, 'utf8');
+    const givenBuf = Buffer.from(signature, 'utf8');
+    // Fixed-length hex digests; the length guard only keeps timingSafeEqual
+    // from throwing on a short attacker-supplied header.
+    if (expectedBuf.length !== givenBuf.length || !timingSafeEqual(expectedBuf, givenBuf)) {
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+
+    // Only the two settlement events matter. Everything else is acked with
+    // 200 so Razorpay does not retry it forever.
+    if (event.event !== 'payment.captured' && event.event !== 'order.paid') {
+      return { received: true };
+    }
+
+    // Narrow the (signature-verified) payload to the two ids we need — the
+    // rest of it is untrusted data and is never logged or echoed.
+    const payload = (event.payload ?? {}) as {
+      payment?: { entity?: { id?: unknown; order_id?: unknown } };
+      order?: { entity?: { id?: unknown } };
+    };
+    const orderId =
+      (typeof payload.order?.entity?.id === 'string' ? payload.order.entity.id : undefined) ??
+      (typeof payload.payment?.entity?.order_id === 'string'
+        ? payload.payment.entity.order_id
+        : undefined);
+    const providerPaymentId =
+      typeof payload.payment?.entity?.id === 'string' ? payload.payment.entity.id : null;
+    if (!orderId) {
+      return { received: true }; // nothing to correlate — ack, never retry-storm
+    }
+
+    const payment = await this.payments.findOne({
+      where: { providerOrderId: orderId },
+      order: { createdAt: 'DESC' },
+    });
+    if (!payment) return { received: true }; // not one of our orders
+    const ride = await this.rides.findOne({ where: { id: payment.rideId } });
+    if (!ride) return { received: true };
+    if (payment.method === 'cash' || payment.providerOrderId?.startsWith('cash_')) {
+      return { received: true }; // a gateway event can never settle a cash claim
+    }
+    // Idempotent: a replayed delivery must not rewrite anything.
+    if (ride.paymentStatus === 'paid') return { received: true };
+    // A disputed payment belongs to the admin resolution path (P-1) — do not
+    // silently overwrite the admin's dispute from a gateway event.
+    if (ride.paymentStatus === 'disputed') return { received: true };
+
+    // Amount gate — same rule as verify(): the ordered amount must be the
+    // ride total, with the tip as an upper bound only. A mismatch means a
+    // wrong or tampered charge: reject loudly (400) instead of settling.
+    const total = ride.fareBreakdown.total;
+    if (payment.amount < total || payment.amount > total + (ride.tipAmount ?? 0)) {
+      throw new BadRequestException(
+        `Order amount ₹${payment.amount} does not match ride fare ₹${total}`,
+      );
+    }
+
+    if (payment.status !== 'paid') {
+      await this.payments.update(
+        { id: payment.id },
+        providerPaymentId ? { status: 'paid', providerPaymentId } : { status: 'paid' },
+      );
+    }
+    await this.rides.update(
+      { id: ride.id },
+      { paymentStatus: 'paid', paymentMarkedBy: 'provider' },
+    );
+    return { received: true };
+  }
+
+  /**
+   * Pass-4 (task 5): pessimistic row lock on the ride inside a transaction —
+   * the same discipline as RidesService.withRideLock (duplicated here because
+   * that helper is private and this module must not import the rides module
+   * for one method). Used by createOrder so the "existing pending order or
+   * create" check-then-insert is atomic. Contract: throwing rolls the
+   * transaction back and rethrows; the commit has happened when this returns.
+   */
+  private async withRideLock<T>(
+    rideId: string,
+    fn: (ride: RideEntity, manager: EntityManager) => Promise<T>,
+  ): Promise<T> {
+    const queryRunner: QueryRunner = this.rides.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      const ride = await queryRunner.manager.findOne(RideEntity, {
+        where: { id: rideId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!ride) throw new NotFoundException('Ride not found');
+      const result = await fn(ride, queryRunner.manager);
+      await queryRunner.commitTransaction();
+      return result;
+    } catch (err) {
+      await queryRunner.rollbackTransaction().catch(() => {});
+      throw err;
+    } finally {
+      await queryRunner.release().catch(() => {});
+    }
   }
 
   private async getRideForRider(rideId: string, riderId: string): Promise<RideEntity> {

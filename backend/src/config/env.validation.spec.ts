@@ -30,6 +30,9 @@ describe('validateEnv (SEC-2a social sign-in audiences)', () => {
     CORS_ORIGIN: 'https://app.example',
     PUBLIC_API_URL: 'https://api.example',
     STORAGE_DRIVER: 'local',
+    // Pass-4 (task 5): webhook signing secret — required in production
+    // (obvious fake, never a real secret).
+    RAZORPAY_WEBHOOK_SECRET: 'whsec_test_fake',
   });
 
   it('fails boot when GOOGLE_WEB_CLIENT_ID is missing in production', () => {
@@ -50,6 +53,20 @@ describe('validateEnv (SEC-2a social sign-in audiences)', () => {
   });
 
   it('keeps both optional outside production (dev machines without social login)', () => {
+    expect(() => validateEnv({ ...required, NODE_ENV: 'development' })).not.toThrow();
+  });
+
+  // Pass-4 (task 5): without the webhook secret every Razorpay delivery is
+  // rejected (401), so a gateway-settled payment could never reach the server.
+  it('fails boot when RAZORPAY_WEBHOOK_SECRET is missing in production', () => {
+    const env = prodBase();
+    env.GOOGLE_WEB_CLIENT_ID = 'gid.apps.example.com';
+    env.APPLE_CLIENT_ID = 'com.example.app';
+    delete env.RAZORPAY_WEBHOOK_SECRET;
+    expect(() => validateEnv(env)).toThrow('RAZORPAY_WEBHOOK_SECRET is required in production');
+  });
+
+  it('keeps the webhook secret optional outside production', () => {
     expect(() => validateEnv({ ...required, NODE_ENV: 'development' })).not.toThrow();
   });
 });
