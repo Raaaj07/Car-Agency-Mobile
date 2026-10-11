@@ -19,9 +19,11 @@ import { UserEntity } from '../src/auth/entities/user.entity';
 import { DriverEntity } from '../src/drivers/entities/driver.entity';
 import { RideEntity } from '../src/rides/entities/ride.entity';
 import { dataSourceOptions } from '../src/config/typeorm.datasource';
+import { assertSafeForScript } from '../src/config/db-guard';
 import { PHONE_PREFIX } from '../src/database/seeds/seed-data';
 
 async function main(): Promise<void> {
+  assertSafeForScript({ destructive: true });
   if ((process.env.NODE_ENV ?? 'development') === 'production') {
     throw new Error('Refusing to run in production (NODE_ENV=production)');
   }

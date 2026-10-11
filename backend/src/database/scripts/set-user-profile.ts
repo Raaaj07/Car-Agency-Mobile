@@ -7,9 +7,11 @@
 import 'dotenv/config';
 import { DataSource } from 'typeorm';
 import { dataSourceOptions } from '../../config/typeorm.datasource';
+import { assertSafeForScript } from '../../config/db-guard';
 import { UserEntity } from '../../auth/entities/user.entity';
 
 async function main() {
+  assertSafeForScript({ destructive: true });
   const [phoneArg, ...nameParts] = process.argv.slice(2);
   const name = nameParts.join(' ').trim();
   if (!phoneArg || !name) {

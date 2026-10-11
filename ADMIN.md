@@ -69,6 +69,29 @@ every pull that touches `backend/src/database/migrations/` — they are never au
   values compile INTO the JS bundle and are extractable from any APK: restrict them in their
   cloud consoles (API restrictions, quota/billing alerts).
 
+## Environments (pass 4 — never share state between them)
+
+Each environment (your laptop, a teammate's machine, CI, Render) gets its **own
+set of everything**. A dev command must never be able to see or change
+production data, and a leaked dev `.env` must never forge production tokens:
+
+| Piece | Dev (per machine) | Prod (Render) |
+| --- | --- | --- |
+| Postgres | own local/docker database | own managed database |
+| Redis | own local/docker instance | own managed instance |
+| JWT secrets | own random `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | own, rotated when shared anywhere |
+| Cloudinary | own folder (`CLOUDINARY_FOLDER`, e.g. `vazhi-dev`) | production folder |
+| MSG91 / Razorpay / Google / Mapbox | dev keys or dev modes | prod keys |
+
+Enforced in code (pass 4): every one-off script (`src/database/scripts/*`,
+`src/database/seeds/seed.ts`, `scripts/repair-schema.ts`,
+`scripts/remove-seed-drivers.ts`) refuses `NODE_ENV=production` and any
+non-local DB host unless started with
+`--i-understand-this-is-a-remote-database` (destructive scripts additionally
+need `ALLOW_REMOTE_DB_WRITES=true`); the integration suite refuses a test
+database that is not named `*test*`, equals `DB_DATABASE`, or points at a
+remote host without `TEST_DB_ALLOW_REMOTE=1`.
+
 ## Owner security checklist (S-1)
 
 - `*.jks` keystores and `.env*` files are gitignored (root + `frontend/.gitignore`) and **must never be shared**;

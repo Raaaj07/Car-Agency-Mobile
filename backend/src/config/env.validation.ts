@@ -153,6 +153,21 @@ class EnvironmentVariables {
   @IsBooleanString()
   DB_SSL_REJECT_UNAUTHORIZED?: string;
 
+  /**
+   * Pass-4 script guard: scripts that WRITE to the database refuse any
+   * non-local DB host unless they were started with
+   * `--i-understand-this-is-a-remote-database` AND this is "true".
+   * Never set it in production.
+   */
+  @IsOptional()
+  @IsBooleanString()
+  ALLOW_REMOTE_DB_WRITES?: string;
+
+  /** Pass-4: integration suite may target a remote test DB when "1". */
+  @IsOptional()
+  @IsString()
+  TEST_DB_ALLOW_REMOTE?: string;
+
   /** Mapbox Directions token for routed fare distances (R-7); optional —
    * without it estimates fall back to straight-line x1.3. */
   @IsOptional()

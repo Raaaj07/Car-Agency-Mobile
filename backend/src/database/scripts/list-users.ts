@@ -5,9 +5,11 @@
 import 'dotenv/config';
 import { DataSource } from 'typeorm';
 import { dataSourceOptions } from '../../config/typeorm.datasource';
+import { assertSafeForScript } from '../../config/db-guard';
 import { UserEntity } from '../../auth/entities/user.entity';
 
 async function main() {
+  assertSafeForScript({ destructive: false });
   const ds = new DataSource(dataSourceOptions);
   await ds.initialize();
   try {

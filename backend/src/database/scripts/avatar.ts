@@ -8,6 +8,7 @@
  */
 import 'dotenv/config';
 import { dataSourceOptions } from '../../config/typeorm.datasource';
+import { assertSafeForScript } from '../../config/db-guard';
 import { DataSource } from 'typeorm';
 import { UserEntity } from '../../auth/entities/user.entity';
 
@@ -17,6 +18,8 @@ async function main() {
     console.error('Usage: avatar.ts <userId> [clear|set <value>]');
     process.exit(1);
   }
+  // Inspecting is read-only; clear/set write the users row.
+  assertSafeForScript({ destructive: Boolean(action) });
   const ds = new DataSource(dataSourceOptions);
   await ds.initialize();
   try {
