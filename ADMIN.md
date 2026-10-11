@@ -70,7 +70,10 @@ every pull that touches `backend/src/database/migrations/` — they are never au
   `SERVICE_AREA_BBOX` (pass-4, optional: `minLat,minLng,maxLat,maxLng` — both trip points must
   sit inside it; a malformed value fails boot),
   `TRUST_PROXY` (default `false`; set `true` **only** behind a reverse proxy so rate limiting sees real client IPs —
-  never enable when the app port is directly reachable, or clients could spoof `X-Forwarded-For` to bypass throttles).
+  never enable when the app port is directly reachable, or clients could spoof `X-Forwarded-For` to bypass throttles),
+  `REQUIRE_AUTH_FOR_PHOTOS` (pass-4 task 10: `false` by default so existing APKs keep rendering; set `true` to require a
+  valid access token on the billable photo proxy `GET /places/photo/*` — flip it only after a build that sends the
+  `Authorization` header has shipped, or curated/live photos will 401 for old clients).
 - Frontend: `EXPO_PUBLIC_API_URL` (must end in `/api/v1`), `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`
   (Google sign-in client id), plus the Google Places/Maps and Mapbox keys — all `EXPO_PUBLIC_*`
   values compile INTO the JS bundle and are extractable from any APK: restrict them in their

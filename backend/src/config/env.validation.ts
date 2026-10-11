@@ -139,6 +139,14 @@ class EnvironmentVariables {
   @IsIn(['cloudinary', 'local'])
   STORAGE_DRIVER?: string;
 
+  // Pass-4 (task 10): when "true", the billable photo proxy
+  // (GET /places/photo/*) requires a verifiable access token instead of
+  // serving anonymous traffic. Default off so existing APKs (whose <Image>
+  // never sends a header) keep rendering; the owner flips it after rollout.
+  @IsOptional()
+  @IsString()
+  REQUIRE_AUTH_FOR_PHOTOS?: string;
+
   @IsOptional()
   @IsString()
   CLOUDINARY_CLOUD_NAME?: string;
