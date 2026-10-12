@@ -110,6 +110,8 @@ export const AdminNavigator: React.FC = () => {
     <View style={styles.root}>
       <Tab.Navigator
         initialRouteName="overview"
+        // D6: hardware back returns to the previously active tab.
+        backBehavior="history"
         screenOptions={{ headerShown: false }}
         tabBar={({ navigation, state }) => {
           const routeNames: string[] = ['overview', 'drivers', 'rides', 'account'];

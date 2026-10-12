@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, ActivityIndicator, Text, Alert } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './types';
 
 import { OnboardingNavigator } from './OnboardingNavigator';
 import { MainTabNavigator } from './MainTabNavigator';
 import { AdminNavigator } from './AdminNavigator';
+import { flattenRouteNames, goToRideCancelled } from './navHelpers';
 
 import { CancelRideConfirmationScreen } from '../screens/shared/CancelRideConfirmationScreen';
 import { RideCancelledScreen } from '../screens/shared/RideCancelledScreen';
@@ -27,6 +28,7 @@ import { Button } from '../components/primitives/Button';
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export const AppNavigator: React.FC = () => {
+  const navigationRef = useRef<NavigationContainerRef<RootStackParamList>>(null);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const hydrated = useAuthStore((state) => state.hydrated);
   const bootOffline = useAuthStore((state) => state.bootOffline);
@@ -66,7 +68,16 @@ export const AppNavigator: React.FC = () => {
   const needsProfile = isAuthenticated && user && user.profileComplete === false;
 
   return (
-    <NavigationContainer>
+    <NavigationContainer
+      ref={navigationRef}
+      // Back-navigation audit evidence: prints the focused route chain on
+      // every state change, e.g. "[nav] Main > HomeTab > DestinationSearch".
+      onStateChange={() => {
+        if (!__DEV__) return;
+        const names = flattenRouteNames(navigationRef.current?.getRootState());
+        if (names.length > 0) console.log(`[nav] ${names.join(' > ')}`);
+      }}
+    >
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!isAuthenticated ? (
           <Stack.Screen name="Onboarding" component={OnboardingNavigator} />
@@ -135,7 +146,11 @@ export const AppNavigator: React.FC = () => {
                         await ridesApi.cancel(ride.id, reason);
                         useRideStore.getState().setCancellationReason(reason);
                         useRideStore.getState().resetRide();
-                        navigation.navigate('RideCancelled', { reason });
+                        // D4: replace the whole root state — [fresh Main
+                        // (HomeTab > HomeDashboard), RideCancelled] — instead
+                        // of pushing RideCancelled over this modal and then
+                        // stacking a second Main on top of it.
+                        goToRideCancelled(navigation, { reason });
                       } catch (error) {
                         // SEC-3: a mid-trip cancel is refused with 409 — say what
                         // to do instead (ask the driver / support) and keep the
@@ -159,17 +174,24 @@ export const AppNavigator: React.FC = () => {
                 )}
               </Stack.Screen>
 
-              <Stack.Screen name="RideCancelled">
+              <Stack.Screen
+                name="RideCancelled"
+                // D4: no swipe-back into the (now fresh) stack below — the
+                // outcome screen is a dead end: back and both buttons go Home.
+                options={{ gestureEnabled: false }}
+              >
                 {({ navigation, route }) => (
                   <RideCancelledScreen
                     reason={route.params?.reason}
                     onBookNew={() => {
                       useRideStore.getState().resetRide();
-                      navigation.navigate('Main', { screen: 'HomeTab' } as any);
+                      // Pop back to the Main that goToRideCancelled placed
+                      // underneath us — it is already HomeTab > HomeDashboard.
+                      navigation.popTo('Main');
                     }}
                     onGoHome={() => {
                       useRideStore.getState().resetRide();
-                      navigation.navigate('Main', { screen: 'HomeTab' } as any);
+                      navigation.popTo('Main');
                     }}
                   />
                 )}

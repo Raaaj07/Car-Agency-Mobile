@@ -1,8 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Alert, AppState } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { DriverMainTabParamList, MainTabParamList } from './types';
-import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
+import { DriverMainTabParamList, MainTabParamList, RootStackParamList } from './types';
+import { CommonActions, getFocusedRouteNameFromRoute, useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RiderHomeStackNavigator } from './RiderHomeStackNavigator';
 import { DriverDashboardStackNavigator } from './DriverDashboardStackNavigator';
 import { RideHistoryScreen } from '../screens/rider/RideHistoryScreen';
@@ -35,6 +36,22 @@ export const MainTabNavigator: React.FC = () => {
   const activeMode = useAuthStore((s) => s.activeMode);
   const driverStatus = useAuthStore((s) => s.user?.driverStatus);
   const isDriverMode = driverStatus === 'approved' && activeMode === 'driver';
+  const rootNavigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  // D9: the rider and driver tab trees share this one `Main` route, so the
+  // nested tab state from the old tree leaks into the new one (landing on
+  // Profile/Trips instead of Home/Dashboard). When the mode flips (manual
+  // switch, or a forced drop back to rider), reset the root to a fresh `Main`
+  // so the new tree opens on its own initial tab. The ref starts at the
+  // current mode, so the remounted Main does not reset again.
+  const prevDriverModeRef = useRef(isDriverMode);
+  useEffect(() => {
+    if (prevDriverModeRef.current === isDriverMode) return;
+    prevDriverModeRef.current = isDriverMode;
+    rootNavigation.dispatch(
+      CommonActions.reset({ index: 0, routes: [{ name: 'Main' }] }),
+    );
+  }, [isDriverMode, rootNavigation]);
 
   useEffect(() => {
     const forceRider = (why: string) => {
@@ -107,6 +124,9 @@ export const MainTabNavigator: React.FC = () => {
     return (
       <DriverTab.Navigator
         initialRouteName="DashboardTab"
+        // D6: hardware back returns to the previously active tab (default
+        // 'firstRoute' jumped to Dashboard, skipping the visited tab).
+        backBehavior="history"
         screenOptions={{ headerShown: false }}
         tabBar={({ navigation, state }) => {
           const routeNames = ['home', 'nav', 'activity', 'profile'];
@@ -137,6 +157,9 @@ export const MainTabNavigator: React.FC = () => {
   return (
     <RiderTab.Navigator
       initialRouteName="HomeTab"
+      // D6: hardware back returns to the previously active tab (default
+      // 'firstRoute' jumped to Home, skipping e.g. Profile).
+      backBehavior="history"
       screenOptions={{ headerShown: false }}
       tabBar={({ navigation, state }) => {
         const routeNames = ['home', 'explore', 'activity', 'profile'];

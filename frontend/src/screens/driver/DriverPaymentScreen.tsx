@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Alert } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { QrCode, CheckCircle2, IndianRupee } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
+import { DriverMainTabParamList } from '../../navigation/types';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Pill } from '../../components/primitives/Pill';
@@ -36,7 +38,9 @@ const RIDE_REFRESH_MS = 4000;
  * the admin console shows.
  */
 export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
-  const navigation = useNavigation<any>();
+  // This screen only jumps to the driver-mode Profile tab (UPI setup) — type
+  // it against the driver tab list instead of `any`.
+  const navigation = useNavigation<BottomTabNavigationProp<DriverMainTabParamList>>();
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const driverName = useAuthStore((state) => state.user?.name);

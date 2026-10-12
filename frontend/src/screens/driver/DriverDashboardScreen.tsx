@@ -2,8 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Switch, Alert, ScrollView, TouchableOpacity } from 'react-native';
 import { Bell, Phone, Clock, ChevronRight } from 'lucide-react-native';
 import * as Location from 'expo-location';
-import { useNavigation } from '@react-navigation/native';
+import { CompositeNavigationProp, useNavigation } from '@react-navigation/native';
+import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, typography, shadows } from '../../theme/theme';
+import { DriverDashboardStackParamList, DriverMainTabParamList, RootStackParamList } from '../../navigation/types';
 import { Card } from '../../components/primitives/Card';
 import { LatLng } from '../../components/primitives/RealMapView';
 import { driversApi, DriverProfile } from '../../api/drivers';
@@ -18,6 +21,16 @@ import {
   startDriverBackgroundLocation,
   stopDriverBackgroundLocation,
 } from '../../lib/locationTask';
+
+// Dashboard stack screens + the driver tabs it jumps between + the shared
+// root modals (RideAnnouncementsSettings) — fully typed, no `any`.
+type NavProp = CompositeNavigationProp<
+  NativeStackNavigationProp<DriverDashboardStackParamList>,
+  CompositeNavigationProp<
+    BottomTabNavigationProp<DriverMainTabParamList>,
+    NativeStackNavigationProp<RootStackParamList>
+  >
+>;
 
 const LOCATION_HEARTBEAT_MS = 5000;
 // Reuse a GPS fix younger than this when going online: the server only
@@ -71,7 +84,7 @@ function tripLabel(ride: Ride): string {
 }
 
 export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
-  const navigation = useNavigation<any>();
+  const navigation = useNavigation<NavProp>();
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [isOnline, setIsOnline] = useState(false);
   const [isRegistered, setIsRegistered] = useState<boolean | null>(null); // null = still checking
@@ -415,7 +428,9 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   };
 
   const openNotifications = () => {
-    (navigation.getParent()?.getParent()?.getParent() as any)?.navigate?.('RideAnnouncementsSettings');
+    // D10: two hops reach the root stack (dashboard stack → driver tabs →
+    // root). The third hop used to land on undefined and silently no-op.
+    navigation.getParent()?.getParent<NativeStackNavigationProp<RootStackParamList>>()?.navigate('RideAnnouncementsSettings');
   };
 
   // Ignore rides restored from the rider flow: they are the user's own

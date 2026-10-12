@@ -164,10 +164,13 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const tabNav = navigation.getParent<BottomTabNavigationProp<AdminTabParamList>>();
+  // D11: stat-card tap-through uses `pop: true` so that when the target tab's
+  // stack is already sitting on a detail screen, the list pops back into view
+  // (with its filters) instead of a duplicate list being pushed on top of it.
   const openDrivers = (segment: AdminDriversSegment) =>
-    tabNav?.navigate('drivers', { screen: 'AdminDrivers', params: { segment } });
+    tabNav?.navigate('drivers', { screen: 'AdminDrivers', params: { segment }, pop: true });
   const openRides = (preset: AdminRidesPreset) =>
-    tabNav?.navigate('rides', { screen: 'AdminRides', params: preset });
+    tabNav?.navigate('rides', { screen: 'AdminRides', params: preset, pop: true });
   const openDriver = (driverId: string) =>
     tabNav?.navigate('drivers', { screen: 'AdminDriverDetail', params: { driverId } });
   const openRide = (rideId: string) =>

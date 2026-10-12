@@ -25,6 +25,7 @@ import { useRideSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
 import { getRoute } from '../../api/mapbox';
 import { ridesApi } from '../../api/rides';
+import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
 
 interface Props {
   onCompleteTrip: () => void;
@@ -48,6 +49,11 @@ export const TripProgressScreen: React.FC<Props> = ({
 
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
+  // D2: an in-progress trip must never reveal the booking form — swallow back
+  // (cancel/emergency are the explicit ways out of this screen).
+  usePreventBack(() => {});
+  // D4: if the ride vanished under this screen, go home — never a dead map.
+  useRequireActiveRide();
 
   const pickupCoords = useRideStore(
     (state) => state.pickupCoords

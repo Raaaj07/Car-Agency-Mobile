@@ -11,6 +11,7 @@ import { useRideSocket } from '../../hooks/useSocket';
 import { ridesApi } from '../../api/rides';
 import { getRoute } from '../../api/mapbox';
 import { haversineKm } from '../../utils/distance';
+import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
 
 interface Props {
   onTrackDriver: () => void;
@@ -26,6 +27,11 @@ const REROUTE_MAX_AGE_MS = 30_000;
 const POLL_MS = 5000;
 
 export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCancelled }) => {
+  // D2: back must never reveal the booking form while a ride is live —
+  // swallow it (the ride advances through the sockets/polls below).
+  usePreventBack(() => {});
+  // D4: if the ride vanished under this screen, go home — never a dead map.
+  useRequireActiveRide();
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const storePickupCoords = useRideStore((state) => state.pickupCoords);

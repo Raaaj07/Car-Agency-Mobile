@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { Phone, MessageSquare, Clock, MapPin, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -9,6 +9,7 @@ import { useRideStore } from '../../store/rideStore';
 import { useRideSocket } from '../../hooks/useSocket';
 import { ridesApi } from '../../api/rides';
 import { getRoute } from '../../api/mapbox';
+import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
 
 interface Props {
   onStartTrip: () => void;
@@ -35,6 +36,11 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const pickupCoords = useRideStore((state) => state.pickupCoords);
   const dropoffCoords = useRideStore((state) => state.dropoffCoords);
+  // D2: back must never reveal the booking form while the driver is en
+  // route — swallow it ("Cancel" below is the way out).
+  usePreventBack(() => {});
+  // D4: if the ride vanished under this screen, go home — never a dead map.
+  useRequireActiveRide();
   const pickupOtp = activeRide?.pickupOtp;
   const pickupText = activeRide?.pickup?.address || 'Pickup Location';
   const dropText = activeRide?.dropoff?.address || 'Drop-off Location';
@@ -233,7 +239,18 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
           />
           <Button
             title="Trip Started"
-            onPress={onStartTrip}
+            onPress={() => {
+              // D5: only the server starts the trip (the driver enters the
+              // pickup OTP). Don't jump to the trip map on a local tap.
+              if (useRideStore.getState().activeRide?.status === 'in_progress') {
+                safeStartTrip();
+              } else {
+                Alert.alert(
+                  'Trip not started yet',
+                  'The trip begins once the driver enters your pickup OTP.',
+                );
+              }
+            }}
             variant="primary"
             size="medium"
             style={styles.startBtn}

@@ -6,12 +6,16 @@ import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { useRideStore } from '../../store/rideStore';
+import { usePreventBack } from '../../navigation/navHelpers';
 
 interface Props {
   onGoHome: () => void;
 }
 
 export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
+  // D3: back from the completed-ride screen goes Home — never into the
+  // payment/review chain that is still mounted underneath it.
+  usePreventBack(onGoHome);
   // Real trip data from the completed ride (no demo numbers).
   const activeRide = useRideStore((state) => state.activeRide);
   const driver = activeRide?.driver ?? null;

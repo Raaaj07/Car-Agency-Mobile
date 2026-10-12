@@ -17,8 +17,11 @@ import {
   Megaphone,
   Trash2,
 } from 'lucide-react-native';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { CompositeNavigationProp, useNavigation, useFocusEffect } from '@react-navigation/native';
+import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, typography } from '../../theme/theme';
+import { MainTabParamList, RootStackParamList } from '../../navigation/types';
 import { useAuthStore } from '../../store/authStore';
 import { useRideStore } from '../../store/rideStore';
 import { authApi } from '../../api/auth';
@@ -77,8 +80,16 @@ function MenuRow({
 // (announcements, vehicle, payment QR, support). The driverStatus section
 // still reflects server truth: none → Become a driver; pending/rejected/
 // suspended → status cards; approved → Switch to Driver.
+// Profile is rendered by BOTH the rider and driver tab trees; this composite
+// covers the rider tab routes it jumps to ("Rides") plus the shared root
+// modals (HelpSupport / MyVehicle / PaymentQr / …) — no `any`.
+type NavProp = CompositeNavigationProp<
+  BottomTabNavigationProp<MainTabParamList>,
+  NativeStackNavigationProp<RootStackParamList>
+>;
+
 export const ProfileScreen: React.FC = () => {
-  const navigation = useNavigation<any>();
+  const navigation = useNavigation<NavProp>();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const updateUser = useAuthStore((s) => s.updateUser);

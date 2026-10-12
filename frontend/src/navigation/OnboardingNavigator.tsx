@@ -38,7 +38,9 @@ export const OnboardingNavigator: React.FC = () => {
           <LanguageSelectionScreen
             onNext={() => {
               setLanguage('en');
-              navigation.navigate('SignIn');
+              // D11: replace, not navigate — back from SignIn must not reveal
+              // the language picker again after the choice was already made.
+              navigation.replace('SignIn');
             }}
           />
         )}
