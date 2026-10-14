@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MapPin } from 'lucide-react-native';
+import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import { colors, typography } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
 import { Pill } from '../../components/primitives/Pill';
@@ -23,6 +25,8 @@ function formatDate(iso?: string): string {
 }
 
 export const DriverTripsScreen: React.FC = () => {
+  const insets = useSafeAreaInsets();
+  const tabBarSpace = useTabBarSpace();
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -58,11 +62,11 @@ export const DriverTripsScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>Trip History</Text>
+      <Text style={[styles.header, { paddingTop: insets.top + 16 }]}>Trip History</Text>
       <FlatList
         data={rides}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { paddingBottom: tabBarSpace + 16 }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

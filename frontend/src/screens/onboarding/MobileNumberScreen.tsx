@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Phone, ArrowRight, ShieldCheck } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -15,6 +16,7 @@ export const MobileNumberScreen: React.FC<Props> = ({ onBack, onSendOTP }) => {
   const [phoneNumber, setPhoneNumber] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const insets = useSafeAreaInsets();
 
   const handleSubmit = async () => {
     if (phoneNumber.length < 10) {
@@ -36,7 +38,11 @@ export const MobileNumberScreen: React.FC<Props> = ({ onBack, onSendOTP }) => {
     <View style={styles.container}>
       <Header title="Mobile Verification" onBack={onBack} transparent />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.iconBadge}>
           <Phone size={28} color={colors.accent} />
         </View>
@@ -72,7 +78,7 @@ export const MobileNumberScreen: React.FC<Props> = ({ onBack, onSendOTP }) => {
         </View>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Send OTP Code"
           onPress={handleSubmit}

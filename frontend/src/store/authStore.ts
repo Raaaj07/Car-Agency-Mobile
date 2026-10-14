@@ -156,6 +156,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     import('./rideStore')
       .then((m) => m.useRideStore.getState().resetRide())
       .catch(() => {});
+    // Per-user places: recents/saved/promos (and the local search history)
+    // must never leak from one account to the next on the same device.
+    import('./placesStore')
+      .then((m) => m.usePlacesStore.getState().reset())
+      .catch(() => {});
     set({
       isAuthenticated: false,
       user: null,

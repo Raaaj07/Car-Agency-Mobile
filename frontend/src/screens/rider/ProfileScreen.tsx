@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, RefreshControl } from 'react-native';
 import Constants from 'expo-constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   LogOut,
   Edit2,
@@ -100,6 +101,7 @@ export const ProfileScreen: React.FC = () => {
   // of this ScrollView. Without this extra bottom padding the "Sign out" row
   // sat underneath it and could never be reached.
   const tabBarSpace = useTabBarSpace();
+  const insets = useSafeAreaInsets();
 
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(user?.name ?? '');
@@ -301,7 +303,7 @@ export const ProfileScreen: React.FC = () => {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={[styles.content, { paddingBottom: tabBarSpace + 24 }]}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 16, paddingBottom: tabBarSpace + 24 }]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadApp(); setRefreshing(false); }} />}
     >
       <Text style={styles.title}>Profile</Text>

@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BadgeCheck, Car } from 'lucide-react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { colors, radii, typography } from '../../theme/theme';
@@ -20,6 +21,7 @@ function label(value: string): string {
 // document checklist — no driver-editable fields exist server-side, so the
 // screen points to support for changes.
 export const MyVehicleScreen: React.FC<Props> = ({ onBack }) => {
+  const insets = useSafeAreaInsets();
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [application, setApplication] = useState<DriverApplication | null>(null);
   const [error, setError] = useState<string | undefined>();
@@ -52,7 +54,7 @@ export const MyVehicleScreen: React.FC<Props> = ({ onBack }) => {
   return (
     <View style={styles.container}>
       <Header title="My Vehicle" onBack={onBack} transparent />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 48 + insets.bottom }]}>
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
         {profile ? (

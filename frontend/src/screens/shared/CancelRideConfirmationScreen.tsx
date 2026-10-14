@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertTriangle, Check, ShieldAlert } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -26,6 +27,7 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
   const setCancellationReason = useRideStore((state) => state.setCancellationReason);
   const activeRide = useRideStore((state) => state.activeRide);
   const [selectedReason, setSelectedReason] = useState<string>(storeReason || reasons[0]);
+  const insets = useSafeAreaInsets();
 
   const handleConfirm = () => {
     setCancellationReason(selectedReason);
@@ -56,7 +58,10 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
     <View style={styles.container}>
       {onBack && <Header title="Cancel Ride" onBack={onBack} />}
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 140 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Warning Alert Banner */}
         <View style={styles.warningBanner}>
           <AlertTriangle size={24} color={colors.danger} />
@@ -110,7 +115,7 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
       </ScrollView>
 
       {/* Footer Action Buttons */}
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         {!tripRunning && (
           <Button
             title="Confirm Cancellation"

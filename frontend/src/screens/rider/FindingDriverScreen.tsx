@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Navigation, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -40,6 +41,7 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
   // D4: if the ride vanished under this screen, go home — never a dead
   // "Searching…" page.
   useRequireActiveRide();
+  const insets = useSafeAreaInsets();
 
   // D5: the poll used to depend on the whole activeRide object (replaced on
   // every poll) plus inline callback props, so it re-armed after it had already
@@ -176,7 +178,7 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
       />
 
       {/* Bottom Sheet Card */}
-      <View style={styles.bottomSheet}>
+      <View style={[styles.bottomSheet, { paddingBottom: 24 + insets.bottom }]}>
         <View style={styles.dragHandle} />
 
         <View style={styles.searchingHeader}>

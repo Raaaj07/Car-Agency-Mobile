@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KeyRound } from 'lucide-react-native';
 import { colors, typography } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -16,6 +17,7 @@ interface Props {
 export const DriverOtpEntryScreen: React.FC<Props> = ({ onBack, onVerify, isVerifying, serverError }) => {
   const [code, setCode] = useState<string[]>(['', '', '', '']);
   const isComplete = code.join('').length === 4;
+  const insets = useSafeAreaInsets();
 
   return (
     <View style={styles.container}>
@@ -29,7 +31,7 @@ export const DriverOtpEntryScreen: React.FC<Props> = ({ onBack, onVerify, isVeri
         <OTPInput code={code} setCode={setCode} length={4} />
         {serverError ? <Text style={styles.error}>{serverError}</Text> : null}
       </View>
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Start Trip"
           onPress={() => onVerify(code.join(''))}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { XCircle, RefreshCw, ShieldCheck } from 'lucide-react-native';
 import { colors, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -19,12 +20,16 @@ export const RideCancelledScreen: React.FC<Props> = ({
 }) => {
   const storeReason = useRideStore((state) => state.cancellationReason);
   const displayReason = propReason || storeReason || 'Driver is taking too long to arrive';
+  const insets = useSafeAreaInsets();
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 130 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Cancel Icon Header */}
-        <View style={styles.headerBox}>
+        <View style={[styles.headerBox, { marginTop: 30 + insets.top }]}>
           <View style={styles.iconCircleOuter}>
             <View style={styles.iconCircleInner}>
               <XCircle size={44} color="#FFFFFF" />
@@ -59,7 +64,7 @@ export const RideCancelledScreen: React.FC<Props> = ({
       </ScrollView>
 
       {/* Footer Actions */}
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         {onBookNew && (
           <Button
             title="Book Another Ride"

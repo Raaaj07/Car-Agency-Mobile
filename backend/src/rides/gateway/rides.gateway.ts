@@ -194,7 +194,7 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('driver:location')
   async onDriverLocation(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() data: { rideId: string; lat: number; lng: number },
+    @MessageBody() data: { rideId: string; lat: number; lng: number; heading?: number },
   ): Promise<void> {
     const userId = client.data.userId;
     if (!userId) return;
@@ -213,10 +213,22 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // cancelled ride must stop leaking positions (the driver app can keep
     // streaming for a moment after the trip ends).
     if (!['matched', 'driver_en_route', 'in_progress'].includes(ride.status)) return;
+    // Optional compass/course heading (degrees, 0 = north, clockwise) so the
+    // rider's car marker can face the direction of travel. Relayed only when
+    // it is a sane number — a missing/invalid heading is simply omitted and the
+    // rider app falls back to the bearing between consecutive positions.
+    const heading =
+      typeof data.heading === 'number' &&
+      Number.isFinite(data.heading) &&
+      data.heading >= 0 &&
+      data.heading <= 360
+        ? Math.round(data.heading * 10) / 10
+        : undefined;
     client.to(this.rideRoom(data.rideId)).emit('driver:location', {
       rideId: data.rideId,
       lat: data.lat,
       lng: data.lng,
+      ...(heading !== undefined ? { heading } : {}),
       at: new Date().toISOString(),
     });
   }

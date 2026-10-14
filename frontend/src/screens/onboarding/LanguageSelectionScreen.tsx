@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, Globe } from 'lucide-react-native';
 import { colors, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -17,7 +18,7 @@ const languages: LanguageOption[] = [
   { id: 'hi', name: 'Hindi', nativeName: 'हिंदी' },
   { id: 'ml', name: 'Malayalam', nativeName: 'മലയാളം' },
   { id: 'te', name: 'Telugu', nativeName: 'తెలుగు' },
-  { id: 'kn', name: 'Kannada', nativeName: '<ctrl42><ctrl42>' },
+  { id: 'kn', name: 'Kannada', nativeName: 'ಕನ್ನಡ' },
 ];
 
 interface Props {
@@ -26,10 +27,17 @@ interface Props {
 
 export const LanguageSelectionScreen: React.FC<Props> = ({ onNext }) => {
   const [selectedLang, setSelectedLang] = useState<string>('en');
+  const insets = useSafeAreaInsets();
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: 24 + insets.top, paddingBottom: 100 + insets.bottom },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.header}>
           <View style={styles.iconCircle}>
             <Globe size={32} color={colors.primary} />
@@ -65,7 +73,7 @@ export const LanguageSelectionScreen: React.FC<Props> = ({ onNext }) => {
         </View>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button title="Continue" onPress={onNext} variant="primary" size="large" />
       </View>
     </View>

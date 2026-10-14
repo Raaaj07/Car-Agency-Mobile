@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QrCode } from 'lucide-react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { colors, radii, typography } from '../../theme/theme';
@@ -20,6 +21,7 @@ interface Props {
 // flow is the same one the old Profile screen carried — moved here to match
 // the "Payment & QR" row in the driver profile.
 export const PaymentQrScreen: React.FC<Props> = ({ onBack }) => {
+  const insets = useSafeAreaInsets();
   const [upiSaved, setUpiSaved] = useState<string | null>(null);
   const [upiEditing, setUpiEditing] = useState(false);
   const [upiInput, setUpiInput] = useState('');
@@ -74,7 +76,10 @@ export const PaymentQrScreen: React.FC<Props> = ({ onBack }) => {
   return (
     <View style={styles.container}>
       <Header title="Payment & QR" onBack={onBack} transparent />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: 48 + insets.bottom }]}
+        keyboardShouldPersistTaps="handled"
+      >
         <Card style={styles.card}>
           <View style={styles.titleRow}>
             <View style={styles.titleIcon}>

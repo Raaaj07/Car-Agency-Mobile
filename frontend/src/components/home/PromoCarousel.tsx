@@ -31,7 +31,9 @@ export const PromoCarousel: React.FC<Props> = memo(({ promos }) => {
   const handleScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const offset = e.nativeEvent.contentOffset.x;
-      const index = Math.round(offset / cardWidth);
+      // Cards are (cardWidth + 12px gap) apart — dividing by cardWidth alone
+      // walked the dots off by one card every two pages.
+      const index = Math.round(offset / (cardWidth + 12));
       setActiveIndex(index);
     },
     [cardWidth],
@@ -72,10 +74,13 @@ export const PromoCarousel: React.FC<Props> = memo(({ promos }) => {
         data={promos}
         keyExtractor={(item) => item.code}
         horizontal
-        pagingEnabled
         showsHorizontalScrollIndicator={false}
+        // snapToInterval (+ the 12 px item gap) does the paging. `pagingEnabled`
+        // snap-widths to the FULL window and fights it — that's what shifted
+        // each "Apply" card off the 20 px grid after a swipe.
         snapToInterval={cardWidth + 12}
         decelerationRate="fast"
+        overScrollMode="never"
         onScroll={handleScroll}
         scrollEventThrottle={16}
         contentContainerStyle={{ gap: 12 }}
@@ -150,8 +155,10 @@ export const PromoCarousel: React.FC<Props> = memo(({ promos }) => {
 PromoCarousel.displayName = 'PromoCarousel';
 
 const styles = StyleSheet.create({
+  // Margins come from the slot in the home sheet, so every block sits on the
+  // same 16 px gutter (previously 14/16/14 + slot, i.e. uneven 30 px gaps).
   container: {
-    marginVertical: 14,
+    paddingBottom: 4,
   },
   card: {
     backgroundColor: colors.primary,

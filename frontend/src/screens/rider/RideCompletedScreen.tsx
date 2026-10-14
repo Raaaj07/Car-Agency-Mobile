@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CheckCircle2, Clock, Navigation, Home } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -16,6 +17,7 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
   // D3: back from the completed-ride screen goes Home — never into the
   // payment/review chain that is still mounted underneath it.
   usePreventBack(onGoHome);
+  const insets = useSafeAreaInsets();
   // Real trip data from the completed ride (no demo numbers).
   const activeRide = useRideStore((state) => state.activeRide);
   const driver = activeRide?.driver ?? null;
@@ -34,9 +36,12 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
   })();
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Celebration Banner */}
-        <View style={styles.celebrationBox}>
+        <View style={[styles.celebrationBox, { marginTop: 20 + insets.top }]}>
           <View style={styles.iconCircleOuter}>
             <View style={styles.iconCircleInner}>
               <CheckCircle2 size={44} color="#FFFFFF" />
@@ -95,7 +100,7 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
         </Card>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Back to Home Dashboard"
           onPress={onGoHome}

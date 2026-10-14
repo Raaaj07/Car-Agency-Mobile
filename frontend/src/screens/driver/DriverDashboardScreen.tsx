@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Switch, Alert, ScrollView, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bell, Phone, Clock, ChevronRight } from 'lucide-react-native';
+import { FocusedStatusBar } from '../../components/primitives/FocusedStatusBar';
+import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import * as Location from 'expo-location';
 import { CompositeNavigationProp, useNavigation } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -85,6 +88,8 @@ function tripLabel(ride: Ride): string {
 
 export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const navigation = useNavigation<NavProp>();
+  const insets = useSafeAreaInsets();
+  const tabBarSpace = useTabBarSpace();
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [isOnline, setIsOnline] = useState(false);
   const [isRegistered, setIsRegistered] = useState<boolean | null>(null); // null = still checking
@@ -441,9 +446,14 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      {/* Navy header: needs light status-bar icons or the clock/battery vanish. */}
+      <FocusedStatusBar style="light" />
+      <ScrollView
+        contentContainerStyle={[styles.scroll, { paddingBottom: tabBarSpace + 24 }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Navy header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
           <View style={styles.topRow}>
             <View style={styles.brandRow}>
               <View style={styles.logoBadge}>

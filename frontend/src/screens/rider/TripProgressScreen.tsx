@@ -11,6 +11,7 @@ import {
   Share2,
   MapPin,
 } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   colors,
@@ -44,6 +45,9 @@ export const TripProgressScreen: React.FC<Props> = ({
     { lat: number; lng: number } | undefined
   >();
   const [route, setRoute] = useState<[number, number][] | undefined>(undefined);
+  // Driver's live heading relayed over the socket (undefined → the car marker
+  // derives it from the direction of movement).
+  const [driverHeading, setDriverHeading] = useState<number | undefined>(undefined);
   // Measured bottom-sheet height so the map can pad the fit above it.
   const [sheetHeight, setSheetHeight] = useState(0);
 
@@ -54,6 +58,7 @@ export const TripProgressScreen: React.FC<Props> = ({
   usePreventBack(() => {});
   // D4: if the ride vanished under this screen, go home — never a dead map.
   useRequireActiveRide();
+  const insets = useSafeAreaInsets();
 
   const pickupCoords = useRideStore(
     (state) => state.pickupCoords
@@ -106,6 +111,7 @@ export const TripProgressScreen: React.FC<Props> = ({
       lat: event.lat,
       lng: event.lng,
     });
+    setDriverHeading(event.heading);
   },
   onStatus: (event) => {
     if (event.status === 'completed' || event.status === 'cancelled') {
@@ -158,13 +164,14 @@ export const TripProgressScreen: React.FC<Props> = ({
         pickup={pickupCoords}
         dropoff={dropoffCoords}
         driverPosition={driverPosition}
+        driverHeading={driverHeading}
         route={route}
         bottomPadding={sheetHeight}
       />
 
       {/* Safety SOS Quick Button */}
       <TouchableOpacity
-        style={styles.sosFloatingBtn}
+        style={[styles.sosFloatingBtn, { top: 16 + insets.top }]}
         onPress={onEmergencyPress}
       >
         <ShieldAlert
@@ -179,7 +186,7 @@ export const TripProgressScreen: React.FC<Props> = ({
 
       {/* Bottom Sheet Navigation Card */}
       <View
-        style={styles.bottomSheet}
+        style={[styles.bottomSheet, { paddingBottom: 20 + insets.bottom }]}
         onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
       >
         <View style={styles.dragHandle} />

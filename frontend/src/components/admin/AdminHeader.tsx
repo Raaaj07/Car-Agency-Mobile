@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft } from 'lucide-react-native';
 import { colors, typography } from '../../theme/theme';
+import { FocusedStatusBar } from '../primitives/FocusedStatusBar';
 
 interface AdminHeaderProps {
   title: string;
@@ -40,6 +41,8 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
         hero ? { paddingTop: insets.top + 12 } : { paddingTop: insets.top + 8 },
       ]}
     >
+      {/* Navy hero: the app-wide dark status bar would hide the clock/battery. */}
+      {hero ? <FocusedStatusBar style="light" /> : null}
       {onBack ? (
         <TouchableOpacity
           onPress={onBack}

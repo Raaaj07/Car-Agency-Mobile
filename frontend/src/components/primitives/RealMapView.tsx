@@ -1,7 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
-import Mapbox, { Camera, MapView, PointAnnotation, ShapeSource, LineLayer, CircleLayer } from '@rnmapbox/maps';
+import Mapbox, { Camera, MapView, MarkerView, PointAnnotation, ShapeSource, LineLayer } from '@rnmapbox/maps';
 import { colors } from '../../theme/theme';
+import { CarBubble, TeardropPin, UserPuck } from './MapMarkers';
+import { DriverCarMarker } from './DriverCarMarker';
 
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '';
 if (MAPBOX_TOKEN) {
@@ -13,11 +15,23 @@ export interface LatLng {
   lng: number;
 }
 
+/** Shape of rnmapbox's location update consumed by the hidden UserLocation
+ *  stream (structural subset — assignable from its Location type). */
+interface PuckLocationUpdate {
+  coords?: {
+    latitude?: number;
+    longitude?: number;
+    heading?: number;
+  } | null;
+}
+
 interface Props {
   mode: 'picker' | 'tracking' | 'navigation';
   pickup?: LatLng;
   dropoff?: LatLng;
   driverPosition?: LatLng;
+  /** Driver's heading in degrees (0 = north, clockwise). Omit to derive it from movement. */
+  driverHeading?: number | null;
   route?: [number, number][];
   nearbyDrivers?: LatLng[];
   onMapPress?: (coords: LatLng) => void;
@@ -48,6 +62,7 @@ export const RealMapView: React.FC<Props> = ({
   pickup,
   dropoff,
   driverPosition,
+  driverHeading,
   route,
   nearbyDrivers,
   onMapPress,
@@ -70,6 +85,50 @@ export const RealMapView: React.FC<Props> = ({
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const prevRecenterNonceRef = useRef<number | undefined>(undefined);
+  // Latest fix from the hidden UserLocation stream, throttled to real
+  // movement/turns so the custom puck never re-renders the map needlessly.
+  // `heading` is the GPS course (null = unknown); the puck itself prefers the
+  // device compass and only falls back to this.
+  const [userPuck, setUserPuck] = useState<LatLng & { heading: number | null } | null>(null);
+  const puckRawRef = useRef<LatLng & { heading: number | null } | null>(null);
+  const puckShownRef = useRef<LatLng & { heading: number | null } | null>(null);
+
+  const handleUserLocationUpdate = useCallback((loc: PuckLocationUpdate) => {
+    const c = loc?.coords;
+    if (
+      !c ||
+      typeof c.latitude !== 'number' ||
+      typeof c.longitude !== 'number' ||
+      !Number.isFinite(c.latitude) ||
+      !Number.isFinite(c.longitude)
+    ) {
+      return;
+    }
+    const heading =
+      typeof c.heading === 'number' && Number.isFinite(c.heading) && c.heading >= 0
+        ? c.heading
+        : (puckRawRef.current?.heading ?? null);
+    const raw = { lat: c.latitude, lng: c.longitude, heading };
+    puckRawRef.current = raw;
+
+    const shown = puckShownRef.current;
+    if (shown) {
+      const dLatM = Math.abs(raw.lat - shown.lat) * 111320;
+      const dLngM =
+        Math.abs(raw.lng - shown.lng) * 111320 * Math.cos((raw.lat * Math.PI) / 180);
+      const moved = Math.hypot(dLatM, dLngM) >= 0.6;
+      let turned = 0;
+      if (raw.heading !== null && shown.heading !== null) {
+        turned = Math.abs(raw.heading - shown.heading) % 360;
+        if (turned > 180) turned = 360 - turned;
+      } else if (raw.heading !== shown.heading) {
+        turned = 360; // course just became known
+      }
+      if (!moved && turned < 4) return;
+    }
+    puckShownRef.current = raw;
+    setUserPuck(raw);
+  }, []);
 
   const paddingRef = useRef({
     paddingLeft: 0,
@@ -250,17 +309,9 @@ export const RealMapView: React.FC<Props> = ({
 
   const tokenMissing = !MAPBOX_TOKEN;
 
-  // Prepare capped nearby driver GeoJSON feature collection for ShapeSource (Part C7)
-  const cappedDrivers = (nearbyDrivers || []).slice(0, 15);
-  const driversGeoJson: GeoJSON.FeatureCollection = {
-    type: 'FeatureCollection',
-    features: cappedDrivers.map((d, index) => ({
-      type: 'Feature',
-      id: `driver-${index}`,
-      properties: {},
-      geometry: { type: 'Point', coordinates: [d.lng, d.lat] },
-    })),
-  };
+  // Nearby drivers (capped) — rendered as car-icon bubbles. Memoised so the
+  // puck/camera re-renders don't rebuild the list every time.
+  const cappedDrivers = useMemo(() => (nearbyDrivers ?? []).slice(0, 15), [nearbyDrivers]);
 
   return (
     <View style={styles.container}>
@@ -319,7 +370,20 @@ export const RealMapView: React.FC<Props> = ({
           }}
         />
 
-        {showUserLocation && <Mapbox.UserLocation visible={true} />}
+        {/* Drives the location stream only — the visible marker is the custom
+            Rapido-style puck below, so the built-in dot stays hidden. */}
+        {showUserLocation && (
+          <Mapbox.UserLocation visible={false} onUpdate={handleUserLocationUpdate} />
+        )}
+        {showUserLocation && userPuck && (
+          <MarkerView
+            coordinate={[userPuck.lng, userPuck.lat]}
+            anchor={{ x: 0.5, y: 0.5 }}
+            allowOverlap
+          >
+            <UserPuck course={userPuck.heading} />
+          </MarkerView>
+        )}
 
         {route && route.length > 1 && (
           <ShapeSource
@@ -333,35 +397,39 @@ export const RealMapView: React.FC<Props> = ({
           </ShapeSource>
         )}
 
-        {/* Nearby drivers as ShapeSource + CircleLayer for performance (Part C7) */}
-        {cappedDrivers.length > 0 && (
-          <ShapeSource id="nearbyDriversSource" shape={driversGeoJson}>
-            <CircleLayer
-              id="nearbyDriversCircle"
-              style={{
-                circleRadius: 6,
-                circleColor: '#3B82F6',
-                circleStrokeWidth: 2,
-                circleStrokeColor: '#FFFFFF',
-              }}
-            />
-          </ShapeSource>
-        )}
+        {/* Nearby drivers as little car bubbles (static children — cheap) */}
+        {cappedDrivers.map((d, index) => (
+          <PointAnnotation
+            key={`nearby-driver-${index}`}
+            id={`nearby-driver-${index}`}
+            coordinate={[d.lng, d.lat]}
+          >
+            <CarBubble />
+          </PointAnnotation>
+        ))}
 
         {pickup && !pickerPin && (
-          <PointAnnotation id="pickup" coordinate={[pickup.lng, pickup.lat]}>
-            <Animated.View style={[styles.pin, styles.pickupPin, { opacity: pickupOpacity }]} />
-          </PointAnnotation>
+          <MarkerView
+            coordinate={[pickup.lng, pickup.lat]}
+            anchor={{ x: 0.5, y: 1 }}
+            allowOverlap
+          >
+            <Animated.View style={[styles.pinWrap, { opacity: pickupOpacity }]}>
+              <TeardropPin color="#22C55E" />
+            </Animated.View>
+          </MarkerView>
         )}
         {dropoff && (
-          <PointAnnotation id="dropoff" coordinate={[dropoff.lng, dropoff.lat]}>
-            <View style={[styles.pin, { backgroundColor: '#E08A34' }]} />
-          </PointAnnotation>
+          <MarkerView
+            coordinate={[dropoff.lng, dropoff.lat]}
+            anchor={{ x: 0.5, y: 1 }}
+            allowOverlap
+          >
+            <TeardropPin color="#E08A34" />
+          </MarkerView>
         )}
         {(mode === 'tracking' || mode === 'navigation') && driverPosition && (
-          <PointAnnotation id="driver" coordinate={[driverPosition.lng, driverPosition.lat]}>
-            <View style={[styles.pin, { backgroundColor: '#211B4E', width: 22, height: 22 }]} />
-          </PointAnnotation>
+          <DriverCarMarker position={driverPosition} heading={driverHeading} />
         )}
       </MapView>
     </View>
@@ -371,8 +439,7 @@ export const RealMapView: React.FC<Props> = ({
 const styles = StyleSheet.create({
   container: { flex: 1, position: 'relative' },
   map: { flex: 1 },
-  pin: { width: 16, height: 16, borderRadius: 8, borderWidth: 2, borderColor: '#FFF' },
-  pickupPin: { backgroundColor: '#22C55E' },
+  pinWrap: { alignItems: 'center' },
   bannerMissing: {
     position: 'absolute',
     top: 40,

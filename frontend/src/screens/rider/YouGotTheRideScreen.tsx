@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Phone, MessageSquare, ArrowRight, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -32,6 +33,7 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
   usePreventBack(() => {});
   // D4: if the ride vanished under this screen, go home — never a dead map.
   useRequireActiveRide();
+  const insets = useSafeAreaInsets();
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const storePickupCoords = useRideStore((state) => state.pickupCoords);
@@ -187,7 +189,7 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
       />
 
       {/* Pickup / drop summary over the map (real addresses from the ride) */}
-      <View style={styles.topCard} pointerEvents="none">
+      <View style={[styles.topCard, { top: 16 + insets.top }]} pointerEvents="none">
         <View style={styles.locationRow}>
           <View style={[styles.dot, { backgroundColor: colors.success }]} />
           <Text style={styles.locationText} numberOfLines={1}>{pickupAddress}</Text>
@@ -200,7 +202,7 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
       </View>
 
       {/* Driver Matched Sheet */}
-      <View style={styles.bottomSheet} onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}>
+      <View style={[styles.bottomSheet, { paddingBottom: 20 + insets.bottom }]} onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}>
         <View style={styles.matchBanner}>
           <Text style={styles.matchBannerText}>🎉 You Got the Ride!</Text>
           <Text style={styles.matchSubText}>

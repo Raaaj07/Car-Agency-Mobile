@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Car, Zap, MapPinned, Clock } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -30,9 +31,10 @@ const SERVICES: ServiceTile[] = [
 
 export const ServicesScreen: React.FC = () => {
   const navigation = useNavigation<NavProp>();
+  const insets = useSafeAreaInsets();
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top + 24 }]}>
       <Text style={styles.title}>Vazhi Services</Text>
       <Text style={styles.subtitle}>Pick a ride type to get started</Text>
 

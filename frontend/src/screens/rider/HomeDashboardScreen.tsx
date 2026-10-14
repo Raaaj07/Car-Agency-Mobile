@@ -1,33 +1,37 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   FlatList,
+  Keyboard,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { Search, Locate, ChevronRight, AlertCircle, AlertTriangle, Home, Briefcase, Clock } from 'lucide-react-native';
+import { ArrowLeft, Search, Locate, ChevronRight, AlertCircle, AlertTriangle, Home, Briefcase, Clock, X } from 'lucide-react-native';
 
 import { colors, radii, shadows, typography } from '../../theme/theme';
 import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
-import { reverseGeocode } from '../../api/mapbox';
+import { reverseGeocode, GeocodeResult } from '../../api/mapbox';
 import { API_URL } from '../../api/client';
 import { driversApi, NearbyDriver } from '../../api/drivers';
 import { useRideStore } from '../../store/rideStore';
-import { usePlacesStore } from '../../store/placesStore';
+import { usePlacesStore, useMergedRecents } from '../../store/placesStore';
 import { useCurrentLocation } from '../../hooks/useCurrentLocation';
+import { useAddressSearch } from '../../hooks/useAddressSearch';
 import { PlaceItem } from '../../api/places';
 import { haversineKm } from '../../utils/distance';
 import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 
 import { PickupPin } from '../../components/home/PickupPin';
-import { RecentPlaceRow } from '../../components/home/RecentPlaceRow';
+import { PlaceSearchRow } from '../../components/home/PlaceSearchRow';
 import { QuickPickTile } from '../../components/home/QuickPickTile';
 import { PopularPlaceCard } from '../../components/home/PopularPlaceCard';
 import { ServiceTile, VEHICLE_SERVICES } from '../../components/home/ServiceTile';
@@ -65,7 +69,6 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   const setPreferredVehicle = useRideStore((state) => state.setPreferredVehicle);
 
   const {
-    recent,
     saved,
     nearby,
     quickPicks,
@@ -78,6 +81,10 @@ export const HomeDashboardScreen: React.FC<Props> = ({
     lastFetchedAt,
   } = usePlacesStore();
   const toggleSaved = usePlacesStore((state) => state.toggleSaved);
+  const recordSearch = usePlacesStore((state) => state.recordSearch);
+  // Single "recently visited" list shared with the destination picker:
+  // this session's searches first, then ride-history drop-offs from the server.
+  const mergedRecent = useMergedRecents();
 
   // ── GPS Hook (Phase 0d & A4.5) ──────────────────────────────────────────────
   const {
@@ -98,9 +105,10 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   const loadedWithoutLocationRef = useRef(false);
 
   // ── Bottom Sheet Snap Points (A1.1, A3.2, A3.3) ──────────────────────────────
-  // Header height: handle (14) + searchBarCTA (52) = ~70px
+  // Header height: handle (14) + search field (~54) = ~70px
   const HEADER_HEIGHT = 72;
-  const recentRowsHeight = Math.min(recent.length, 3) * 64;
+  // Room for the "Recent places" header (30) + its first three rows (64 each).
+  const recentRowsHeight = mergedRecent.length > 0 ? 30 + Math.min(mergedRecent.length, 3) * 64 : 0;
 
   const defaultVisibleHeight = Math.max(
     windowHeight * 0.48,
@@ -139,6 +147,60 @@ export const HomeDashboardScreen: React.FC<Props> = ({
     },
     [pillOpacity],
   );
+
+  // ── Inline "Where do you want to go?" search (Rapido-style) ──────────────────
+  // Tapping the CTA swaps the sheet header for a real focused input; the sheet
+  // expands and the body lists live suggestions (or recents while the query
+  // is empty). Exiting = header back arrow, Android back, or picking a place.
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [snapRequest, setSnapRequest] = useState<{ point: SnapPoint; nonce: number } | null>(null);
+  const snapNonceRef = useRef(0);
+  const {
+    suggestions: searchSuggestions,
+    isSearching: isSearchingPlaces,
+    runSearch,
+    resetSearch,
+  } = useAddressSearch();
+
+  const requestSnap = useCallback((point: SnapPoint) => {
+    snapNonceRef.current += 1;
+    setSnapRequest({ point, nonce: snapNonceRef.current });
+  }, []);
+
+  const openInlineSearch = useCallback(() => {
+    setSearchActive(true);
+    setSearchQuery('');
+    requestSnap('expanded');
+  }, [requestSnap]);
+
+  const closeInlineSearch = useCallback(() => {
+    setSearchActive(false);
+    setSearchQuery('');
+    resetSearch();
+    Keyboard.dismiss();
+    requestSnap('default');
+  }, [requestSnap, resetSearch]);
+
+  const clearSearchInput = useCallback(() => {
+    setSearchQuery('');
+    resetSearch();
+  }, [resetSearch]);
+
+  const handleSearchTextChange = useCallback(
+    (text: string) => {
+      setSearchQuery(text);
+      runSearch(text);
+    },
+    [runSearch],
+  );
+
+  // Android hardware back closes inline search BEFORE collapsing the sheet.
+  const handleHardwareBack = useCallback(() => {
+    if (!searchActive) return false;
+    closeInlineSearch();
+    return true;
+  }, [searchActive, closeInlineSearch]);
 
   // ── Initial GPS sync (runs once on first GPS fix / pull) ──────────────────────
   useEffect(() => {
@@ -269,18 +331,37 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   // Actions
   const handleSelectPlace = useCallback(
     (place: PlaceItem) => {
+      // Remember the pick for this rider — it merges into the recents shown
+      // here AND on the Select Destination screen (recordSearch dedupes).
+      recordSearch(place);
       setDropoff(place.title, place.subtitle, { lat: place.lat, lng: place.lng });
+      if (searchActive) closeInlineSearch();
       onSelectVehicle();
     },
-    [setDropoff, onSelectVehicle],
+    [recordSearch, setDropoff, searchActive, closeInlineSearch, onSelectVehicle],
+  );
+
+  const handlePickSuggestion = useCallback(
+    (result: GeocodeResult) => {
+      const shortTitle = result.address.split(',')[0].trim() || 'Pinned location';
+      handleSelectPlace({
+        id: `search-${result.lat.toFixed(4)},${result.lng.toFixed(4)}`,
+        title: shortTitle,
+        subtitle: result.address,
+        lat: result.lat,
+        lng: result.lng,
+        imageUrl: null,
+      });
+    },
+    [handleSelectPlace],
   );
 
   const handleSelectService = useCallback(
     (serviceId: string) => {
       setPreferredVehicle(serviceId);
-      onSearchPress('dropoff');
+      openInlineSearch();
     },
-    [setPreferredVehicle, onSearchPress],
+    [setPreferredVehicle, openInlineSearch],
   );
 
   const handleRecenter = useCallback(() => {
@@ -356,7 +437,8 @@ export const HomeDashboardScreen: React.FC<Props> = ({
       },
     });
   }
-  recent.slice(0, 2).forEach((r) => {
+  // Two freshest recents (local searches first, then ride history).
+  mergedRecent.slice(0, 2).forEach((r) => {
     chipItems.push({ key: `recent-${r.id}`, icon: 'recent', label: r.title, place: r });
   });
 
@@ -399,6 +481,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
         <PickupPin
           bottomInset={mapBottomInset}
           addressText={isResolvingAddress ? 'Locating...' : 'Pickup Point'}
+          lifted={isResolvingAddress}
         />
       </View>
 
@@ -450,58 +533,167 @@ export const HomeDashboardScreen: React.FC<Props> = ({
         snapY={snapY}
         initialSnap="default"
         onSnapChange={handleSnapChange}
+        headerPanEnabled={!searchActive}
+        snapRequest={snapRequest}
+        onHardwareBack={handleHardwareBack}
         header={
-          <View style={styles.searchCard}>
-            <TouchableOpacity
-              style={styles.searchRow}
-              onPress={() => onSearchPress('dropoff')}
-              activeOpacity={0.9}
-              accessibilityRole="button"
-              accessibilityLabel="Search destination. Where do you want to go?"
-            >
-              <Search size={22} color={colors.primary} />
-              <View style={styles.searchUnderlineWrap}>
-                <Text style={styles.searchCTAText}>Where do you want to go?</Text>
-                <View style={styles.accentUnderline}>
-                  <View style={[styles.underlineSegment, { width: '30%', opacity: 0.25 }]} />
-                  <View style={[styles.underlineSegment, { width: '40%', opacity: 1 }]} />
-                  <View style={[styles.underlineSegment, { width: '30%', opacity: 0.25 }]} />
-                </View>
-              </View>
-            </TouchableOpacity>
-            {chipItems.length > 0 && (
-              <View style={styles.savedChipRow}>
-                {chipItems.map((chip) => (
+          searchActive ? (
+            /* Inline input mode: a real focused field right on the home sheet. */
+            <View style={styles.searchCard}>
+              <View style={styles.searchField}>
+                <TouchableOpacity
+                  style={styles.searchBackBtn}
+                  onPress={closeInlineSearch}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close search"
+                >
+                  <ArrowLeft size={20} color={colors.textPrimary} />
+                </TouchableOpacity>
+                <TextInput
+                  style={styles.searchInput}
+                  value={searchQuery}
+                  onChangeText={handleSearchTextChange}
+                  placeholder="Where do you want to go?"
+                  placeholderTextColor={colors.textMuted}
+                  autoFocus
+                  returnKeyType="search"
+                  selectionColor={colors.primary}
+                  accessibilityLabel="Where do you want to go?"
+                />
+                {searchQuery.length > 0 && (
                   <TouchableOpacity
-                    key={chip.key}
-                    style={styles.savedChip}
-                    onPress={() => handleSelectPlace(chip.place)}
-                    activeOpacity={0.8}
+                    onPress={clearSearchInput}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     accessibilityRole="button"
-                    accessibilityLabel={`Go to ${chip.label}`}
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    accessibilityLabel="Clear search"
                   >
-                    {chip.icon === 'home' ? (
-                      <Home size={15} color={colors.primary} />
-                    ) : chip.icon === 'work' ? (
-                      <Briefcase size={15} color={colors.accent} />
-                    ) : (
-                      <Clock size={15} color={colors.textSecondary} />
-                    )}
-                    <Text style={styles.savedChipLabel} numberOfLines={1}>
-                      {chip.label}
-                    </Text>
+                    <X size={18} color={colors.textMuted} />
                   </TouchableOpacity>
-                ))}
+                )}
               </View>
-            )}
-          </View>
+            </View>
+          ) : (
+            /* Idle CTA, styled like an input field; tap switches it to the
+               inline input above (no screen change). */
+            <View style={styles.searchCard}>
+              <TouchableOpacity
+                style={styles.searchField}
+                onPress={openInlineSearch}
+                activeOpacity={0.9}
+                accessibilityRole="search"
+                accessibilityLabel="Search destination. Where do you want to go?"
+              >
+                <Search size={20} color={colors.primary} />
+                <Text style={styles.searchCTAText}>Where do you want to go?</Text>
+              </TouchableOpacity>
+              {chipItems.length > 0 && (
+                <View style={styles.savedChipRow}>
+                  {chipItems.map((chip) => (
+                    <TouchableOpacity
+                      key={chip.key}
+                      style={styles.savedChip}
+                      onPress={() => handleSelectPlace(chip.place)}
+                      activeOpacity={0.8}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Go to ${chip.label}`}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      {chip.icon === 'home' ? (
+                        <Home size={15} color={colors.primary} />
+                      ) : chip.icon === 'work' ? (
+                        <Briefcase size={15} color={colors.accent} />
+                      ) : (
+                        <Clock size={15} color={colors.textSecondary} />
+                      )}
+                      <Text style={styles.savedChipLabel} numberOfLines={1}>
+                        {chip.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+            </View>
+          )
         }
       >
+        {searchActive ? (
+          <ScrollView
+            contentContainerStyle={[styles.scrollContent, { paddingBottom: tabBarSpace + 16 }]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {searchQuery.trim().length < 3 ? (
+              mergedRecent.length > 0 ? (
+                <View style={styles.listCard}>
+                  <Text style={styles.listHeader}>Recent places</Text>
+                  {mergedRecent.map((item, idx) => (
+                    <PlaceSearchRow
+                      key={item.id}
+                      variant="recent"
+                      title={item.title}
+                      subtitle={item.subtitle}
+                      onPress={() => handleSelectPlace(item)}
+                      onToggleHeart={() => toggleSaved(item)}
+                      heartActive={!!item.saved}
+                      isLast={idx === mergedRecent.length - 1}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.searchHint}>Start typing to search for a place</Text>
+              )
+            ) : (
+              <>
+                {isSearchingPlaces && (
+                  <View style={styles.loadingRow}>
+                    <ActivityIndicator color={colors.primary} />
+                  </View>
+                )}
+                {!isSearchingPlaces && searchSuggestions.length === 0 && (
+                  <Text style={styles.searchHint}>No matching places found</Text>
+                )}
+                {searchSuggestions.length > 0 && (
+                  <View style={styles.listCard}>
+                    {searchSuggestions.map((result, idx) => (
+                      <PlaceSearchRow
+                        key={`${result.lat}-${result.lng}-${idx}`}
+                        variant="search"
+                        title={result.address.split(',')[0]}
+                        subtitle={result.address}
+                        onPress={() => handlePickSuggestion(result)}
+                        isLast={idx === searchSuggestions.length - 1}
+                      />
+                    ))}
+                  </View>
+                )}
+              </>
+            )}
+          </ScrollView>
+        ) : (
         <ScrollView
           contentContainerStyle={[styles.scrollContent, { paddingBottom: tabBarSpace + 16 }]}
           showsVerticalScrollIndicator={false}
         >
+          {/* Recently visited — directly under the search bar (was below Services) */}
+          {mergedRecent.length > 0 && (
+            <View style={styles.listCard}>
+              <Text style={styles.listHeader}>Recent places</Text>
+              {mergedRecent.slice(0, 3).map((item, idx) => (
+                <PlaceSearchRow
+                  key={item.id}
+                  variant="recent"
+                  title={item.title}
+                  subtitle={item.subtitle}
+                  onPress={() => handleSelectPlace(item)}
+                  onToggleHeart={() => toggleSaved(item)}
+                  heartActive={!!item.saved}
+                  isLast={idx === Math.min(mergedRecent.length, 3) - 1}
+                />
+              ))}
+            </View>
+          )}
+
           {/* Services grid card */}
           <View style={styles.servicesCard}>
             <View style={styles.sectionHeaderRow}>
@@ -542,21 +734,6 @@ export const HomeDashboardScreen: React.FC<Props> = ({
             </View>
           )}
 
-          {/* Saved & recent places list */}
-          {recent.length > 0 && (
-            <View style={styles.listCard}>
-              {recent.slice(0, 3).map((item, idx) => (
-                <RecentPlaceRow
-                  key={item.id}
-                  place={item}
-                  onPress={handleSelectPlace}
-                  onToggleHeart={toggleSaved}
-                  isLast={idx === Math.min(recent.length, 3) - 1}
-                />
-              ))}
-            </View>
-          )}
-
           {/* Quick Picks Grid (3 columns wrapping) */}
           <View style={styles.section}>
             <View style={styles.grid}>
@@ -581,7 +758,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
                 <QuickPickTile
                   type="home"
                   label="Add Home"
-                  onPress={() => onSearchPress('dropoff')}
+                  onPress={openInlineSearch}
                   tileWidth={quickPickWidth}
                 />
               )}
@@ -607,7 +784,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
                 <QuickPickTile
                   type="work"
                   label="Add Work"
-                  onPress={() => onSearchPress('dropoff')}
+                  onPress={openInlineSearch}
                   tileWidth={quickPickWidth}
                 />
               )}
@@ -624,7 +801,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
 
               <QuickPickTile
                 type="search_more"
-                onPress={() => onSearchPress('dropoff')}
+                onPress={openInlineSearch}
                 tileWidth={quickPickWidth}
               />
             </View>
@@ -734,6 +911,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
             </TouchableOpacity>
           )}
         </ScrollView>
+        )}
       </BottomSheet>
     </View>
   );
@@ -841,38 +1019,40 @@ const styles = StyleSheet.create({
   },
 
   // ── Search card (sheet header) ───────────────────────────────────────────
+  // Borderless container: the field below carries the input look, and the
+  // whole block lines up edge-to-edge with the cards in the body (20 px).
   searchCard: {
     backgroundColor: '#FFFFFF',
+    borderRadius: radii.lg,
+    paddingBottom: 6,
+  },
+  // Shared by the idle CTA and the live inline TextInput (input-box look).
+  searchField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.surface,
     borderWidth: 1.5,
     borderColor: colors.border,
     borderRadius: radii.lg,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    ...shadows.card,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
   },
-  searchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
+  searchBackBtn: {
+    marginRight: -2,
   },
-  searchUnderlineWrap: {
+  searchInput: {
     flex: 1,
+    ...typography.bodyBold,
+    fontSize: 15,
+    color: colors.textPrimary,
+    padding: 0,
   },
   searchCTAText: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: colors.textPrimary,
-  },
-  accentUnderline: {
-    flexDirection: 'row',
-    gap: 2,
-    height: 3,
-    marginTop: 4,
-  },
-  underlineSegment: {
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: colors.accent,
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textSecondary,
   },
   savedChipRow: {
     flexDirection: 'row',
@@ -968,6 +1148,24 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     marginBottom: 16,
     ...shadows.card,
+  },
+  listHeader: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    marginTop: 8,
+    marginBottom: 2,
+  },
+
+  // ── Inline search states ─────────────────────────────────────────────────
+  loadingRow: {
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  searchHint: {
+    ...typography.meta,
+    textAlign: 'center',
+    paddingVertical: 18,
   },
 
   errorRetryRow: {

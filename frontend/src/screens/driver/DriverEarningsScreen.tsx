@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, typography } from '../../theme/theme';
+import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import { Card } from '../../components/primitives/Card';
 import { ridesApi, Ride } from '../../api/rides';
 import { getApiError } from '../../api/client';
@@ -12,6 +14,8 @@ function formatDate(iso?: string): string {
 }
 
 export const DriverEarningsScreen: React.FC = () => {
+  const insets = useSafeAreaInsets();
+  const tabBarSpace = useTabBarSpace();
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -52,7 +56,7 @@ export const DriverEarningsScreen: React.FC = () => {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 16, paddingBottom: tabBarSpace + 16 }]}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}

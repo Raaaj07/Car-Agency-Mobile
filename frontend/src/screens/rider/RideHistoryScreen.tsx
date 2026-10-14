@@ -3,7 +3,9 @@ import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator } f
 import { CompositeNavigationProp, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MapPin, Star } from 'lucide-react-native';
+import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import { colors, typography } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
 import { Pill } from '../../components/primitives/Pill';
@@ -42,6 +44,8 @@ const TAB = 'rider' as const;
 
 export const RideHistoryScreen: React.FC = () => {
   const navigation = useNavigation<NavProp>();
+  const insets = useSafeAreaInsets();
+  const tabBarSpace = useTabBarSpace();
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -97,11 +101,11 @@ export const RideHistoryScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>My Trips</Text>
+      <Text style={[styles.header, { paddingTop: insets.top + 16 }]}>My Trips</Text>
       <FlatList
         data={pastRides}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { paddingBottom: tabBarSpace + 16 }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

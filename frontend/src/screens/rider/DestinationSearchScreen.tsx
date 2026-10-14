@@ -1,11 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Keyboard } from 'react-native';
-import { ArrowLeft, MapPin, Home, Briefcase, Clock, Navigation, ArrowUpDown, Plus } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ArrowLeft, Home, Briefcase, Navigation, ArrowUpDown, Plus } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
-import { Card } from '../../components/primitives/Card';
 import { useRideStore } from '../../store/rideStore';
-import { usePlacesStore } from '../../store/placesStore';
-import { searchAddress, GeocodeResult } from '../../api/mapbox';
+import { useMergedRecents, usePlacesStore } from '../../store/placesStore';
+import { GeocodeResult } from '../../api/mapbox';
+import { useAddressSearch } from '../../hooks/useAddressSearch';
+import { PlaceSearchRow } from '../../components/home/PlaceSearchRow';
 
 export interface DestinationSelection {
   title: string;
@@ -37,43 +39,20 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
   const setPickup = useRideStore((state) => state.setPickup);
   const setDropoff = useRideStore((state) => state.setDropoff);
 
-  const recentPlaces = usePlacesStore((state) => state.recent);
+  // Same merged list the home sheet shows: local searches first, then ride
+  // history — one "recently visited" source for both surfaces.
+  const recentPlaces = useMergedRecents();
   const savedPlaces = usePlacesStore((state) => state.saved);
+  const recordSearch = usePlacesStore((state) => state.recordSearch);
+  const toggleSaved = usePlacesStore((state) => state.toggleSaved);
   const homePlace = savedPlaces.find((s) => s.label === 'home');
   const workPlace = savedPlaces.find((s) => s.label === 'work');
 
   const [pickupText, setPickupText] = useState(storePickupAddress || '');
   const [dropoffText, setDropoffText] = useState('');
   const [activeField, setActiveField] = useState<ActiveField>(focus ?? 'dropoff');
-  const [suggestions, setSuggestions] = useState<GeocodeResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, []);
-
-  const runSearch = (query: string) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (query.trim().length < 3) {
-      setSuggestions([]);
-      setIsSearching(false);
-      return;
-    }
-    setIsSearching(true);
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const results = await searchAddress(query);
-        setSuggestions(results);
-      } catch {
-        setSuggestions([]);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 400);
-  };
+  const { suggestions, isSearching, runSearch, resetSearch } = useAddressSearch();
+  const insets = useSafeAreaInsets();
 
   const handlePickupChange = (text: string) => {
     setPickupText(text);
@@ -92,7 +71,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
     if (activeField === 'pickup') {
       setPickupText(result.address);
       setPickup(shortTitle, result.address, { lat: result.lat, lng: result.lng });
-      setSuggestions([]);
+      resetSearch();
       setActiveField(null);
       Keyboard.dismiss();
       return;
@@ -101,12 +80,31 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
     // tapping a preset below — move straight on to vehicle selection.
     setDropoffText(result.address);
     setDropoff(shortTitle, result.address, { lat: result.lat, lng: result.lng });
+    // Remember it for this rider — shows up on home + here (merged recents).
+    recordSearch({
+      id: `search-${result.lat.toFixed(4)},${result.lng.toFixed(4)}`,
+      title: shortTitle,
+      subtitle: result.address,
+      lat: result.lat,
+      lng: result.lng,
+      imageUrl: null,
+    });
+    resetSearch();
     Keyboard.dismiss();
     onSelectDestination({ title: shortTitle, subtitle: result.address, lat: result.lat, lng: result.lng });
   };
 
   const selectPreset = (item: DestinationItem) => {
     setDropoff(item.title, item.subtitle, { lat: item.lat, lng: item.lng });
+    // Bumps the place to the top of the shared per-user recents list.
+    recordSearch({
+      id: item.id,
+      title: item.title,
+      subtitle: item.subtitle,
+      lat: item.lat,
+      lng: item.lng,
+      imageUrl: null,
+    });
     onSelectDestination({ title: item.title, subtitle: item.subtitle, lat: item.lat, lng: item.lng });
   };
 
@@ -127,11 +125,101 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
   };
 
   const showSuggestionsPanel = activeField !== null;
+  // Live query for the focused field.
+  const activeQuery = (activeField === 'pickup' ? pickupText : dropoffText).trim();
+  // Suggestions only once there's something to match against. With a fresh
+  // drop-off field the saved/recents browse panel shows instead — previously
+  // recents were unreachable here (activeField only ever became null after a
+  // pickup suggestion was picked).
+  const showSuggestionList = activeField === 'pickup' || activeQuery.length >= 3;
+
+  // Saved shortcuts + recents + map pin — the "browse" state of this screen.
+  const browsePanel = (
+    <>
+      {/* Saved Locations Shortcut Row */}
+      <View style={styles.savedRow}>
+        {homePlace ? (
+          <TouchableOpacity
+            style={styles.savedChip}
+            onPress={() =>
+              selectPreset({ id: homePlace.id, title: homePlace.title, subtitle: homePlace.address, distance: '', lat: homePlace.lat, lng: homePlace.lng })
+            }
+          >
+            <View style={[styles.savedIcon, { backgroundColor: '#EEF2FF' }]}>
+              <Home size={18} color={colors.primary} />
+            </View>
+            <View>
+              <Text style={styles.savedTitle}>Home</Text>
+              <Text style={styles.savedSub} numberOfLines={1}>{homePlace.address.split(',')[0]}</Text>
+            </View>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={[styles.savedChip, styles.addChip]} onPress={() => setActiveField('dropoff')}>
+            <View style={[styles.savedIcon, { backgroundColor: '#EEF2FF' }]}>
+              <Plus size={18} color={colors.primary} />
+            </View>
+            <Text style={styles.savedTitle}>Add Home</Text>
+          </TouchableOpacity>
+        )}
+
+        {workPlace ? (
+          <TouchableOpacity
+            style={styles.savedChip}
+            onPress={() =>
+              selectPreset({ id: workPlace.id, title: workPlace.title, subtitle: workPlace.address, distance: '', lat: workPlace.lat, lng: workPlace.lng })
+            }
+          >
+            <View style={[styles.savedIcon, { backgroundColor: colors.accentLight }]}>
+              <Briefcase size={18} color={colors.accent} />
+            </View>
+            <View>
+              <Text style={styles.savedTitle}>Work</Text>
+              <Text style={styles.savedSub} numberOfLines={1}>{workPlace.address.split(',')[0]}</Text>
+            </View>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={[styles.savedChip, styles.addChip]} onPress={() => setActiveField('dropoff')}>
+            <View style={[styles.savedIcon, { backgroundColor: colors.accentLight }]}>
+              <Plus size={18} color={colors.accent} />
+            </View>
+            <Text style={styles.savedTitle}>Add Work</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Recent Search Locations List — same merged list as the home sheet */}
+      {recentPlaces.length > 0 && (
+        <>
+          <Text style={styles.sectionHeader}>RECENT DESTINATIONS</Text>
+          <View style={styles.rowsCard}>
+            {recentPlaces.map((item, idx) => (
+              <PlaceSearchRow
+                key={item.id}
+                variant="recent"
+                title={item.title}
+                subtitle={item.subtitle}
+                onPress={() => selectPreset({ id: item.id, title: item.title, subtitle: item.subtitle, distance: '', lat: item.lat, lng: item.lng })}
+                onToggleHeart={() => toggleSaved(item)}
+                heartActive={!!item.saved}
+                isLast={idx === recentPlaces.length - 1}
+              />
+            ))}
+          </View>
+        </>
+      )}
+
+      {/* Set Pin on Map Button */}
+      <TouchableOpacity style={styles.mapPinBar} onPress={() => setActiveField('dropoff')}>
+        <Navigation size={20} color={colors.primary} />
+        <Text style={styles.mapPinText}>Set location on map</Text>
+      </TouchableOpacity>
+    </>
+  );
 
   return (
     <View style={styles.container}>
       {/* Search Header Panel */}
-      <View style={styles.headerPanel}>
+      <View style={[styles.headerPanel, { paddingTop: 16 + insets.top }]}>
         <View style={styles.topRow}>
           <TouchableOpacity style={styles.backBtn} onPress={onBack}>
             <ArrowLeft size={22} color={colors.textPrimary} />
@@ -182,125 +270,55 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
       </View>
 
       {showSuggestionsPanel ? (
-        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-          <Text style={styles.sectionHeader}>
-            {activeField === 'pickup' ? 'PICKUP SUGGESTIONS' : 'DROP-OFF SUGGESTIONS'}
-          </Text>
+        <ScrollView
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: 20 + insets.bottom }]}
+          keyboardShouldPersistTaps="handled"
+        >
+          {showSuggestionList ? (
+            <>
+              <Text style={styles.sectionHeader}>
+                {activeField === 'pickup' ? 'PICKUP SUGGESTIONS' : 'DROP-OFF SUGGESTIONS'}
+              </Text>
 
-          {isSearching && (
-            <View style={styles.loadingRow}>
-              <ActivityIndicator color={colors.primary} />
-            </View>
-          )}
-
-          {!isSearching && suggestions.length === 0 && (activeField === 'pickup' ? pickupText : dropoffText).trim().length >= 3 && (
-            <Text style={styles.emptyText}>No matching places found</Text>
-          )}
-
-          {!isSearching && suggestions.length === 0 && (activeField === 'pickup' ? pickupText : dropoffText).trim().length < 3 && (
-            <Text style={styles.emptyText}>Keep typing to search…</Text>
-          )}
-
-          <View style={styles.list}>
-            {suggestions.map((result, index) => (
-              <Card key={`${result.lat}-${result.lng}-${index}`} style={styles.placeCard} onPress={() => applySuggestion(result)}>
-                <View style={styles.placeRow}>
-                  <View style={styles.clockIconWrap}>
-                    <MapPin size={20} color={colors.textSecondary} />
-                  </View>
-                  <View style={styles.placeTextWrap}>
-                    <Text style={styles.placeTitle} numberOfLines={1}>{result.address.split(',')[0]}</Text>
-                    <Text style={styles.placeSubtitle} numberOfLines={1}>{result.address}</Text>
-                  </View>
+              {isSearching && (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color={colors.primary} />
                 </View>
-              </Card>
-            ))}
-          </View>
+              )}
+
+              {!isSearching && suggestions.length === 0 && activeQuery.length >= 3 && (
+                <Text style={styles.emptyText}>No matching places found</Text>
+              )}
+
+              {!isSearching && suggestions.length === 0 && activeQuery.length < 3 && (
+                <Text style={styles.emptyText}>Keep typing to search…</Text>
+              )}
+
+              {suggestions.length > 0 && (
+                <View style={styles.rowsCard}>
+                  {suggestions.map((result, index) => (
+                    <PlaceSearchRow
+                      key={`${result.lat}-${result.lng}-${index}`}
+                      variant="search"
+                      title={result.address.split(',')[0]}
+                      subtitle={result.address}
+                      onPress={() => applySuggestion(result)}
+                      isLast={index === suggestions.length - 1}
+                    />
+                  ))}
+                </View>
+              )}
+            </>
+          ) : (
+            browsePanel
+          )}
         </ScrollView>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Saved Locations Shortcut Row */}
-          <View style={styles.savedRow}>
-            {homePlace ? (
-              <TouchableOpacity
-                style={styles.savedChip}
-                onPress={() =>
-                  selectPreset({ id: homePlace.id, title: homePlace.title, subtitle: homePlace.address, distance: '', lat: homePlace.lat, lng: homePlace.lng })
-                }
-              >
-                <View style={[styles.savedIcon, { backgroundColor: '#EEF2FF' }]}>
-                  <Home size={18} color={colors.primary} />
-                </View>
-                <View>
-                  <Text style={styles.savedTitle}>Home</Text>
-                  <Text style={styles.savedSub} numberOfLines={1}>{homePlace.address.split(',')[0]}</Text>
-                </View>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity style={[styles.savedChip, styles.addChip]} onPress={() => setActiveField('dropoff')}>
-                <View style={[styles.savedIcon, { backgroundColor: '#EEF2FF' }]}>
-                  <Plus size={18} color={colors.primary} />
-                </View>
-                <Text style={styles.savedTitle}>Add Home</Text>
-              </TouchableOpacity>
-            )}
-
-            {workPlace ? (
-              <TouchableOpacity
-                style={styles.savedChip}
-                onPress={() =>
-                  selectPreset({ id: workPlace.id, title: workPlace.title, subtitle: workPlace.address, distance: '', lat: workPlace.lat, lng: workPlace.lng })
-                }
-              >
-                <View style={[styles.savedIcon, { backgroundColor: colors.accentLight }]}>
-                  <Briefcase size={18} color={colors.accent} />
-                </View>
-                <View>
-                  <Text style={styles.savedTitle}>Work</Text>
-                  <Text style={styles.savedSub} numberOfLines={1}>{workPlace.address.split(',')[0]}</Text>
-                </View>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity style={[styles.savedChip, styles.addChip]} onPress={() => setActiveField('dropoff')}>
-                <View style={[styles.savedIcon, { backgroundColor: colors.accentLight }]}>
-                  <Plus size={18} color={colors.accent} />
-                </View>
-                <Text style={styles.savedTitle}>Add Work</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Recent Search Locations List */}
-          {recentPlaces.length > 0 && (
-            <>
-              <Text style={styles.sectionHeader}>RECENT DESTINATIONS</Text>
-              <View style={styles.list}>
-                {recentPlaces.map((item) => (
-                  <Card
-                    key={item.id}
-                    style={styles.placeCard}
-                    onPress={() => selectPreset({ id: item.id, title: item.title, subtitle: item.subtitle, distance: '', lat: item.lat, lng: item.lng })}
-                  >
-                    <View style={styles.placeRow}>
-                      <View style={styles.clockIconWrap}>
-                        <Clock size={20} color={colors.textSecondary} />
-                      </View>
-                      <View style={styles.placeTextWrap}>
-                        <Text style={styles.placeTitle}>{item.title}</Text>
-                        <Text style={styles.placeSubtitle} numberOfLines={1}>{item.subtitle}</Text>
-                      </View>
-                    </View>
-                  </Card>
-                ))}
-              </View>
-            </>
-          )}
-
-          {/* Set Pin on Map Button */}
-          <TouchableOpacity style={styles.mapPinBar} onPress={() => setActiveField('dropoff')}>
-            <Navigation size={20} color={colors.primary} />
-            <Text style={styles.mapPinText}>Set location on map</Text>
-          </TouchableOpacity>
+        <ScrollView
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: 20 + insets.bottom }]}
+          showsVerticalScrollIndicator={false}
+        >
+          {browsePanel}
         </ScrollView>
       )}
     </View>
@@ -348,16 +366,17 @@ const styles = StyleSheet.create({
   savedSub: { ...typography.meta, fontSize: 11 },
   addChip: { borderStyle: 'dashed' },
   sectionHeader: { ...typography.metaBold, fontSize: 11, letterSpacing: 1, color: colors.textMuted, marginBottom: 12 },
-  list: { gap: 10, marginBottom: 20 },
-  placeCard: { padding: 14 },
-  placeRow: { flexDirection: 'row', alignItems: 'center' },
-  clockIconWrap: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: '#F1F5F9',
-    alignItems: 'center', justifyContent: 'center', marginRight: 12,
+  // One white surface per list; PlaceSearchRow rows divide with hairlines.
+  rowsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: radii.card,
+    borderWidth: 1,
+    borderColor: '#EEECF2',
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    marginBottom: 20,
+    ...shadows.card,
   },
-  placeTextWrap: { flex: 1 },
-  placeTitle: { ...typography.bodyBold, fontSize: 14 },
-  placeSubtitle: { ...typography.meta, fontSize: 12 },
   distText: { ...typography.metaBold, fontSize: 12, color: colors.primary, marginLeft: 8 },
   mapPinBar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF',

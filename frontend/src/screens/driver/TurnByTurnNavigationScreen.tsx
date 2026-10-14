@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { CornerUpRight, Phone, Gauge, MapPin, CheckCircle, Navigation, ExternalLink } from 'lucide-react-native';
 import * as Location from 'expo-location';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FocusedStatusBar } from '../../components/primitives/FocusedStatusBar';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
@@ -21,9 +23,11 @@ interface Props {
 
 export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAction, isSubmitting, onRideCancelled }) => {
   const isToPickup = phase === 'to_pickup';
+  const insets = useSafeAreaInsets();
   const activeRide = useRideStore((state) => state.activeRide);
   const socket = useSocket();
   const [driverPosition, setDriverPosition] = useState<LatLng | undefined>();
+  const [driverHeading, setDriverHeading] = useState<number | undefined>(undefined);
   const watchSubscription = useRef<Location.LocationSubscription | null>(null);
 
   const destinationAddress =
@@ -45,12 +49,24 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
         (loc) => {
           if (!mounted) return;
           const next = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          // GPS course is -1/null while stationary — send nothing in that case
+          // and the rider's car marker keeps/derives its heading from movement.
+          const rawHeading = loc.coords.heading;
+          const heading =
+            typeof rawHeading === 'number' && Number.isFinite(rawHeading) && rawHeading >= 0
+              ? rawHeading
+              : undefined;
           setDriverPosition(next);
+          setDriverHeading(heading);
 
           driversApi.updateLocation(next.lat, next.lng).catch(() => {});
 
           if (activeRide?.id && socket) {
-            socket.emit('driver:location', { rideId: activeRide.id, ...next });
+            socket.emit('driver:location', {
+              rideId: activeRide.id,
+              ...next,
+              ...(heading !== undefined ? { heading } : {}),
+            });
           }
         },
       );
@@ -122,16 +138,19 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
 
   return (
     <View style={styles.container}>
+      {/* Dark map: light status-bar icons so the clock/battery stay visible. */}
+      <FocusedStatusBar style="light" />
       <RealMapView
         mode="navigation"
         darkTheme
         pickup={activeRide?.pickup}
         dropoff={activeRide?.dropoff}
         driverPosition={driverPosition}
+        driverHeading={driverHeading}
       />
 
       {/* Top Direction Instruction Header */}
-      <View style={styles.navHeader}>
+      <View style={[styles.navHeader, { top: 20 + insets.top }]}>
         <View style={styles.arrowIconWrap}>
           <CornerUpRight size={28} color="#FFFFFF" />
         </View>
@@ -152,7 +171,7 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
 
       {/* Floating "Open in Google Maps" Button on the Map */}
       <TouchableOpacity
-        style={styles.floatingGmapsBtn}
+        style={[styles.floatingGmapsBtn, { top: 96 + insets.top }]}
         onPress={handleOpenGoogleMaps}
         activeOpacity={0.85}
       >
@@ -169,7 +188,7 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
       </TouchableOpacity>
 
       {/* Bottom Navigation Control Sheet */}
-      <View style={styles.bottomSheet}>
+      <View style={[styles.bottomSheet, { paddingBottom: 20 + insets.bottom }]}>
         <View style={styles.summaryRow}>
           <View>
             <Text style={styles.etaTitle}>

@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CreditCard, Tag, ShieldCheck, ChevronRight, Check } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -19,12 +20,16 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
   const promoCode = useRideStore((state) => state.promoCode);
   const discountAmount = useRideStore((state) => state.discountAmount);
   const breakdown = useRideStore((state) => state.getFareBreakdown)();
+  const insets = useSafeAreaInsets();
 
   return (
     <View style={styles.container}>
       {onBack && <Header title="Ride Summary" onBack={onBack} />}
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 130 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Selected Vehicle Overview */}
         <Card style={styles.vehicleSummaryCard}>
           <View style={styles.vehicleRow}>
@@ -101,7 +106,7 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
 
       {/* Footer Confirm Action */}
       {onConfirmRide && (
-        <View style={styles.footer}>
+        <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
           <View style={styles.fareRow}>
             <View>
               <Text style={styles.fareLabel}>Total Fare</Text>

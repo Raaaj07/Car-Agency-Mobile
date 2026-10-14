@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Phone, ShieldCheck } from 'lucide-react-native';
+import { FocusedStatusBar } from '../../components/primitives/FocusedStatusBar';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import {
@@ -44,6 +46,7 @@ export const SignInScreen: React.FC<Props> = ({
   authError,
 }) => {
   const [googleBusy, setGoogleBusy] = useState(false);
+  const insets = useSafeAreaInsets();
   // Release builds have no visible console, so a Google failure used to look
   // like "nothing happened". Show a short, non-sensitive reason on screen
   // (status code only — never tokens or the raw error object).
@@ -110,8 +113,13 @@ export const SignInScreen: React.FC<Props> = ({
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.heroBox}>
+      {/* Navy hero: the app-wide dark status bar would be invisible here. */}
+      <FocusedStatusBar style="light" />
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 60 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={[styles.heroBox, { paddingTop: 30 + insets.top }]}>
           <View style={styles.heroCircleOuter}>
             <View style={styles.heroCircleInner}>
               <Text style={styles.logoText}>V</Text>
@@ -164,7 +172,7 @@ export const SignInScreen: React.FC<Props> = ({
         </View>
       </ScrollView>
 
-      <View style={styles.termsFooter}>
+      <View style={[styles.termsFooter, { bottom: 16 + insets.bottom }]}>
         <ShieldCheck size={16} color={colors.textMuted} />
         <Text style={styles.termsText}>
           By continuing, you agree to Vazhi&apos;s <Text style={styles.linkText}>Terms</Text> & <Text style={styles.linkText}>Privacy Policy</Text>

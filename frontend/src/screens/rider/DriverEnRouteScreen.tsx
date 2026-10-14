@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Phone, MessageSquare, Clock, MapPin, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -41,6 +42,7 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
   usePreventBack(() => {});
   // D4: if the ride vanished under this screen, go home — never a dead map.
   useRequireActiveRide();
+  const insets = useSafeAreaInsets();
   const pickupOtp = activeRide?.pickupOtp;
   const pickupText = activeRide?.pickup?.address || 'Pickup Location';
   const dropText = activeRide?.dropoff?.address || 'Drop-off Location';
@@ -57,6 +59,9 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
   >(() => (driverInfo?.location ? { lat: driverInfo.location.lat, lng: driverInfo.location.lng } : undefined));
   // Measured bottom-sheet height so the map can pad the fit above it.
   const [sheetHeight, setSheetHeight] = useState(0);
+  // Driver's live heading relayed over the socket (undefined → the car marker
+  // derives it from the direction of movement).
+  const [driverHeading, setDriverHeading] = useState<number | undefined>(undefined);
 
   // Guard: ensure onStartTrip is called exactly once (socket + poll may both fire).
   const startedRef = useRef(false);
@@ -105,6 +110,7 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
   useRideSocket(activeRide?.id, {
     onDriverLocation: (event) => {
       setDriverPosition({ lat: event.lat, lng: event.lng });
+      setDriverHeading(event.heading);
     },
     onStatus: (event) => {
       if (
@@ -163,25 +169,26 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
         pickup={pickupCoords ?? (activeRide?.pickup ? { lat: activeRide.pickup.lat, lng: activeRide.pickup.lng } : undefined)}
         dropoff={dropoffCoords ?? (activeRide?.dropoff ? { lat: activeRide.dropoff.lat, lng: activeRide.dropoff.lng } : undefined)}
         driverPosition={driverPosition}
+        driverHeading={driverHeading}
         route={route}
         bottomPadding={sheetHeight}
       />
 
       {/* Floating Status Pill Header */}
-      <View style={styles.statusPill}>
+      <View style={[styles.statusPill, { top: 20 + insets.top }]}>
         <Clock size={16} color="#FFFFFF" />
         <Text style={styles.statusPillText}>Driver is on the way to your pickup</Text>
       </View>
 
       {/* Drop-off line under the map header (real address, no invented ETA) */}
-      <View style={styles.dropPill}>
+      <View style={[styles.dropPill, { top: 72 + insets.top }]}>
         <MapPin size={14} color={colors.primary} />
         <Text style={styles.dropPillText} numberOfLines={1}>{dropText}</Text>
       </View>
 
       {/* Bottom Sheet Card */}
       <View
-        style={styles.bottomSheet}
+        style={[styles.bottomSheet, { paddingBottom: 20 + insets.bottom }]}
         onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
       >
         <View style={styles.dragHandle} />

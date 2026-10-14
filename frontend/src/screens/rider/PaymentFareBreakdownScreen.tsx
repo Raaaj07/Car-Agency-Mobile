@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CheckCircle, Clock, Download } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -35,6 +36,7 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
         : 'AWAITING PAYMENT';
   const amount = Number(breakdown?.total ?? 0) + tip;
   const vehicleName = selectedVehicle?.name ?? activeRide?.vehicleType ?? 'your ride';
+  const insets = useSafeAreaInsets();
 
   // The rider pays the UPI QR shown on the driver's phone; the driver then
   // taps "Amount Received". Poll until that flag flips so this screen shows
@@ -57,7 +59,10 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
     <View style={styles.container}>
       {onBack && <Header title="Fare Breakdown" onBack={onBack} />}
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Total Amount Header Card */}
         <Card style={styles.totalHeaderCard}>
           <View
@@ -155,7 +160,7 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
       </ScrollView>
 
       {onDone && (
-        <View style={styles.footer}>
+        <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
           <Button title="Back to Home" onPress={onDone} variant="primary" size="large" />
         </View>
       )}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Linking, Alert } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Phone, Mail } from 'lucide-react-native';
 import { colors, radii, typography } from '../../theme/theme';
 import { Header } from '../../components/primitives/Header';
@@ -17,6 +18,7 @@ interface Props {
 // Shared Help & support destination for BOTH rider and driver profiles —
 // opens the dialer / mail client, no backend involved.
 export const HelpSupportScreen: React.FC<Props> = ({ onBack }) => {
+  const insets = useSafeAreaInsets();
   const openLink = async (url: string, what: string) => {
     try {
       await Linking.openURL(url);
@@ -28,7 +30,7 @@ export const HelpSupportScreen: React.FC<Props> = ({ onBack }) => {
   return (
     <View style={styles.container}>
       <Header title="Help & support" onBack={onBack} transparent />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 48 + insets.bottom }]}>
         <Card style={styles.card}>
           <Text style={styles.title}>We&apos;re here to help</Text>
           <Text style={styles.body}>

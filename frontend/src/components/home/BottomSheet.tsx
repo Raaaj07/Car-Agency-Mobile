@@ -38,6 +38,13 @@ interface Props {
   onSnapChange?: (snap: SnapPoint) => void;
   header: React.ReactNode;
   children: React.ReactNode;
+  /** Set false while the header hosts a TextInput, so typing can't drag the sheet. */
+  headerPanEnabled?: boolean;
+  /** Imperative snap request — change `nonce` to ask for `point` (null = none). */
+  snapRequest?: { point: SnapPoint; nonce: number } | null;
+  /** First shot at the Android back button; return true when handled
+   *  (e.g. close inline search before collapsing the sheet). */
+  onHardwareBack?: () => boolean;
 }
 
 export const BottomSheet: React.FC<Props> = memo(({
@@ -46,6 +53,9 @@ export const BottomSheet: React.FC<Props> = memo(({
   onSnapChange,
   header,
   children,
+  headerPanEnabled = true,
+  snapRequest = null,
+  onHardwareBack,
 }) => {
   const [currentSnap, setCurrentSnap] = useState<SnapPoint>(initialSnap);
 
@@ -91,10 +101,24 @@ export const BottomSheet: React.FC<Props> = memo(({
     }).start();
   }, [snapY, translateY]);
 
+  // Imperative snap requests (e.g. expand when the inline search opens).
+  // Applied on an async boundary: animateTo() sets state, and a synchronous
+  // setState in an effect body trips react-hooks/set-state-in-effect.
+  useEffect(() => {
+    if (!snapRequest) return;
+    const { point } = snapRequest;
+    Promise.resolve().then(() => animateTo(point));
+  }, [snapRequest, animateTo]);
+
+  // Latest-callback ref so the BackHandler subscription never needs rebinding.
+  const onHardwareBackRef = useRef(onHardwareBack);
+  onHardwareBackRef.current = onHardwareBack;
+
   // Android hardware back button handler
   useFocusEffect(
     useCallback(() => {
       const onBackPress = () => {
+        if (onHardwareBackRef.current?.()) return true;
         if (snapRef.current === 'expanded') {
           animateTo('default');
           return true;
@@ -173,7 +197,10 @@ export const BottomSheet: React.FC<Props> = memo(({
       ]}
     >
       {/* Header Region */}
-      <View style={styles.headerArea} {...panResponder.panHandlers}>
+      <View
+        style={styles.headerArea}
+        {...(headerPanEnabled ? panResponder.panHandlers : {})}
+      >
         <View style={styles.handle} />
         {header}
       </View>

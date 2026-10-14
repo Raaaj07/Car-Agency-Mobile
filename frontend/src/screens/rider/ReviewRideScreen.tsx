@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Star, Sparkles } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -25,6 +26,7 @@ const tipOptions = ['₹10', '₹20', '₹50', '₹100'];
 
 export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) => {
   const [rating, setRating] = useState<number>(5);
+  const insets = useSafeAreaInsets();
   // Nothing is pre-selected: a pre-ticked "Safe Driver" recorded feedback the
   // rider never gave (same class of bug as the pre-selected tip).
   const [selectedCompliments, setSelectedCompliments] = useState<string[]>([]);
@@ -70,7 +72,10 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
     <View style={styles.container}>
       <Header title="Rate Your Ride" onBack={onBack} />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.driverSection}>
           <Avatar name={driverName} uri={driver?.avatar ?? undefined} size={72} />
           <Text style={styles.driverName}>{driverName}</Text>
@@ -135,7 +140,7 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
         </Card>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Submit Rating & Feedback"
           onPress={handleSubmit}

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Clock, Users, ArrowRight, CreditCard, ChevronDown, MapPin, Navigation } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -46,6 +47,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [routeError, setRouteError] = useState(false);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (preferredVehicleId) {
@@ -146,7 +148,10 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
         <View style={styles.dragHandle} />
         <Text style={styles.sheetTitle}>Choose a Ride</Text>
 
-        <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={[styles.list, { paddingBottom: 150 + insets.bottom }]}
+          showsVerticalScrollIndicator={false}
+        >
           {vehicles.map((v) => {
             const isSelected = selectedId === v.id;
             return (
@@ -185,7 +190,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
         </ScrollView>
 
         {/* Footer Bar with Payment Choice & Action */}
-        <View style={styles.footerPanel}>
+        <View style={[styles.footerPanel, { paddingBottom: 16 + insets.bottom }]}>
           <TouchableOpacity style={styles.paymentSelector}>
             <CreditCard size={18} color={colors.primary} />
             <Text style={styles.paymentText}>Cash / UPI</Text>
@@ -209,7 +214,8 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   mapWrap: { height: '45%', position: 'relative' },
-  mapHeader: { position: 'absolute', top: 10, left: 0, right: 0 },
+  // Header already adds the status-bar inset itself, so pin it to the very top.
+  mapHeader: { position: 'absolute', top: 0, left: 0, right: 0 },
   routeInfoBar: {
     position: 'absolute', bottom: 12, alignSelf: 'center',
     backgroundColor: '#FFFFFF', borderRadius: radii.pill, paddingHorizontal: 16, paddingVertical: 8,

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TextInput, Alert } from 'react-nati
 import QRCode from 'react-native-qrcode-svg';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QrCode, CheckCircle2, IndianRupee } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { DriverMainTabParamList } from '../../navigation/types';
@@ -44,6 +45,7 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const driverName = useAuthStore((state) => state.user?.name);
+  const insets = useSafeAreaInsets();
 
   const fareTotal = Number(activeRide?.fareBreakdown?.total ?? 0);
   const tip = Number(activeRide?.tipAmount ?? 0);
@@ -162,7 +164,13 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: 20 + insets.top, paddingBottom: 110 + insets.bottom },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Amount header */}
         <View style={styles.headerBox}>
           <View style={styles.amountRow}>
@@ -302,7 +310,7 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
         )}
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button title="Continue" onPress={onDone} variant="primary" size="large" />
       </View>
     </View>

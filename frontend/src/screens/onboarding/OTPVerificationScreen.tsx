@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KeyRound, RefreshCw } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -31,6 +32,7 @@ export const OTPVerificationScreen: React.FC<Props> = ({
   const [timer, setTimer] = useState<number>(30);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (timer > 0) {
@@ -65,7 +67,11 @@ export const OTPVerificationScreen: React.FC<Props> = ({
     <View style={styles.container}>
       <Header title="OTP Verification" onBack={onBack} transparent />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.iconBadge}>
           <KeyRound size={28} color={colors.primary} />
         </View>
@@ -106,7 +112,7 @@ export const OTPVerificationScreen: React.FC<Props> = ({
         </View>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Verify & Continue"
           onPress={handleVerify}

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { User as UserIcon } from 'lucide-react-native';
 import { colors, typography } from '../../theme/theme';
 import { Input } from '../../components/primitives/Input';
@@ -24,12 +25,16 @@ interface Props {
 // Driver vehicle + documents moved to Profile > Become a Driver.
 export const CompleteProfileScreen: React.FC<Props> = ({ onSubmit, isSubmitting, serverError }) => {
   const [name, setName] = useState('');
+  const insets = useSafeAreaInsets();
 
   const isValid = name.trim().length >= 2;
 
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingTop: 40 + insets.top }]}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.iconBadge}>
           <UserIcon size={28} color={colors.primary} />
         </View>
@@ -45,7 +50,7 @@ export const CompleteProfileScreen: React.FC<Props> = ({ onSubmit, isSubmitting,
           error={serverError}
         />
       </ScrollView>
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Continue"
           onPress={() => onSubmit(name.trim())}
