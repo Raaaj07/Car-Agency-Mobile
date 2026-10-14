@@ -5,18 +5,32 @@ import { PLACES_CONFIG } from './places.config';
 const SALEM = { lat: 11.6643, lng: 78.146 };
 const ERODE = { lat: 11.341, lng: 77.7172 };
 
-const hit = (id: string, lat: number, lng: number, rating: number | null = null, ratingCount: number | null = null) => ({
+// Google hits carry a photo by default: places without one are never returned.
+const hit = (
+  id: string,
+  lat: number,
+  lng: number,
+  rating: number | null = null,
+  ratingCount: number | null = null,
+  photoName: string | null = `places/${id}/photos/p1`,
+) => ({
   googlePlaceId: id, title: `Place ${id}`, subtitle: 'India', lat, lng,
-  photoName: null, photoAttribution: null, rating, ratingCount,
+  photoName, photoAttribution: null, rating, ratingCount,
 });
 
-function makeService(near: unknown[] = [], popular: unknown[] = []) {
+const wikiHit = (pageId: string, title: string, lat: number, lng: number, attraction = true) => ({
+  pageId, title, description: `${title}, India`, lat, lng,
+  thumbUrl: `https://upload.wikimedia.org/wikipedia/commons/thumb/${pageId}.jpg`, attraction,
+});
+
+function makeService(near: unknown[] = [], popular: unknown[] = [], wikiHits?: unknown[]) {
   const google = {
     searchNearbyByDistance: jest.fn().mockResolvedValue(near),
     searchNearbyByPopularity: jest.fn().mockResolvedValue(popular),
   };
-  const service = new PlacesService({} as never, {} as never, google as never);
-  return { service, google };
+  const wiki = wikiHits ? { searchNearby: jest.fn().mockResolvedValue(wikiHits) } : undefined;
+  const service = new PlacesService({} as never, {} as never, google as never, wiki as never);
+  return { service, google, wiki };
 }
 
 describe('PlacesService — location-based suggestions', () => {
@@ -58,6 +72,37 @@ describe('PlacesService — location-based suggestions', () => {
       expect(await service.getNearby(ERODE.lat, ERODE.lng)).toEqual([]);
     });
 
+    it('drops Google places that have no photo', async () => {
+      const { service } = makeService([
+        hit('nophoto-aaaa1111', 11.665, 78.1465, null, null, null),
+        hit('photo-bbbb2222', 11.666, 78.147),
+      ]);
+      const items = await service.getNearby(SALEM.lat, SALEM.lng);
+      expect(items.map((i) => i.id)).toEqual(['g-photo-bbbb2222']);
+    });
+
+    it('tops up from Wikipedia (photo-proxy URLs) when Google has too few places with photos', async () => {
+      const { service, wiki } = makeService([], [], [
+        wikiHit('111111', 'Erode Fort', 11.342, 77.718),
+        wikiHit('222222', 'Kaveri College', 11.35, 77.73, false),
+      ]);
+      const items = await service.getNearby(ERODE.lat, ERODE.lng);
+      expect(wiki!.searchNearby).toHaveBeenCalled();
+      expect(items.map((i) => i.id)).toEqual(['w-111111', 'w-222222']);
+      expect(items[0].imageUrl).toBe('/places/photo/w/111111');
+      expect(items[0].imageUrl).not.toMatch(/^https?:/);
+    });
+
+    it('does not repeat a Wikipedia place Google already returned', async () => {
+      const { service } = makeService(
+        [hit('same-gggg7777', 11.342, 77.718)],
+        [],
+        [wikiHit('111111', 'Place same-gggg7777', 11.3421, 77.7181)],
+      );
+      const items = await service.getNearby(ERODE.lat, ERODE.lng);
+      expect(items.map((i) => i.id)).toEqual(['g-same-gggg7777']);
+    });
+
     it('returns nothing (and does not call Google) for invalid coordinates', async () => {
       const { service, google } = makeService([hit('x-dddd4444', 1, 1)]);
       expect(await service.getNearby(NaN, 78)).toEqual([]);
@@ -79,6 +124,28 @@ describe('PlacesService — location-based suggestions', () => {
       expect(res.popular.map((p) => p.id)).toEqual(['g-near-bbbb2222', 'g-far-aaaa1111']);
       expect(res.popular[0].rating).toBe(4.2);
       expect(res.popular[0].imageUrl).toBe('/places/photo/g/near-bbbb2222');
+    });
+
+    it('drops live places without a photo', async () => {
+      const { service } = makeService([], [
+        hit('nophoto-aaaa1111', 11.35, 77.72, 4.6, 900, null),
+        hit('photo-bbbb2222', 11.351, 77.721, 4.5, 800),
+      ]);
+      const res = await service.getPopular(ERODE.lat, ERODE.lng);
+      expect(res.popular.map((p) => p.id)).toEqual(['g-photo-bbbb2222']);
+    });
+
+    it('fills Popular with nearby sights and Explore-your-city from Wikipedia outside the curated city', async () => {
+      const { service } = makeService([], [], [
+        wikiHit('111111', 'Erode Fort', 11.342, 77.718, true),
+        wikiHit('222222', 'Kaveri College', 11.35, 77.73, false),
+      ]);
+      const res = await service.getPopular(ERODE.lat, ERODE.lng);
+      // Popular = sights only; the college is not a sight.
+      expect(res.popular.map((p) => p.id)).toEqual(['w-111111']);
+      expect(res.popular[0].imageUrl).toBe('/places/photo/w/111111');
+      // The only sight is already under Popular, so nothing is repeated.
+      expect(res.cityHighlights).toEqual([]);
     });
 
     it('shows no curated Salem spots to a rider in Erode', async () => {

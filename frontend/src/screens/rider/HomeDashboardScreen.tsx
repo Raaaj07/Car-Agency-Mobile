@@ -23,7 +23,7 @@ import { reverseGeocode, GeocodeResult } from '../../api/mapbox';
 import { API_URL } from '../../api/client';
 import { driversApi, NearbyDriver } from '../../api/drivers';
 import { useRideStore } from '../../store/rideStore';
-import { usePlacesStore, useMergedRecents } from '../../store/placesStore';
+import { usePlacesStore, useMergedRecents, useVisiblePlaces } from '../../store/placesStore';
 import { useCurrentLocation } from '../../hooks/useCurrentLocation';
 import { useAddressSearch } from '../../hooks/useAddressSearch';
 import { PlaceItem } from '../../api/places';
@@ -34,6 +34,7 @@ import { PickupPin } from '../../components/home/PickupPin';
 import { PlaceSearchRow } from '../../components/home/PlaceSearchRow';
 import { QuickPickTile } from '../../components/home/QuickPickTile';
 import { PopularPlaceCard } from '../../components/home/PopularPlaceCard';
+import { PLACE_CARD_SIZES } from '../../components/home/PlaceCard';
 import { ServiceTile, VEHICLE_SERVICES } from '../../components/home/ServiceTile';
 import { PromoCarousel } from '../../components/home/PromoCarousel';
 import { CityHighlightCard } from '../../components/home/CityHighlightCard';
@@ -51,6 +52,9 @@ let pointSeq = 0;
 // Re-fetch "Near You" / "Popular" once the rider has moved this far (km) from
 // where the current suggestions were computed.
 const SUGGESTION_REFRESH_KM = 1;
+
+// Space between photo cards in the horizontal place rails (and the snap step).
+const PLACE_CARD_GAP = 12;
 
 export const HomeDashboardScreen: React.FC<Props> = ({
   onSearchPress,
@@ -85,6 +89,12 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   // Single "recently visited" list shared with the destination picker:
   // this session's searches first, then ride-history drop-offs from the server.
   const mergedRecent = useMergedRecents();
+  // Place cards are photo cards: a place the API returned without a photo (or
+  // whose photo failed to load) is not rendered at all.
+  const visibleNearby = useVisiblePlaces(nearby);
+  const visiblePopular = useVisiblePlaces(popular);
+  const visibleHighlights = useVisiblePlaces(cityHighlights);
+  const visibleQuickPicks = useVisiblePlaces(quickPicks);
 
   // ── GPS Hook (Phase 0d & A4.5) ──────────────────────────────────────────────
   const {
@@ -445,12 +455,12 @@ export const HomeDashboardScreen: React.FC<Props> = ({
   // Popular places: the nearest 8 (already nearest-first from the server).
   // Deliberately NOT de-duplicated against "Near You": a popular place that is
   // also close must still appear under Popular.
-  const popularNearby = popular.slice(0, 8);
+  const popularNearby = visiblePopular.slice(0, 10);
   const hasLiveLocation = locationStatus === 'granted';
   // Nothing to show for either list: say so (and why) instead of leaving a
   // silent blank. `lastFetchedAt` is set once a fetch has completed.
   const loadedOnce = lastFetchedAt !== null;
-  const noSuggestions = loadedOnce && nearby.length === 0 && popularNearby.length === 0 && !error;
+  const noSuggestions = loadedOnce && visibleNearby.length === 0 && popularNearby.length === 0 && visibleHighlights.length === 0 && !error;
 
   // Check emulator API_URL fallback diagnostic (A0.2)
   const showApiWarning =
@@ -789,7 +799,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
                 />
               )}
 
-              {quickPicks.slice(0, 3).map((item) => (
+              {visibleQuickPicks.slice(0, 3).map((item) => (
                 <QuickPickTile
                   key={item.id}
                   type="place"
@@ -808,7 +818,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({
           </View>
 
           {/* Section: Near You (live, location-based, nearest first) */}
-          {nearby.length > 0 && (
+          {visibleNearby.length > 0 && (
             <View style={styles.section}>
               <View style={styles.sectionHeaderRow}>
                 <Text style={styles.sectionTitle}>Near You</Text>
@@ -817,11 +827,14 @@ export const HomeDashboardScreen: React.FC<Props> = ({
                 </Text>
               </View>
               <FlatList
-                data={nearby}
+                data={visibleNearby}
                 keyExtractor={(item) => item.id}
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ gap: 12 }}
+                decelerationRate="fast"
+                snapToInterval={PLACE_CARD_SIZES.tall.width + PLACE_CARD_GAP}
+                snapToAlignment="start"
+                contentContainerStyle={styles.placeRail}
                 renderItem={({ item }) => (
                   <PopularPlaceCard place={item} onPress={handleSelectPlace} />
                 )}
@@ -843,7 +856,10 @@ export const HomeDashboardScreen: React.FC<Props> = ({
                 keyExtractor={(item) => item.id}
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ gap: 12 }}
+                decelerationRate="fast"
+                snapToInterval={PLACE_CARD_SIZES.tall.width + PLACE_CARD_GAP}
+                snapToAlignment="start"
+                contentContainerStyle={styles.placeRail}
                 renderItem={({ item }) => (
                   <PopularPlaceCard place={item} onPress={handleSelectPlace} />
                 )}
@@ -852,17 +868,20 @@ export const HomeDashboardScreen: React.FC<Props> = ({
           )}
 
           {/* Section: Explore Your City */}
-          {cityHighlights.length > 0 && (
+          {visibleHighlights.length > 0 && (
             <View style={styles.section}>
               <View style={styles.sectionHeaderRow}>
                 <Text style={styles.sectionTitle}>Explore Your City</Text>
               </View>
               <FlatList
-                data={cityHighlights}
+                data={visibleHighlights}
                 keyExtractor={(item) => item.id}
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ gap: 12 }}
+                decelerationRate="fast"
+                snapToInterval={PLACE_CARD_SIZES.wide.width + PLACE_CARD_GAP}
+                snapToAlignment="start"
+                contentContainerStyle={styles.placeRail}
                 renderItem={({ item }) => (
                   <CityHighlightCard highlight={item} onPress={handleSelectPlace} />
                 )}
@@ -1113,6 +1132,13 @@ const styles = StyleSheet.create({
     color: colors.accent,
   },
 
+  // Horizontal photo-card rails (Near You / Popular / Explore). The bottom
+  // padding keeps the cards' shadow from being clipped by the list bounds.
+  placeRail: {
+    gap: PLACE_CARD_GAP,
+    paddingBottom: 10,
+    paddingRight: 8,
+  },
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',

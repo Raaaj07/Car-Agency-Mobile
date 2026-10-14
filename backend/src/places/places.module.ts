@@ -9,6 +9,7 @@ import { PlacesPhotoController } from './places-photo.controller';
 import { PlacesService } from './places.service';
 import { GooglePlacesService } from './google-places.service';
 import { WikimediaService } from './wikimedia.service';
+import { WikipediaPlacesService } from './wikipedia-places.service';
 import { PlaceImageService } from './place-image.service';
 
 @Module({
@@ -26,7 +27,7 @@ import { PlaceImageService } from './place-image.service';
     }),
   ],
   controllers: [PlacesController, PlacesPhotoController],
-  providers: [PlacesService, GooglePlacesService, WikimediaService, PlaceImageService],
+  providers: [PlacesService, GooglePlacesService, WikimediaService, WikipediaPlacesService, PlaceImageService],
   exports: [PlacesService],
 })
 export class PlacesModule {}

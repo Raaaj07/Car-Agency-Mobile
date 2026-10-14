@@ -19,6 +19,11 @@ interface Props {
   width: number | string;
   height: number;
   borderRadius?: number;
+  /**
+   * Called once the image has failed for good (after the retry). Photo cards
+   * use it to remove themselves instead of showing a blank placeholder.
+   */
+  onFail?: () => void;
 }
 
 const MAX_RETRIES = 1;
@@ -30,7 +35,7 @@ const RETRY_DELAY_MS = 1500;
 // must never be sent to a third-party host.
 const isOwnApiUrl = (value: string) => value.startsWith(API_URL);
 
-export const PlaceImage: React.FC<Props> = memo(({ uri, width, height, borderRadius = 0 }) => {
+export const PlaceImage: React.FC<Props> = memo(({ uri, width, height, borderRadius = 0, onFail }) => {
   const [loadError, setLoadError] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -65,6 +70,7 @@ export const PlaceImage: React.FC<Props> = memo(({ uri, width, height, borderRad
       setTimeout(() => setAttempt((a) => a + 1), RETRY_DELAY_MS);
     } else {
       setLoadError(true);
+      onFail?.();
     }
   };
 

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { PlaceConfigItem } from './places.config';
 
@@ -50,6 +50,10 @@ const META_TTL_NEGATIVE_MS = 10 * 60 * 1000;
 const PHOTO_TTL_MS = 60 * 60 * 1000;
 const NEARBY_TTL_MS = 60 * 60 * 1000;
 const NEARBY_EMPTY_TTL_MS = 10 * 60 * 1000;
+// A FAILED call (bad key, quota, network blip) is remembered only briefly — a
+// genuinely empty area is cached for 10 min, but an outage must not blank the
+// home screen for that long after it is fixed.
+const NEARBY_ERROR_TTL_MS = 60 * 1000;
 
 /** Places API (New) searchNearby accepts a radius of 0-50 000 m. */
 export const MAX_SEARCH_RADIUS_M = 50_000;
@@ -197,15 +201,27 @@ function parseHit(p: Record<string, unknown>): NearbyPlaceHit | null {
 }
 
 @Injectable()
-export class GooglePlacesService {
+export class GooglePlacesService implements OnModuleInit {
   private readonly logger = new Logger(GooglePlacesService.name);
   private readonly metaCache = new Map<string, MetaCacheEntry>();
   private readonly photoCache = new Map<string, PhotoCacheEntry>();
-  private readonly nearbyCache = new Map<string, { at: number; value: NearbyPlaceHit[] }>();
+  private readonly nearbyCache = new Map<
+    string,
+    { at: number; value: NearbyPlaceHit[]; errored?: boolean }
+  >();
   private readonly knownHits = new Map<string, NearbyPlaceHit>();
   private missingKeyWarned = false;
 
   constructor(private readonly config: ConfigService) {}
+
+  /** Say at startup whether Google Places can be used, instead of failing silently later. */
+  onModuleInit(): void {
+    if (this.apiKey) {
+      this.logger.log('GOOGLE_PLACES_API_KEY is set — live Google places and photos are enabled.');
+    } else {
+      this.logger.warn('Home-screen places will use Wikipedia photos only (no Google key).');
+    }
+  }
 
   private get apiKey(): string | null {
     const key = this.config.get<string>('GOOGLE_PLACES_API_KEY');
@@ -436,7 +452,11 @@ export class GooglePlacesService {
     const cacheKey = `${rank}:${lat.toFixed(3)},${lng.toFixed(3)},${radius}`;
     const cached = this.nearbyCache.get(cacheKey);
     if (cached) {
-      const ttl = cached.value.length > 0 ? NEARBY_TTL_MS : NEARBY_EMPTY_TTL_MS;
+      const ttl = cached.errored
+        ? NEARBY_ERROR_TTL_MS
+        : cached.value.length > 0
+          ? NEARBY_TTL_MS
+          : NEARBY_EMPTY_TTL_MS;
       if (Date.now() - cached.at < ttl) return cached.value;
       this.nearbyCache.delete(cacheKey);
     }
@@ -471,7 +491,7 @@ export class GooglePlacesService {
         this.logger.warn(
           `Places searchNearby (${rank}) failed (${lat},${lng}): HTTP ${res.status} ${await errorReason(res)}`,
         );
-        this.nearbyCache.set(cacheKey, { at: Date.now(), value: [] });
+        this.nearbyCache.set(cacheKey, { at: Date.now(), value: [], errored: true });
         return [];
       }
       const payload = (await res.json()) as { places?: Array<Record<string, unknown>> };
@@ -487,7 +507,7 @@ export class GooglePlacesService {
       this.logger.warn(
         `Places searchNearby (${rank}) error (${lat},${lng}): ${(err as Error)?.message ?? err}`,
       );
-      this.nearbyCache.set(cacheKey, { at: Date.now(), value: [] });
+      this.nearbyCache.set(cacheKey, { at: Date.now(), value: [], errored: true });
       return [];
     }
   }

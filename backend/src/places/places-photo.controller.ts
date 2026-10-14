@@ -77,6 +77,22 @@ export class PlacesPhotoController {
     return this.sendPhoto(res, photo);
   }
 
+  // Photos for places found via Wikipedia nearby search. The client supplies
+  // only a numeric page id (validated); the thumbnail URL is resolved and
+  // downloaded server-side from the allow-listed Wikimedia host.
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  @Get('w/:pageId')
+  async serveWikiPhoto(
+    @Param('pageId') pageId: string,
+    @Res({ passthrough: true }) res: Response,
+    @Req() req: Request,
+  ): Promise<StreamableFile> {
+    await this.requireTokenIfEnabled(req);
+    const photo = await this.images.getWikiPlaceImage(pageId);
+    if (!photo) throw new NotFoundException('No photo available');
+    return this.sendPhoto(res, photo);
+  }
+
   // Pass-4 (task 10): default OFF so old APKs keep working; the owner flips
   // REQUIRE_AUTH_FOR_PHOTOS=true after rollout. When on, an unverifiable
   // bearer token is a 401 — the same JwtService/secret as every other route.

@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { PlaceConfigItem } from './places.config';
 import { GooglePlacesService, isValidGooglePlaceId } from './google-places.service';
 import { WikimediaService } from './wikimedia.service';
+import { WikipediaPlacesService, isValidWikiPageId } from './wikipedia-places.service';
 
 export interface PlaceImageBytes {
   body: Buffer;
@@ -113,6 +114,7 @@ export class PlaceImageService {
   constructor(
     private readonly google: GooglePlacesService,
     private readonly wiki: WikimediaService,
+    @Optional() private readonly wikiPlaces?: WikipediaPlacesService,
   ) {}
 
   /**
@@ -139,6 +141,33 @@ export class PlaceImageService {
   getLiveImage(googlePlaceId: string): Promise<PlaceImageBytes | null> {
     if (!isValidGooglePlaceId(googlePlaceId)) return Promise.resolve(null);
     return this.cached(`live:${googlePlaceId}`, () => this.resolveLive(googlePlaceId));
+  }
+
+  /**
+   * Image bytes for a place that came from Wikipedia nearby search (id `w-<pageId>`).
+   * The page's lead image is downloaded server-side from the allow-listed
+   * Wikimedia host, so the phone never talks to Wikimedia directly.
+   */
+  getWikiPlaceImage(pageId: string): Promise<PlaceImageBytes | null> {
+    if (!this.wikiPlaces || !isValidWikiPageId(pageId)) return Promise.resolve(null);
+    return this.cached(`wikiplace:${pageId}`, () => this.resolveWikiPlace(pageId));
+  }
+
+  private async resolveWikiPlace(pageId: string): Promise<PlaceImageBytes | null> {
+    try {
+      const url = await this.wikiPlaces!.thumbUrlFor(pageId);
+      if (!url) {
+        this.logger.warn(`[w-${pageId}] no Wikipedia thumbnail`);
+        return null;
+      }
+      for (const candidate of candidateUrls(url)) {
+        const img = await this.download(candidate, `w-${pageId}`);
+        if (img) return img;
+      }
+    } catch (err) {
+      this.logger.warn(`[w-${pageId}] Wikipedia photo error: ${(err as Error)?.message ?? err}`);
+    }
+    return null;
   }
 
   /** Shared cache + in-flight de-duplication for every image lookup. */

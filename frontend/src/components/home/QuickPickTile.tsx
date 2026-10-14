@@ -4,6 +4,7 @@ import { Home, Briefcase, MapPin } from 'lucide-react-native';
 import { colors, radii, shadows } from '../../theme/theme';
 import { PlaceImage } from './PlaceImage';
 import { PlaceItem } from '../../api/places';
+import { usePlacesStore } from '../../store/placesStore';
 
 interface QuickPickTileProps {
   type: 'place' | 'home' | 'work' | 'search_more';
@@ -16,6 +17,9 @@ interface QuickPickTileProps {
 
 export const QuickPickTile: React.FC<QuickPickTileProps> = memo(
   ({ type, place, label, subtitle, onPress, tileWidth }) => {
+    // A photo tile whose picture cannot load removes itself from the home grid.
+    const markImageBroken = usePlacesStore((state) => state.markImageBroken);
+
     if (type === 'home' || type === 'work') {
       const isHome = type === 'home';
       return (
@@ -72,6 +76,7 @@ export const QuickPickTile: React.FC<QuickPickTileProps> = memo(
           width="100%"
           height={64}
           borderRadius={12}
+          onFail={place ? () => markImageBroken(place.id) : undefined}
         />
         <Text style={styles.tileLabel} numberOfLines={2}>
           {place?.title || label}

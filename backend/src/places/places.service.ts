@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SavedPlaceEntity } from './entities/saved-place.entity';
@@ -13,6 +13,7 @@ import {
   MAX_SEARCH_RADIUS_M,
   NearbyPlaceHit,
 } from './google-places.service';
+import { WIKI_MAX_RADIUS_M, WikiPlaceHit, WikipediaPlacesService } from './wikipedia-places.service';
 
 function makeGeoKey(lat: number, lng: number): string {
   return `${lat.toFixed(4)},${lng.toFixed(4)}`;
@@ -43,6 +44,16 @@ const POPULAR_MAX_ITEMS = 20;
 const CURATED_MAX_KM = 25;
 // A curated spot this close to a live result is the same place — keep the live one.
 const DUPLICATE_KM = 0.2;
+// When Google returns fewer than this many places WITH a photo (no key, quota,
+// outage, or a small town), the list is topped up from Wikipedia so the home
+// screen is not left empty.
+const MIN_LIVE_RESULTS = 6;
+const CITY_HIGHLIGHT_MAX_ITEMS = 8;
+
+const byDistance = (a: PlaceItemDto, b: PlaceItemDto): number =>
+  (a.distanceKm ?? 0) - (b.distanceKm ?? 0);
+
+const normTitle = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 /** Straight-line distance rounded to 0.1 km (what the app displays). */
 function distanceKmBetween(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
@@ -59,6 +70,8 @@ export class PlacesService {
     @InjectRepository(RideEntity)
     private readonly rides: Repository<RideEntity>,
     private readonly google: GooglePlacesService,
+    // Optional so unit tests (and deployments) without it still work.
+    @Optional() private readonly wiki?: WikipediaPlacesService,
   ) {}
 
   /**
@@ -105,6 +118,53 @@ export class PlacesService {
     };
   }
 
+  /** A Wikipedia hit as an app card. Its photo is served by /places/photo/w/:pageId. */
+  private wikiItem(h: WikiPlaceHit, ref: { lat: number; lng: number }): PlaceItemDto {
+    return {
+      id: `w-${h.pageId}`,
+      title: h.title,
+      subtitle: h.description,
+      lat: h.lat,
+      lng: h.lng,
+      imageUrl: this.photoUrl(`/places/photo/w/${encodeURIComponent(h.pageId)}`),
+      distanceKm: distanceKmBetween(ref, h),
+      rating: null,
+      ratingCount: null,
+    };
+  }
+
+  /** Nearby Wikipedia places (every one has a photo), nearest first. Never throws. */
+  private async wikiNearby(
+    ref: { lat: number; lng: number },
+    radiusM: number,
+    limit: number,
+    attractionsOnly = false,
+  ): Promise<PlaceItemDto[]> {
+    if (!this.wiki) return [];
+    try {
+      const hits = await this.wiki.searchNearby(ref.lat, ref.lng, Math.min(radiusM, WIKI_MAX_RADIUS_M));
+      return hits
+        .filter((h) => !attractionsOnly || h.attraction)
+        .map((h) => this.wikiItem(h, ref))
+        .sort(byDistance)
+        .slice(0, limit);
+    } catch (err) {
+      this.logger.warn(`Wikipedia places failed: ${(err as Error)?.message ?? err}`);
+      return [];
+    }
+  }
+
+  /** `extra` items that are not the same place as anything already in `primary`. */
+  private mergeUnique(primary: PlaceItemDto[], extra: PlaceItemDto[]): PlaceItemDto[] {
+    const titles = new Set(primary.map((p) => normTitle(p.title)));
+    const added = extra.filter(
+      (e) =>
+        !titles.has(normTitle(e.title)) &&
+        !primary.some((p) => haversineKm({ lat: e.lat, lng: e.lng }, { lat: p.lat, lng: p.lng }) < DUPLICATE_KM),
+    );
+    return [...primary, ...added];
+  }
+
   /**
    * "Near You": the NEAREST places within a few kilometres of the rider's
    * CURRENT location (default 5 km, at most 10 km), nearest first, each with
@@ -120,12 +180,19 @@ export class PlacesService {
       NEAR_MAX_RADIUS_M,
     );
     const hits = await this.google.searchNearbyByDistance(lat, lng, radius);
-    this.logger.log(`Near You (${lat.toFixed(3)},${lng.toFixed(3)}, ${radius} m): ${hits.length} Google places`);
-    if (hits.length === 0) return this.curatedWithin(ref, radius / 1000, NEARBY_MAX_ITEMS);
-    return hits
-      .map((h) => this.liveItem(h, ref))
-      .sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0))
-      .slice(0, NEARBY_MAX_ITEMS);
+    // Only places Google actually has a photo for: a card without a picture is
+    // never shown on the home screen.
+    const withPhoto = hits.filter((h) => !!h.photoName);
+    this.logger.log(
+      `Near You (${lat.toFixed(3)},${lng.toFixed(3)}, ${radius} m): ${hits.length} Google places, ${withPhoto.length} with a photo`,
+    );
+    let items = withPhoto.map((h) => this.liveItem(h, ref)).sort(byDistance);
+    if (items.length < MIN_LIVE_RESULTS) {
+      const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, NEARBY_MAX_ITEMS);
+      items = this.mergeUnique(items, wiki).sort(byDistance);
+    }
+    if (items.length === 0) return this.curatedWithin(ref, radius / 1000, NEARBY_MAX_ITEMS);
+    return items.slice(0, NEARBY_MAX_ITEMS);
   }
 
   /** Curated places within `maxKm` of `ref`, nearest first, de-duplicated. */
@@ -317,6 +384,7 @@ export class PlacesService {
     const live = hits
       .filter(
         (h) =>
+          !!h.photoName && // no photo from Google -> no card
           h.rating !== null &&
           h.rating >= POPULAR_MIN_RATING &&
           (h.ratingCount ?? 0) >= POPULAR_MIN_RATING_COUNT,
@@ -333,19 +401,32 @@ export class PlacesService {
       (c) => !live.some((l) => haversineKm({ lat: c.lat, lng: c.lng }, { lat: l.lat, lng: l.lng }) < DUPLICATE_KM),
     );
 
-    const popular = [...live, ...curatedPopular]
-      .sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0))
-      .slice(0, POPULAR_MAX_ITEMS);
+    let popular = [...live, ...curatedPopular].sort(byDistance).slice(0, POPULAR_MAX_ITEMS);
+    if (popular.length < MIN_LIVE_RESULTS) {
+      // Popular = destination-worthy sights only (temples, lakes, forts, parks…).
+      const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, POPULAR_MAX_ITEMS, true);
+      popular = this.mergeUnique(popular, wiki).sort(byDistance).slice(0, POPULAR_MAX_ITEMS);
+    }
+
+    let cityHighlights = this.curatedWithin(
+      ref,
+      CURATED_MAX_KM,
+      PLACES_CONFIG.cityHighlights.length,
+      PLACES_CONFIG.cityHighlights,
+    );
+    if (cityHighlights.length === 0) {
+      // Outside the curated city: use nearby sights that are not already
+      // shown under Popular.
+      const shown = new Set(popular.map((p) => p.id));
+      cityHighlights = (await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, CITY_HIGHLIGHT_MAX_ITEMS * 2, true))
+        .filter((p) => !shown.has(p.id))
+        .slice(0, CITY_HIGHLIGHT_MAX_ITEMS);
+    }
 
     return {
       quickPicks: this.curatedWithin(ref, CURATED_MAX_KM, PLACES_CONFIG.quickPicks.length, PLACES_CONFIG.quickPicks),
       popular,
-      cityHighlights: this.curatedWithin(
-        ref,
-        CURATED_MAX_KM,
-        PLACES_CONFIG.cityHighlights.length,
-        PLACES_CONFIG.cityHighlights,
-      ),
+      cityHighlights,
     };
   }
 }

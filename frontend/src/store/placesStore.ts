@@ -39,6 +39,13 @@ interface PlacesState {
   lastFetchedAt: number | null;
   /** Rider location the nearby/popular lists were last fetched for (drives re-fetch on movement). */
   suggestionsCoords: { lat: number; lng: number } | null;
+  /**
+   * Place ids whose photo could not be loaded (after the retry). A place card
+   * only exists while it has a working photo, so these are hidden from the
+   * home lists. Cleared on every forced refresh and on logout.
+   */
+  brokenImages: Record<string, true>;
+  markImageBroken: (id: string) => void;
 
   fetchAll: (coords?: { lat: number; lng: number }, force?: boolean) => Promise<void>;
   toggleSaved: (place: PlaceItem) => Promise<void>;
@@ -72,6 +79,10 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
   error: null,
   lastFetchedAt: null,
   suggestionsCoords: null,
+  brokenImages: {},
+
+  markImageBroken: (id) =>
+    set((state) => (state.brokenImages[id] ? state : { brokenImages: { ...state.brokenImages, [id]: true } })),
 
   fetchAll: async (coords, force = false) => {
     const { lastFetchedAt, loading } = get();
@@ -121,6 +132,8 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
     if (get().generation !== generation) return;
 
     const next: Partial<PlacesState> = { loading: false };
+    // A forced refresh (moved / manual retry) gives every photo a fresh chance.
+    if (force) next.brokenImages = {};
     // A total failure must not start the 60 s cache window.
     if (!allFailed) next.lastFetchedAt = Date.now();
 
@@ -266,9 +279,22 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
       error: null,
       lastFetchedAt: null,
       suggestionsCoords: null,
+      brokenImages: {},
       generation: state.generation + 1,
     })),
 }));
+
+// ── Photo-only place lists ────────────────────────────────────────────────────
+
+/**
+ * The place cards on the home screen (Near You / Popular / Explore / quick
+ * picks) are photo cards: a place that has no photo from the API, or whose
+ * photo fails to load, is not rendered at all.
+ */
+export const useVisiblePlaces = (places: PlaceItem[]): PlaceItem[] => {
+  const broken = usePlacesStore((state) => state.brokenImages);
+  return useMemo(() => places.filter((p) => !!p.imageUrl && !broken[p.id]), [places, broken]);
+};
 
 // ── Merged recents (local searches + server ride history) ─────────────────────
 
