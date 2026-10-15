@@ -7,8 +7,10 @@ import { PromosService } from './promos.service';
 import { ValidatePromoDto } from './dto/validate-promo.dto';
 
 // Authentication is global (SEC-1 default-deny); only the role check stays.
+// Unified accounts: driver/admin-role users also book rides in rider mode, so
+// they must be able to see and validate promos too.
 @UseGuards(RolesGuard)
-@Roles('rider')
+@Roles('rider', 'driver', 'admin')
 @Controller('promos')
 export class PromosController {
   constructor(private readonly service: PromosService) {}

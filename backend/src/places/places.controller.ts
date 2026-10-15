@@ -8,8 +8,11 @@ import { UpsertSavedPlaceDto } from './dto/upsert-saved-place.dto';
 import { PlaceItemDto, SavedPlaceDto } from './dto/place-item.dto';
 
 // Authentication is global (SEC-1 default-deny); only the role check stays.
+// Accounts are unified: a user whose DB role is 'driver' (or 'admin') still
+// uses the rider home screen when the app is in rider mode, so every role may
+// call these routes. All queries are scoped to the caller's own userId.
 @UseGuards(RolesGuard)
-@Roles('rider')
+@Roles('rider', 'driver', 'admin')
 @Controller('places')
 export class PlacesController {
   constructor(private readonly service: PlacesService) {}

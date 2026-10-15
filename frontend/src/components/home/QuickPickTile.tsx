@@ -1,7 +1,7 @@
 import React, { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Home, Briefcase, MapPin } from 'lucide-react-native';
-import { colors, radii, shadows } from '../../theme/theme';
+import { colors, radii } from '../../theme/theme';
 import { PlaceImage } from './PlaceImage';
 import { PlaceItem } from '../../api/places';
 import { usePlacesStore } from '../../store/placesStore';
@@ -74,8 +74,8 @@ export const QuickPickTile: React.FC<QuickPickTileProps> = memo(
         <PlaceImage
           uri={place?.imageUrl}
           width="100%"
-          height={64}
-          borderRadius={12}
+          height={66}
+          borderRadius={10}
           onFail={place ? () => markImageBroken(place.id) : undefined}
         />
         <Text style={styles.tileLabel} numberOfLines={2}>
@@ -93,19 +93,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: '#E5E9F0',
     overflow: 'hidden',
     alignItems: 'center',
+    padding: 4,
     paddingBottom: 8,
-    ...shadows.card,
   },
   iconBox: {
     width: '100%',
-    height: 64,
+    height: 66,
     alignItems: 'center',
     justifyContent: 'center',
-    borderTopLeftRadius: 11,
-    borderTopRightRadius: 11,
+    borderRadius: 10,
   },
   searchBox: {
     backgroundColor: '#EEF2FF',

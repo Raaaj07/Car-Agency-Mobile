@@ -1,15 +1,15 @@
 /**
  * PlaceSearchRow — the one place-result row used across the home sheet
- * (normal + inline search) and the Select Destination screen.
+ * (recents + live typing suggestions) and the Select Destination screen.
  *
- * Rapido-style: tinted circular icon, bold title, muted subtitle, hairline
- * divider, optional favourite heart. Flat (no per-row card shadow) so lists
- * read as one clean surface.
+ * Rapido-style: plain grey icon (clock for recents, pin for search results
+ * with the distance printed underneath), bold title, muted one-line subtitle,
+ * dashed divider and an outline favourite heart. Flat — no card, no tint.
  */
 import React, { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Briefcase, Clock, Heart, Home, MapPin } from 'lucide-react-native';
-import { colors, typography } from '../../theme/theme';
+import { Briefcase, Heart, History, Home, MapPin } from 'lucide-react-native';
+import { colors } from '../../theme/theme';
 
 export type PlaceRowVariant = 'recent' | 'search' | 'home' | 'work';
 
@@ -22,19 +22,23 @@ interface Props {
   onToggleHeart?: () => void;
   heartActive?: boolean;
   isLast?: boolean;
+  /** e.g. "2.3 km" — shown under the pin icon on search results. */
+  distanceText?: string;
 }
 
-const TINTS: Record<PlaceRowVariant, { bg: string; fg: string }> = {
-  recent: { bg: '#EEF2FF', fg: colors.primary },
-  search: { bg: colors.dangerLight, fg: colors.danger },
-  home: { bg: '#EEF2FF', fg: colors.primary },
-  work: { bg: colors.accentLight, fg: colors.accent },
-};
+const ICON_COLOR = '#6B7280';
 
 export const PlaceSearchRow: React.FC<Props> = memo(
-  ({ title, subtitle, variant = 'recent', onPress, onToggleHeart, heartActive = false, isLast = false }) => {
-    const tint = TINTS[variant];
-
+  ({
+    title,
+    subtitle,
+    variant = 'recent',
+    onPress,
+    onToggleHeart,
+    heartActive = false,
+    isLast = false,
+    distanceText,
+  }) => {
     return (
       <TouchableOpacity
         style={[styles.row, !isLast && styles.divider]}
@@ -43,15 +47,20 @@ export const PlaceSearchRow: React.FC<Props> = memo(
         accessibilityRole="button"
         accessibilityLabel={`Go to ${title}`}
       >
-        <View style={[styles.iconWrap, { backgroundColor: tint.bg }]}>
+        <View style={styles.iconCol}>
           {variant === 'home' ? (
-            <Home size={17} color={tint.fg} />
+            <Home size={20} color={ICON_COLOR} />
           ) : variant === 'work' ? (
-            <Briefcase size={17} color={tint.fg} />
+            <Briefcase size={20} color={ICON_COLOR} />
           ) : variant === 'search' ? (
-            <MapPin size={17} color={tint.fg} />
+            <MapPin size={20} color={ICON_COLOR} />
           ) : (
-            <Clock size={17} color={tint.fg} />
+            <History size={20} color={ICON_COLOR} />
+          )}
+          {!!distanceText && (
+            <Text style={styles.distance} numberOfLines={1}>
+              {distanceText}
+            </Text>
           )}
         </View>
 
@@ -79,8 +88,8 @@ export const PlaceSearchRow: React.FC<Props> = memo(
             accessibilityLabel={heartActive ? `Remove ${title} from favourites` : `Save ${title} to favourites`}
           >
             <Heart
-              size={19}
-              color={heartActive ? colors.accent : colors.textMuted}
+              size={22}
+              color={heartActive ? colors.accent : ICON_COLOR}
               fill={heartActive ? colors.accent : 'transparent'}
             />
           </TouchableOpacity>
@@ -96,33 +105,37 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 11,
-    gap: 12,
+    paddingVertical: 13,
+    gap: 14,
   },
   divider: {
     borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
+    borderBottomColor: '#D9DEE5',
+    borderStyle: 'dashed',
   },
-  iconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+  iconCol: {
+    width: 44,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  distance: {
+    marginTop: 3,
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#6B7280',
   },
   textWrap: {
     flex: 1,
   },
   title: {
-    ...typography.bodyBold,
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: '700',
     color: colors.textPrimary,
   },
   subtitle: {
-    ...typography.meta,
-    fontSize: 12,
-    color: colors.textSecondary,
-    marginTop: 1,
+    fontSize: 12.5,
+    color: '#6B7280',
+    marginTop: 2,
   },
   heartBtn: {
     padding: 4,
