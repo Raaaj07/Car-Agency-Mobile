@@ -6,11 +6,9 @@ import { UpsertSavedPlaceDto } from './dto/upsert-saved-place.dto';
 import { PlaceItemDto, SavedPlaceDto } from './dto/place-item.dto';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { haversineKm } from '../common/geo-utils';
-import { PLACES_CONFIG, PlaceConfigItem } from './places.config';
 import {
   DEFAULT_NEAR_RADIUS_M,
   GooglePlacesService,
-  MAX_SEARCH_RADIUS_M,
   NearbyPlaceHit,
 } from './google-places.service';
 import { WIKI_MAX_RADIUS_M, WikiPlaceHit, WikipediaPlacesService } from './wikipedia-places.service';
@@ -19,36 +17,25 @@ function makeGeoKey(lat: number, lng: number): string {
   return `${lat.toFixed(4)},${lng.toFixed(4)}`;
 }
 
-// Every curated spot (for recent-dropoff photo matching).
-const CURATED_PLACES: PlaceConfigItem[] = [
-  ...PLACES_CONFIG.quickPicks,
-  ...PLACES_CONFIG.popular,
-  ...PLACES_CONFIG.cityHighlights,
-];
-
-// ── "Near You" ──────────────────────────────────────────────────────────────
-// The nearest places within a few kilometres of the rider.
+// ── "Nearest places" ────────────────────────────────────────────────────────
+// Live places within a few kilometres of the rider, nearest first. Nothing in
+// this file is a fixed list of places: every item comes from Google Places,
+// Wikipedia, or the rider's own ride history.
 const NEAR_MIN_RADIUS_M = 1_000;
 const NEAR_MAX_RADIUS_M = 10_000;
 const NEARBY_MAX_ITEMS = 10;
-
-// ── "Popular" ───────────────────────────────────────────────────────────────
-// Live, well-rated Google places within 50 km, nearest first.
-const POPULAR_RADIUS_M = MAX_SEARCH_RADIUS_M;
-const POPULAR_MIN_RATING = 4.0;
-const POPULAR_MIN_RATING_COUNT = 25;
-const POPULAR_MAX_ITEMS = 20;
-// Curated (Salem) spots are shown only when the rider is actually near them
-// (25 km), so someone in Erode (~50-100 km away) never sees Salem landmarks.
-// Live Google results use the full 50 km radius; this limit is for curated only.
-const CURATED_MAX_KM = 25;
-// A curated spot this close to a live result is the same place — keep the live one.
+// A place this close to another result is the same place — keep the first.
 const DUPLICATE_KM = 0.2;
 // When Google returns fewer than this many places WITH a photo (no key, quota,
 // outage, or a small town), the list is topped up from Wikipedia so the home
 // screen is not left empty.
 const MIN_LIVE_RESULTS = 6;
-const CITY_HIGHLIGHT_MAX_ITEMS = 8;
+
+// ── "Frequently visited" ────────────────────────────────────────────────────
+// A drop-off only counts as "frequent" once the rider has been there this
+// many times; otherwise it is just a recent trip (shown under recents).
+const FREQUENT_MIN_VISITS = 2;
+const FREQUENT_MAX_ITEMS = 10;
 
 const byDistance = (a: PlaceItemDto, b: PlaceItemDto): number =>
   (a.distanceKm ?? 0) - (b.distanceKm ?? 0);
@@ -75,35 +62,16 @@ export class PlacesService {
   ) {}
 
   /**
-   * Photo URL for a curated place. ALWAYS the backend proxy path — the proxy
-   * (PlaceImageService) tries Google, then the curated Wikimedia URL, then a
-   * Wikimedia search, and downloads the bytes server-side. The phone never
-   * talks to Google/Wikimedia directly, so User-Agent blocks, bad hotlinks and
-   * key restrictions can no longer leave the card blank.
-   */
-  private buildImageUrl(item: PlaceConfigItem): string {
-    return this.photoUrl(`/places/photo/${encodeURIComponent(item.id)}`);
-  }
-
-  /**
-   * Photo URL for a live Google place: the same backend proxy (Google photo
-   * first, Wikimedia backup). Never a direct Google/Wikimedia link.
+   * Photo URL for a live Google place: the backend proxy (Google photo first,
+   * Wikimedia backup). Returned as a path RELATIVE to the API base — the app
+   * prefixes it with its own EXPO_PUBLIC_API_URL (which already contains
+   * /api/v1).
    */
   private buildLiveImageUrl(googlePlaceId: string): string {
-    return this.photoUrl(`/places/photo/g/${encodeURIComponent(googlePlaceId)}`);
+    return `/places/photo/g/${encodeURIComponent(googlePlaceId)}`;
   }
 
-  /**
-   * Returns a path RELATIVE to the API base (e.g. /places/photo/pop-kottai).
-   * The app prefixes it with its own EXPO_PUBLIC_API_URL (which already
-   * contains /api/v1). Do NOT prefix PUBLIC_API_URL here: it usually lacks the
-   * global /api/v1 prefix, which made every proxied photo URL a 404.
-   */
-  private photoUrl(path: string): string {
-    return path;
-  }
-
-  /** A live Google hit as an app card. Same id for Near You and Popular so the app can de-duplicate. */
+  /** A live Google hit as an app card. */
   private liveItem(h: NearbyPlaceHit, ref: { lat: number; lng: number }): PlaceItemDto {
     return {
       id: `g-${h.googlePlaceId}`,
@@ -126,7 +94,7 @@ export class PlacesService {
       subtitle: h.description,
       lat: h.lat,
       lng: h.lng,
-      imageUrl: this.photoUrl(`/places/photo/w/${encodeURIComponent(h.pageId)}`),
+      imageUrl: `/places/photo/w/${encodeURIComponent(h.pageId)}`,
       distanceKm: distanceKmBetween(ref, h),
       rating: null,
       ratingCount: null,
@@ -138,13 +106,11 @@ export class PlacesService {
     ref: { lat: number; lng: number },
     radiusM: number,
     limit: number,
-    attractionsOnly = false,
   ): Promise<PlaceItemDto[]> {
     if (!this.wiki) return [];
     try {
       const hits = await this.wiki.searchNearby(ref.lat, ref.lng, Math.min(radiusM, WIKI_MAX_RADIUS_M));
       return hits
-        .filter((h) => !attractionsOnly || h.attraction)
         .map((h) => this.wikiItem(h, ref))
         .sort(byDistance)
         .slice(0, limit);
@@ -166,11 +132,10 @@ export class PlacesService {
   }
 
   /**
-   * "Near You": the NEAREST places within a few kilometres of the rider's
+   * "Nearest places": the closest places with a photo around the rider's
    * CURRENT location (default 5 km, at most 10 km), nearest first, each with
-   * `distanceKm`. When Google has nothing (missing key / outage) it falls
-   * back to curated spots within the same radius — so curated Salem places
-   * only ever appear for a rider who is actually near them.
+   * `distanceKm`. Google first, topped up from Wikipedia. There is NO fixed
+   * fallback list: when neither source has anything the answer is [].
    */
   async getNearby(lat: number, lng: number, radiusM?: number): Promise<PlaceItemDto[]> {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
@@ -184,44 +149,14 @@ export class PlacesService {
     // never shown on the home screen.
     const withPhoto = hits.filter((h) => !!h.photoName);
     this.logger.log(
-      `Near You (${lat.toFixed(3)},${lng.toFixed(3)}, ${radius} m): ${hits.length} Google places, ${withPhoto.length} with a photo`,
+      `Nearest (${lat.toFixed(3)},${lng.toFixed(3)}, ${radius} m): ${hits.length} Google places, ${withPhoto.length} with a photo`,
     );
     let items = withPhoto.map((h) => this.liveItem(h, ref)).sort(byDistance);
     if (items.length < MIN_LIVE_RESULTS) {
       const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, NEARBY_MAX_ITEMS);
       items = this.mergeUnique(items, wiki).sort(byDistance);
     }
-    if (items.length === 0) return this.curatedWithin(ref, radius / 1000, NEARBY_MAX_ITEMS);
     return items.slice(0, NEARBY_MAX_ITEMS);
-  }
-
-  /** Curated places within `maxKm` of `ref`, nearest first, de-duplicated. */
-  private curatedWithin(
-    ref: { lat: number; lng: number },
-    maxKm: number,
-    limit: number,
-    source: PlaceConfigItem[] = CURATED_PLACES,
-  ): PlaceItemDto[] {
-    const seen = new Set<string>();
-    return source
-      .filter((p) => {
-        if (seen.has(p.id)) return false;
-        seen.add(p.id);
-        return true;
-      })
-      .map((item) => ({ item, km: haversineKm(ref, item) }))
-      .filter((x) => x.km <= maxKm)
-      .sort((a, b) => a.km - b.km)
-      .slice(0, limit)
-      .map(({ item, km }) => ({
-        id: item.id,
-        title: item.title,
-        subtitle: item.subtitle,
-        lat: item.lat,
-        lng: item.lng,
-        imageUrl: this.buildImageUrl(item),
-        distanceKm: Math.round(km * 10) / 10,
-      }));
   }
 
   async getSaved(userId: string): Promise<SavedPlaceDto[]> {
@@ -276,6 +211,16 @@ export class PlacesService {
     await this.savedPlaces.delete({ id });
   }
 
+  /** Saved-place lookup for a set of geo keys → map by geoKey. */
+  private async savedByGeoKey(userId: string, geoKeys: string[]): Promise<Map<string, SavedPlaceEntity>> {
+    if (geoKeys.length === 0) return new Map();
+    const saved = await this.savedPlaces
+      .createQueryBuilder('sp')
+      .where('sp.userId = :userId AND sp.geoKey IN (:...keys)', { userId, keys: geoKeys })
+      .getMany();
+    return new Map(saved.map((s) => [s.geoKey, s]));
+  }
+
   async getRecent(userId: string, limit = 5): Promise<PlaceItemDto[]> {
     // SEC-5: NaN slips through Math.max/Math.min (every NaN comparison is
     // false) into `LIMIT $2` — sanitize at the boundary, then clamp 1..10.
@@ -307,126 +252,74 @@ export class PlacesService {
     rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     const topRows = rows.slice(0, clampedLimit);
 
-    // Lookup saved status.
-    const geoKeys = topRows.map((r) => r.geo_key);
-    const saved = geoKeys.length > 0
-      ? await this.savedPlaces.createQueryBuilder('sp')
-          .where('sp.userId = :userId AND sp.geoKey IN (:...keys)', { userId, keys: geoKeys })
-          .getMany()
-      : [];
-    const savedMap = new Map(saved.map((s) => [s.geoKey, s]));
+    const savedMap = await this.savedByGeoKey(userId, topRows.map((r) => r.geo_key));
 
-    return topRows.length === 0 ? [] : await Promise.all(
-      topRows.map(async (r) => {
-        const sp = savedMap.get(r.geo_key);
-        const coords = { lat: Number(r.lat), lng: Number(r.lng) };
-        // A dropoff at a curated spot reuses that spot's photo.
-        const near = CURATED_PLACES.find(
-          (c) => haversineKm(coords, { lat: c.lat, lng: c.lng }) < 0.1,
-        );
-        return {
-          id: `recent-${r.geo_key}`,
-          title: r.title || r.addr,
-          subtitle: r.addr,
-          lat: coords.lat,
-          lng: coords.lng,
-          imageUrl: near ? this.buildImageUrl(near) : null,
-          saved: !!sp,
-          savedId: sp?.id ?? null,
-        };
-      }),
-    );
+    return topRows.map((r) => {
+      const sp = savedMap.get(r.geo_key);
+      return {
+        id: `recent-${r.geo_key}`,
+        title: r.title || r.addr,
+        subtitle: r.addr,
+        lat: Number(r.lat),
+        lng: Number(r.lng),
+        imageUrl: null,
+        saved: !!sp,
+        savedId: sp?.id ?? null,
+      };
+    });
   }
 
   /**
-   * Home-screen suggestion lists.
-   *
-   * With a location (the normal case):
-   *  - `popular`: LIVE Google places ranked by popularity, kept only when
-   *    well rated (>= 4.0 stars from >= 25 ratings), within 50 km, merged
-   *    with any curated popular spot within 25 km, NEAREST FIRST.
-   *  - `quickPicks` / `cityHighlights`: curated spots, but ONLY those within
-   *    25 km of the rider (a rider in Erode gets no Salem landmarks).
-   *
-   * Without a location there is nothing to be "near", so the curated lists
-   * are returned unfiltered (legacy behaviour for callers that send no
-   * coordinates).
+   * "Frequently visited": the drop-offs this rider has gone to MOST OFTEN
+   * (at least FREQUENT_MIN_VISITS trips), most-visited first, ties broken by
+   * the most recent trip. Built purely from the rider's own ride history —
+   * a new rider simply gets []. Cancelled rides do not count as visits.
    */
-  async getPopular(lat?: number, lng?: number): Promise<{
-    quickPicks: PlaceItemDto[];
-    popular: PlaceItemDto[];
-    cityHighlights: PlaceItemDto[];
-  }> {
-    const ref =
-      lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+  async getFrequent(userId: string, limit = 5): Promise<PlaceItemDto[]> {
+    const safeLimit = Number.isFinite(limit) ? limit : 5;
+    const clampedLimit = Math.min(Math.max(1, safeLimit), FREQUENT_MAX_ITEMS);
+    const rows = (await this.rides.query(
+      `SELECT geo_key,
+              COUNT(*)::int AS visits,
+              MAX(created_at) AS last_at,
+              (ARRAY_AGG(addr ORDER BY created_at DESC))[1] AS addr,
+              (ARRAY_AGG(lat ORDER BY created_at DESC))[1] AS lat,
+              (ARRAY_AGG(lng ORDER BY created_at DESC))[1] AS lng
+       FROM (
+         SELECT
+           round(CAST((r.dropoff->>'lat') AS numeric), 4)::text || ',' || round(CAST((r.dropoff->>'lng') AS numeric), 4)::text AS geo_key,
+           r.dropoff->>'address' AS addr,
+           CAST(r.dropoff->>'lat' AS double precision) AS lat,
+           CAST(r.dropoff->>'lng' AS double precision) AS lng,
+           r."createdAt" AS created_at
+         FROM rides r
+         WHERE r."riderId" = $1
+           AND r.status <> 'cancelled'
+           AND r.dropoff IS NOT NULL
+       ) sub
+       GROUP BY geo_key
+       HAVING COUNT(*) >= $2
+       ORDER BY visits DESC, last_at DESC
+       LIMIT $3`,
+      [userId, FREQUENT_MIN_VISITS, clampedLimit],
+    )) as Array<{ geo_key: string; visits: number; addr: string; lat: number; lng: number }>;
 
-    if (!ref) {
-      const plain = (items: PlaceConfigItem[]): PlaceItemDto[] =>
-        items.map((item) => ({
-          id: item.id,
-          title: item.title,
-          subtitle: item.subtitle,
-          lat: item.lat,
-          lng: item.lng,
-          imageUrl: this.buildImageUrl(item),
-        }));
+    const savedMap = await this.savedByGeoKey(userId, rows.map((r) => r.geo_key));
+
+    return rows.map((r) => {
+      const sp = savedMap.get(r.geo_key);
+      const address = r.addr ?? '';
       return {
-        quickPicks: plain(PLACES_CONFIG.quickPicks),
-        popular: plain(PLACES_CONFIG.popular),
-        cityHighlights: plain(PLACES_CONFIG.cityHighlights),
+        id: `frequent-${r.geo_key}`,
+        title: address.split(',')[0]?.trim() || address,
+        subtitle: address,
+        lat: Number(r.lat),
+        lng: Number(r.lng),
+        imageUrl: null,
+        saved: !!sp,
+        savedId: sp?.id ?? null,
+        visitCount: Number(r.visits),
       };
-    }
-
-    const hits = await this.google.searchNearbyByPopularity(ref.lat, ref.lng, POPULAR_RADIUS_M);
-    this.logger.log(
-      `Popular (${ref.lat.toFixed(3)},${ref.lng.toFixed(3)}): ${hits.length} Google places`,
-    );
-    const live = hits
-      .filter(
-        (h) =>
-          !!h.photoName && // no photo from Google -> no card
-          h.rating !== null &&
-          h.rating >= POPULAR_MIN_RATING &&
-          (h.ratingCount ?? 0) >= POPULAR_MIN_RATING_COUNT,
-      )
-      .map((h) => this.liveItem(h, ref));
-
-    // Curated popular spots near the rider that Google did not already return.
-    const curatedPopular = this.curatedWithin(
-      ref,
-      CURATED_MAX_KM,
-      POPULAR_MAX_ITEMS,
-      PLACES_CONFIG.popular,
-    ).filter(
-      (c) => !live.some((l) => haversineKm({ lat: c.lat, lng: c.lng }, { lat: l.lat, lng: l.lng }) < DUPLICATE_KM),
-    );
-
-    let popular = [...live, ...curatedPopular].sort(byDistance).slice(0, POPULAR_MAX_ITEMS);
-    if (popular.length < MIN_LIVE_RESULTS) {
-      // Popular = destination-worthy sights only (temples, lakes, forts, parks…).
-      const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, POPULAR_MAX_ITEMS, true);
-      popular = this.mergeUnique(popular, wiki).sort(byDistance).slice(0, POPULAR_MAX_ITEMS);
-    }
-
-    let cityHighlights = this.curatedWithin(
-      ref,
-      CURATED_MAX_KM,
-      PLACES_CONFIG.cityHighlights.length,
-      PLACES_CONFIG.cityHighlights,
-    );
-    if (cityHighlights.length === 0) {
-      // Outside the curated city: use nearby sights that are not already
-      // shown under Popular.
-      const shown = new Set(popular.map((p) => p.id));
-      cityHighlights = (await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, CITY_HIGHLIGHT_MAX_ITEMS * 2, true))
-        .filter((p) => !shown.has(p.id))
-        .slice(0, CITY_HIGHLIGHT_MAX_ITEMS);
-    }
-
-    return {
-      quickPicks: this.curatedWithin(ref, CURATED_MAX_KM, PLACES_CONFIG.quickPicks.length, PLACES_CONFIG.quickPicks),
-      popular,
-      cityHighlights,
-    };
+    });
   }
 }

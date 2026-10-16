@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { setDefaultResultOrder } from 'node:dns';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
@@ -7,6 +8,12 @@ import { DataSource } from 'typeorm';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { SCHEMA_REPAIR_STATEMENTS } from './database/schema-repair';
+
+// Prefer IPv4 for every outbound connection (DB, Redis, Google, Wikipedia).
+// On many Windows/home networks the IPv6 route is dead, and Node then tries
+// each address in turn and fails with `AggregateError [ETIMEDOUT]` — which
+// surfaced as random 500s (and empty home lists) for whoever's request hit it.
+setDefaultResultOrder('ipv4first');
 
 // Columns/tables the booking + matching + payment paths hard-depend on. If any
 // is missing, POST /rides (INSERT) fails with a bare HTTP 500 — so check at

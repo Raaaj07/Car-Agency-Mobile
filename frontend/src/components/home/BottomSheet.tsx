@@ -20,6 +20,7 @@ import {
   PanResponder,
   StyleSheet,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { shadows } from '../../theme/theme';
@@ -58,6 +59,7 @@ export const BottomSheet: React.FC<Props> = memo(({
   onHardwareBack,
 }) => {
   const [currentSnap, setCurrentSnap] = useState<SnapPoint>(initialSnap);
+  const { height: windowHeight } = useWindowDimensions();
 
   // Stale closure refs
   const snapRef = useRef<SnapPoint>(initialSnap);
@@ -185,13 +187,25 @@ export const BottomSheet: React.FC<Props> = memo(({
     }),
   ).current;
 
-  const isExpanded = currentSnap === 'expanded';
+  // The sheet is exactly as tall as the screen below its expanded position, so
+  // when expanded its bottom edge IS the screen bottom. At lower snaps it is
+  // pushed down by `translateY`, which leaves `snapY[snap] - snapY.expanded`
+  // px of it below the screen edge. The content area reserves that much
+  // bottom padding so its scroll viewport ends exactly at the screen edge —
+  // otherwise the last rows/sections are drawn off-screen and unreachable.
+  const sheetHeight = Math.max(windowHeight - snapY.expanded, 0);
+  const hiddenBelowScreen = Math.max(snapY[currentSnap] - snapY.expanded, 0);
+  // Scrolling works at the middle snap too (only the collapsed peek is inert),
+  // so everything under the search box can be reached without first dragging
+  // the sheet to full height.
+  const canScroll = currentSnap !== 'collapsed';
 
   return (
     <Animated.View
       style={[
         styles.sheet,
         {
+          height: sheetHeight,
           transform: [{ translateY }],
         },
       ]}
@@ -206,10 +220,10 @@ export const BottomSheet: React.FC<Props> = memo(({
       </View>
 
       {/* Content Area */}
-      <View style={styles.contentArea}>
+      <View style={[styles.contentArea, { paddingBottom: hiddenBelowScreen }]}>
         {React.isValidElement(children)
           ? React.cloneElement(children as React.ReactElement<any>, {
-              scrollEnabled: isExpanded,
+              scrollEnabled: canScroll,
               onScroll: (e: any) => {
                 const y = e.nativeEvent?.contentOffset?.y ?? 0;
                 scrollYRef.current = y;
@@ -230,7 +244,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     top: 0,
-    bottom: 0,
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,

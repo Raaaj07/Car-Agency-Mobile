@@ -50,6 +50,16 @@ export class PlacesController {
     return this.service.getRecent(user.userId, Number.isFinite(parsed) ? parsed : 5);
   }
 
+  // The rider's most-visited drop-offs (their own ride history, no photos).
+  @Get('frequent')
+  getFrequent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('limit') limit?: string,
+  ): Promise<PlaceItemDto[]> {
+    const parsed = limit ? Number.parseInt(limit, 10) : NaN;
+    return this.service.getFrequent(user.userId, Number.isFinite(parsed) ? parsed : 5);
+  }
+
   // Route throttle: 30/min — nearby triggers a server-side Google Places
   // search (billable per miss); the global 300/min would let one client burn
   // the Places quota alone.
@@ -64,18 +74,5 @@ export class PlacesController {
     const plng = lng ? parseFloat(lng) : NaN;
     const r = radius ? parseInt(radius, 10) : NaN;
     return this.service.getNearby(plat, plng, Number.isFinite(r) ? r : undefined);
-  }
-
-  // Same reasoning as nearby: this searches Google Places server-side.
-  @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  @Get('popular')
-  async getPopular(
-    @Query('lat') lat?: string,
-    @Query('lng') lng?: string,
-  ): Promise<{ quickPicks: PlaceItemDto[]; popular: PlaceItemDto[]; cityHighlights: PlaceItemDto[] }> {
-    return this.service.getPopular(
-      lat ? parseFloat(lat) : undefined,
-      lng ? parseFloat(lng) : undefined,
-    );
   }
 }

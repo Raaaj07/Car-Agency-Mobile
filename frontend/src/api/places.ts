@@ -25,6 +25,8 @@ export interface PlaceItem {
   /** Google star rating (0-5); live Google places only. */
   rating?: number | null;
   ratingCount?: number | null;
+  /** Trips this rider has taken to the place (frequently-visited list only). */
+  visitCount?: number;
 }
 
 export interface SavedPlace {
@@ -34,12 +36,6 @@ export interface SavedPlace {
   address: string;
   lat: number;
   lng: number;
-}
-
-export interface PopularPlacesResponse {
-  quickPicks: PlaceItem[];
-  popular: PlaceItem[];
-  cityHighlights: PlaceItem[];
 }
 
 // ── API wrappers ─────────────────────────────────────────────────────────────
@@ -67,19 +63,9 @@ export const placesApi = {
   getRecent: async (limit = 5): Promise<PlaceItem[]> =>
     (await api.get<PlaceItem[]>('/places/recent', { params: { limit } })).data.map(absolutizeImageUrl),
 
-  /** GET /places/popular?lat=&lng= */
-  getPopular: async (coords?: { lat: number; lng: number }): Promise<PopularPlacesResponse> => {
-    const res = (
-      await api.get<PopularPlacesResponse>('/places/popular', {
-        params: coords ? { lat: coords.lat, lng: coords.lng } : {},
-      })
-    ).data;
-    return {
-      quickPicks: res.quickPicks.map(absolutizeImageUrl),
-      popular: res.popular.map(absolutizeImageUrl),
-      cityHighlights: res.cityHighlights.map(absolutizeImageUrl),
-    };
-  },
+  /** GET /places/frequent?limit=5 — this rider's most-visited drop-offs */
+  getFrequent: async (limit = 5): Promise<PlaceItem[]> =>
+    (await api.get<PlaceItem[]>('/places/frequent', { params: { limit } })).data,
 
   /** GET /places/nearby?lat=&lng=[&radius=] — live location-based suggestions */
   getNearby: async (coords: { lat: number; lng: number }): Promise<PlaceItem[]> =>

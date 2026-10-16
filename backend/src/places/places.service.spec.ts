@@ -1,6 +1,5 @@
 /// <reference types="jest" />
 import { PlacesService } from './places.service';
-import { PLACES_CONFIG } from './places.config';
 
 const SALEM = { lat: 11.6643, lng: 78.146 };
 const ERODE = { lat: 11.341, lng: 77.7172 };
@@ -23,17 +22,16 @@ const wikiHit = (pageId: string, title: string, lat: number, lng: number, attrac
   thumbUrl: `https://upload.wikimedia.org/wikipedia/commons/thumb/${pageId}.jpg`, attraction,
 });
 
-function makeService(near: unknown[] = [], popular: unknown[] = [], wikiHits?: unknown[]) {
+function makeService(near: unknown[] = [], wikiHits?: unknown[]) {
   const google = {
     searchNearbyByDistance: jest.fn().mockResolvedValue(near),
-    searchNearbyByPopularity: jest.fn().mockResolvedValue(popular),
   };
   const wiki = wikiHits ? { searchNearby: jest.fn().mockResolvedValue(wikiHits) } : undefined;
   const service = new PlacesService({} as never, {} as never, google as never, wiki as never);
   return { service, google, wiki };
 }
 
-describe('PlacesService — location-based suggestions', () => {
+describe('PlacesService — nearest places', () => {
   describe('getNearby', () => {
     it('returns nearest first, with distanceKm and proxy image URLs only', async () => {
       const { service } = makeService([
@@ -59,16 +57,9 @@ describe('PlacesService — location-based suggestions', () => {
       expect(google.searchNearbyByDistance).toHaveBeenLastCalledWith(SALEM.lat, SALEM.lng, 10000);
     });
 
-    it('falls back to curated spots within the radius when Google has nothing', async () => {
-      const spot = PLACES_CONFIG.popular[0];
+    it('has NO fixed fallback list: nothing from Google or Wikipedia means nothing', async () => {
       const { service } = makeService([]);
-      const items = await service.getNearby(spot.lat, spot.lng);
-      expect(items.some((i) => i.id === spot.id)).toBe(true);
-      expect(items.every((i) => (i.distanceKm as number) <= 5)).toBe(true);
-    });
-
-    it('shows no Salem spots to a rider in Erode when Google has nothing', async () => {
-      const { service } = makeService([]);
+      expect(await service.getNearby(SALEM.lat, SALEM.lng)).toEqual([]);
       expect(await service.getNearby(ERODE.lat, ERODE.lng)).toEqual([]);
     });
 
@@ -82,7 +73,7 @@ describe('PlacesService — location-based suggestions', () => {
     });
 
     it('tops up from Wikipedia (photo-proxy URLs) when Google has too few places with photos', async () => {
-      const { service, wiki } = makeService([], [], [
+      const { service, wiki } = makeService([], [
         wikiHit('111111', 'Erode Fort', 11.342, 77.718),
         wikiHit('222222', 'Kaveri College', 11.35, 77.73, false),
       ]);
@@ -96,7 +87,6 @@ describe('PlacesService — location-based suggestions', () => {
     it('does not repeat a Wikipedia place Google already returned', async () => {
       const { service } = makeService(
         [hit('same-gggg7777', 11.342, 77.718)],
-        [],
         [wikiHit('111111', 'Place same-gggg7777', 11.3421, 77.7181)],
       );
       const items = await service.getNearby(ERODE.lat, ERODE.lng);
@@ -110,110 +100,77 @@ describe('PlacesService — location-based suggestions', () => {
     });
   });
 
-  describe('getPopular', () => {
-    it('keeps only well-rated live places, nearest first, searched out to 50 km', async () => {
-      const { service, google } = makeService([], [
-        hit('far-aaaa1111', 11.6, 77.9, 4.6, 900),
-        hit('near-bbbb2222', 11.35, 77.72, 4.2, 300),
-        hit('lowstar-cccc3', 11.34, 77.71, 3.4, 900),
-        hit('fewrate-dddd4', 11.34, 77.72, 4.8, 3),
-        hit('norating-eeee5', 11.34, 77.72),
-      ]);
-      const res = await service.getPopular(ERODE.lat, ERODE.lng);
-      expect(google.searchNearbyByPopularity).toHaveBeenCalledWith(ERODE.lat, ERODE.lng, 50000);
-      expect(res.popular.map((p) => p.id)).toEqual(['g-near-bbbb2222', 'g-far-aaaa1111']);
-      expect(res.popular[0].rating).toBe(4.2);
-      expect(res.popular[0].imageUrl).toBe('/places/photo/g/near-bbbb2222');
-    });
-
-    it('drops live places without a photo', async () => {
-      const { service } = makeService([], [
-        hit('nophoto-aaaa1111', 11.35, 77.72, 4.6, 900, null),
-        hit('photo-bbbb2222', 11.351, 77.721, 4.5, 800),
-      ]);
-      const res = await service.getPopular(ERODE.lat, ERODE.lng);
-      expect(res.popular.map((p) => p.id)).toEqual(['g-photo-bbbb2222']);
-    });
-
-    it('fills Popular with nearby sights and Explore-your-city from Wikipedia outside the curated city', async () => {
-      const { service } = makeService([], [], [
-        wikiHit('111111', 'Erode Fort', 11.342, 77.718, true),
-        wikiHit('222222', 'Kaveri College', 11.35, 77.73, false),
-      ]);
-      const res = await service.getPopular(ERODE.lat, ERODE.lng);
-      // Popular = sights only; the college is not a sight.
-      expect(res.popular.map((p) => p.id)).toEqual(['w-111111']);
-      expect(res.popular[0].imageUrl).toBe('/places/photo/w/111111');
-      // The only sight is already under Popular, so nothing is repeated.
-      expect(res.cityHighlights).toEqual([]);
-    });
-
-    it('shows no curated Salem spots to a rider in Erode', async () => {
-      const { service } = makeService([], [hit('near-bbbb2222', 11.35, 77.72, 4.5, 100)]);
-      const res = await service.getPopular(ERODE.lat, ERODE.lng);
-      expect(res.quickPicks).toEqual([]);
-      expect(res.cityHighlights).toEqual([]);
-      expect(res.popular.some((p) => !p.id.startsWith('g-'))).toBe(false);
-    });
-
-    it('includes curated spots for a rider actually near them, nearest first', async () => {
-      const { service } = makeService([], []);
-      const res = await service.getPopular(SALEM.lat, SALEM.lng);
-      expect(res.popular.length).toBeGreaterThan(0);
-      const km = res.popular.map((p) => p.distanceKm as number);
-      expect(km).toEqual([...km].sort((a, b) => a - b));
-      expect(km.every((d) => d <= 50)).toBe(true);
-      expect(res.quickPicks.length).toBeGreaterThan(0);
-    });
-
-    it('drops a curated spot that duplicates a live result', async () => {
-      const spot = PLACES_CONFIG.popular[0];
-      const { service } = makeService([], [hit('same-ffff6666', spot.lat, spot.lng, 4.5, 500)]);
-      const res = await service.getPopular(SALEM.lat, SALEM.lng);
-      expect(res.popular.some((p) => p.id === spot.id)).toBe(false);
-      expect(res.popular.some((p) => p.id === 'g-same-ffff6666')).toBe(true);
-    });
-
-    it('returns curated lists unfiltered, without distances, when no location is supplied', async () => {
-      const { service, google } = makeService();
-      const res = await service.getPopular();
-      expect(res.popular.length).toBe(PLACES_CONFIG.popular.length);
-      for (const p of res.popular) expect(p.distanceKm).toBeUndefined();
-      expect(google.searchNearbyByPopularity).not.toHaveBeenCalled();
-    });
-  });
+  const makeHistory = (rows: unknown[] = []) => {
+    const rides = { query: jest.fn().mockResolvedValue(rows) };
+    const savedPlaces = {
+      createQueryBuilder: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      }),
+    };
+    const service = new PlacesService(savedPlaces as never, rides as never, {} as never);
+    return { service, rides };
+  };
 
   // SEC-5: input clamps — a non-numeric ?limit used to reach `LIMIT $2` as
   // NaN (every NaN comparison is false, so the 1..10 clamp passed it) and
   // surfaced as a 500.
   describe('getRecent', () => {
-    const makeRecent = () => {
-      const rides = { query: jest.fn().mockResolvedValue([]) };
-      const savedPlaces = {
-        createQueryBuilder: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnThis(),
-          getMany: jest.fn().mockResolvedValue([]),
-        }),
-      };
-      const service = new PlacesService(savedPlaces as never, rides as never, {} as never);
-      return { service, rides };
-    };
-
     it('a non-numeric limit never reaches SQL as NaN (was a LIMIT NaN 500)', async () => {
-      const { service, rides } = makeRecent();
+      const { service, rides } = makeHistory();
 
       expect(await service.getRecent('u1', Number.NaN)).toEqual([]);
       expect(rides.query).toHaveBeenCalledWith(expect.any(String), ['u1', 15]); // default 5 x 3
     });
 
     it('clamps the limit into the 1..10 window', async () => {
-      const { service, rides } = makeRecent();
+      const { service, rides } = makeHistory();
 
       await service.getRecent('u1', 9999);
       expect(rides.query).toHaveBeenLastCalledWith(expect.any(String), ['u1', 30]); // 10 x 3
 
       await service.getRecent('u1', -3);
       expect(rides.query).toHaveBeenLastCalledWith(expect.any(String), ['u1', 3]); // 1 x 3
+    });
+
+    it('never attaches a hardcoded photo to a recent drop-off', async () => {
+      const { service } = makeHistory([
+        { geo_key: '11.6625,78.1473', title: 'Somewhere', addr: 'Somewhere, Salem', lat: 11.6625, lng: 78.1473, created_at: new Date() },
+      ]);
+      const [item] = await service.getRecent('u1');
+      expect(item.imageUrl).toBeNull();
+    });
+  });
+
+  describe('getFrequent', () => {
+    it('maps the most-visited drop-offs with their visit counts, in the order the query returns', async () => {
+      const { service, rides } = makeHistory([
+        { geo_key: '11.3410,77.7172', visits: 7, addr: 'Erode Bus Stand, Erode, Tamil Nadu', lat: 11.341, lng: 77.7172 },
+        { geo_key: '11.6643,78.1460', visits: 3, addr: 'Home, Salem', lat: 11.6643, lng: 78.146 },
+      ]);
+      const items = await service.getFrequent('u1');
+      expect(items.map((i) => i.id)).toEqual(['frequent-11.3410,77.7172', 'frequent-11.6643,78.1460']);
+      expect(items.map((i) => i.visitCount)).toEqual([7, 3]);
+      expect(items[0].title).toBe('Erode Bus Stand');
+      expect(items[0].subtitle).toBe('Erode Bus Stand, Erode, Tamil Nadu');
+      expect(items.every((i) => i.imageUrl === null)).toBe(true);
+      // rider id, minimum visits (2), limit (5)
+      expect(rides.query).toHaveBeenCalledWith(expect.any(String), ['u1', 2, 5]);
+    });
+
+    it('a new rider with no repeat trips gets an empty list', async () => {
+      const { service } = makeHistory([]);
+      expect(await service.getFrequent('u1')).toEqual([]);
+    });
+
+    it('clamps the limit into 1..10 and ignores NaN', async () => {
+      const { service, rides } = makeHistory();
+      await service.getFrequent('u1', Number.NaN);
+      expect(rides.query).toHaveBeenLastCalledWith(expect.any(String), ['u1', 2, 5]);
+      await service.getFrequent('u1', 500);
+      expect(rides.query).toHaveBeenLastCalledWith(expect.any(String), ['u1', 2, 10]);
+      await service.getFrequent('u1', -1);
+      expect(rides.query).toHaveBeenLastCalledWith(expect.any(String), ['u1', 2, 1]);
     });
   });
 });

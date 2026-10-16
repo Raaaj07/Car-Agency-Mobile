@@ -1,6 +1,9 @@
 /**
  * placesStore – Zustand store for home-screen place data.
  *
+ * Home data is live only: `nearby` (closest places around the rider's GPS)
+ * and `frequent` (this rider's most-visited drop-offs). Nothing is hardcoded.
+ *
  * fetchAll() runs 5 requests with Promise.allSettled so one failure does not
  * blank all sections. Anything that failed is retried ONCE, silently, after a
  * short delay; the "Tap to retry" error only appears if every request still
@@ -16,7 +19,7 @@
  */
 import { useMemo } from 'react';
 import { create } from 'zustand';
-import { placesApi, PlaceItem, PopularPlacesResponse, SavedPlace } from '../api/places';
+import { placesApi, PlaceItem, SavedPlace } from '../api/places';
 import { promosApi, Promo } from '../api/promos';
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -30,9 +33,8 @@ interface PlacesState {
   generation: number;
   saved: SavedPlace[];
   nearby: PlaceItem[];
-  quickPicks: PlaceItem[];
-  popular: PlaceItem[];
-  cityHighlights: PlaceItem[];
+  /** Rider's most-visited drop-offs (ride history, most trips first). */
+  frequent: PlaceItem[];
   promos: Promo[];
   loading: boolean;
   error: string | null;
@@ -71,9 +73,7 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
   generation: 0,
   saved: [],
   nearby: [],
-  quickPicks: [],
-  popular: [],
-  cityHighlights: [],
+  frequent: [],
   promos: [],
   loading: false,
   error: null,
@@ -101,7 +101,7 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
     const tasks: (() => Promise<unknown>)[] = [
       () => placesApi.getRecent(5),
       () => placesApi.getSaved(),
-      () => placesApi.getPopular(coords),
+      () => placesApi.getFrequent(10),
       () => promosApi.getActive(),
       () => (coords ? placesApi.getNearby(coords) : Promise.resolve([] as PlaceItem[])),
     ];
@@ -117,10 +117,10 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
       });
     }
 
-    const [recentRes, savedRes, popularRes, promosRes, nearbyRes] = results as unknown as [
+    const [recentRes, savedRes, frequentRes, promosRes, nearbyRes] = results as unknown as [
       PromiseSettledResult<PlaceItem[]>,
       PromiseSettledResult<SavedPlace[]>,
-      PromiseSettledResult<PopularPlacesResponse>,
+      PromiseSettledResult<PlaceItem[]>,
       PromiseSettledResult<Promo[]>,
       PromiseSettledResult<PlaceItem[]>,
     ];
@@ -139,11 +139,7 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
 
     if (recentRes.status === 'fulfilled') next.recent = recentRes.value;
     if (savedRes.status === 'fulfilled') next.saved = savedRes.value;
-    if (popularRes.status === 'fulfilled') {
-      next.quickPicks = popularRes.value.quickPicks;
-      next.popular = popularRes.value.popular;
-      next.cityHighlights = popularRes.value.cityHighlights;
-    }
+    if (frequentRes.status === 'fulfilled') next.frequent = frequentRes.value;
     if (promosRes.status === 'fulfilled') next.promos = promosRes.value;
     if (nearbyRes.status === 'fulfilled') next.nearby = nearbyRes.value;
 
@@ -271,9 +267,7 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
       searchRecents: [],
       saved: [],
       nearby: [],
-      quickPicks: [],
-      popular: [],
-      cityHighlights: [],
+      frequent: [],
       promos: [],
       loading: false,
       error: null,
@@ -287,8 +281,7 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
 // ── Photo-only place lists ────────────────────────────────────────────────────
 
 /**
- * The place cards on the home screen (Near You / Popular / Explore / quick
- * picks) are photo cards: a place that has no photo from the API, or whose
+ * The place cards on the home screen (nearest places) are photo cards: a place that has no photo from the API, or whose
  * photo fails to load, is not rendered at all.
  */
 export const useVisiblePlaces = (places: PlaceItem[]): PlaceItem[] => {

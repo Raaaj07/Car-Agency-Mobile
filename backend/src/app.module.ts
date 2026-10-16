@@ -57,7 +57,15 @@ import { PromosModule } from './promos/promos.module';
         // drop idle TCP connections; the next request (e.g. the driver's
         // "Accept Ride" tap after minutes of waiting) then paid a full
         // reconnect + SSL handshake, which showed up as a multi-second stall.
-        extra: { keepAlive: true, keepAliveInitialDelayMillis: 10_000 },
+        // connectionTimeoutMillis: fail a dead route in 10 s with a clear error
+        // instead of hanging the request; idleTimeoutMillis: recycle connections
+        // before the managed host silently drops them.
+        extra: {
+          keepAlive: true,
+          keepAliveInitialDelayMillis: 10_000,
+          connectionTimeoutMillis: 10_000,
+          idleTimeoutMillis: 30_000,
+        },
         // SEC-11: the same SSL policy as the migration CLI (config/db-ssl) —
         // DB_SSL=false disables TLS; otherwise DB_SSL_REJECT_UNAUTHORIZED
         // overrides the default (strict in production, relaxed in dev), so

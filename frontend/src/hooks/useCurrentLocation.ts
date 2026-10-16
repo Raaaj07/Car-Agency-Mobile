@@ -5,23 +5,15 @@
  * Stage 2: getCurrentPositionAsync(Balanced) → accurate fix
  *
  * Re-runs on screen focus (useFocusEffect), not just on mount.
- * Falls back to Salem centre (11.6643, 78.1460) when permission is denied,
- * and exposes a `refresh()` action + an "Enable location" prompt via Linking.
+ * When permission is denied (or no fix can be obtained) `coords` stays null —
+ * there is NO made-up fallback position, so nothing location-based (nearest
+ * places) is ever computed for a place the rider is not at. Exposes a
+ * `refresh()` action + an "Enable location" prompt via Linking.
  */
 import { useCallback, useRef, useState } from 'react';
 import { Linking } from 'react-native';
 import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
-
-const SALEM_CENTRE: Location.LocationObjectCoords = {
-  latitude: 11.6643,
-  longitude: 78.146,
-  altitude: null,
-  accuracy: null,
-  altitudeAccuracy: null,
-  heading: null,
-  speed: null,
-};
 
 export type LocationStatus = 'loading' | 'granted' | 'denied';
 
@@ -51,7 +43,6 @@ export function useCurrentLocation(): CurrentLocationResult {
       const { status: permStatus } = await Location.requestForegroundPermissionsAsync();
       if (permStatus !== 'granted') {
         setStatus('denied');
-        setCoords((prev) => prev ?? SALEM_CENTRE);
         return;
       }
 
@@ -86,7 +77,6 @@ export function useCurrentLocation(): CurrentLocationResult {
         setStatus('granted');
       } else {
         setStatus('denied');
-        setCoords((prev) => prev ?? SALEM_CENTRE);
       }
     } finally {
       fetchingRef.current = false;

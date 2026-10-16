@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { ArrowLeft, ArrowUpRight, Search, Locate, AlertCircle, AlertTriangle, X } from 'lucide-react-native';
+import { ArrowLeft, Search, Locate, AlertCircle, AlertTriangle, X } from 'lucide-react-native';
 
 import { colors, radii, shadows } from '../../theme/theme';
 import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
@@ -47,8 +47,12 @@ let pointSeq = 0;
 // where the current suggestions were computed.
 const SUGGESTION_REFRESH_KM = 1;
 
-// Photo tiles shown before the "Search for other places" tile.
+// Nearest-place photo tiles shown before the "Search for other places" tile.
 const GRID_PLACE_COUNT = 5;
+// Frequently-visited rows shown on the home sheet.
+const FREQUENT_ROW_COUNT = 3;
+// Recent-place rows shown directly under the search box.
+const RECENT_ROW_COUNT = 3;
 
 export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVehicle }) => {
   const insets = useSafeAreaInsets();
@@ -61,16 +65,23 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   const setPickup = useRideStore((state) => state.setPickup);
   const setDropoff = useRideStore((state) => state.setDropoff);
 
-  const { nearby, quickPicks, popular, error, fetchAll, suggestionsCoords, lastFetchedAt } =
-    usePlacesStore();
+  const { nearby, frequent, error, fetchAll, suggestionsCoords, lastFetchedAt } = usePlacesStore();
   const toggleSaved = usePlacesStore((state) => state.toggleSaved);
   const recordSearch = usePlacesStore((state) => state.recordSearch);
-  // Single "recently visited" list shared with the destination picker.
+  // Rider's own recent searches + trips: shown only while typing in search.
   const mergedRecent = useMergedRecents();
-  // Photo tiles: a place without a (working) photo is not rendered at all.
+  // Nearest places are photo tiles: a place without a (working) photo is not
+  // rendered at all.
   const visibleNearby = useVisiblePlaces(nearby);
-  const visiblePopular = useVisiblePlaces(popular);
-  const visibleQuickPicks = useVisiblePlaces(quickPicks);
+  // Frequently visited: this rider's most-repeated drop-offs (their ride history).
+  const frequentRows = useMemo(() => frequent.slice(0, FREQUENT_ROW_COUNT), [frequent]);
+  // Recent places go straight under the search box. A place already listed
+  // under "Frequently visited" is not repeated there.
+  const recentRows = useMemo(() => {
+    const key = (p: { lat: number; lng: number }) => `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`;
+    const frequentKeys = new Set(frequentRows.map(key));
+    return mergedRecent.filter((p) => !frequentKeys.has(key(p))).slice(0, RECENT_ROW_COUNT);
+  }, [mergedRecent, frequentRows]);
 
   // ── GPS Hook ────────────────────────────────────────────────────────────────
   const {
@@ -90,8 +101,9 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   // ── Bottom Sheet Snap Points ────────────────────────────────────────────────
   // Header: grab handle + the pill-shaped search field.
   const HEADER_HEIGHT = 80;
-  // Room for the first three recent rows (~62 each).
-  const recentRowsHeight = Math.min(mergedRecent.length, 3) * 62;
+  // Room for the recent rows (~62 each) shown under the search box. Anything
+  // below (frequent, nearest) is reached by scrolling the sheet.
+  const recentRowsHeight = recentRows.length * 62;
 
   const defaultVisibleHeight = Math.max(
     windowHeight * 0.5,
@@ -196,7 +208,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
           }
         })
         .catch(() => {
-          setPickup('Salem', 'Salem, Tamil Nadu', { lat: latitude, lng: longitude });
+          setPickup('Pin dropped', `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`, { lat: latitude, lng: longitude });
         })
         .finally(() => setIsResolvingAddress(false));
     }
@@ -204,15 +216,18 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
 
   // ── Location-based suggestions ──────────────────────────────────────────────
   useEffect(() => {
-    if (!gpsCoords) return;
+    // Wait for the location request to settle (permission prompt / GPS fix).
     if (locationStatus === 'loading') return;
-    if (locationStatus !== 'granted') {
+    if (locationStatus !== 'granted' || !gpsCoords) {
+      // No real position (permission denied / GPS off). Never invent one: load
+      // what does not need a location (frequently visited, saved, promos) once.
       if (!loadedWithoutLocationRef.current) {
         loadedWithoutLocationRef.current = true;
         void fetchAll(undefined, true);
       }
       return;
     }
+    loadedWithoutLocationRef.current = false;
     const here = { lat: gpsCoords.latitude, lng: gpsCoords.longitude };
     if (suggestionsCoords && haversineKm(suggestionsCoords, here) < SUGGESTION_REFRESH_KM) return;
     void fetchAll(here, true);
@@ -338,27 +353,17 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
     [pickupCoords],
   );
 
-  // Photo grid: curated quick picks first, then nearby, no duplicates.
-  const gridPlaces = useMemo(() => {
-    const seen = new Set<string>();
-    const out: PlaceItem[] = [];
-    [...visibleQuickPicks, ...visibleNearby].forEach((p) => {
-      if (seen.has(p.id)) return;
-      seen.add(p.id);
-      out.push(p);
-    });
-    return out.slice(0, GRID_PLACE_COUNT);
-  }, [visibleQuickPicks, visibleNearby]);
+  // Nearest places (already nearest-first from the server), photo tiles only.
+  const gridPlaces = useMemo(() => visibleNearby.slice(0, GRID_PLACE_COUNT), [visibleNearby]);
 
   const gridWidth = windowWidth - 40;
   const gridGap = 10;
   const tileWidth = Math.floor((gridWidth - gridGap * 2) / 3);
 
-  const popularNearby = visiblePopular.slice(0, 10);
   const hasLiveLocation = locationStatus === 'granted';
   const loadedOnce = lastFetchedAt !== null;
-  const noSuggestions =
-    loadedOnce && gridPlaces.length === 0 && popularNearby.length === 0 && !error;
+  // Nothing to show under "Nearest places": say why instead of a silent blank.
+  const noNearest = loadedOnce && gridPlaces.length === 0 && !error;
 
   const showApiWarning = API_URL.includes('10.0.2.2') && Platform.OS !== 'android' && !__DEV__;
 
@@ -543,7 +548,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
             showsVerticalScrollIndicator={false}
           >
             {/* Recent places: flat rows straight under the search pill */}
-            {mergedRecent.slice(0, 3).map((item, idx, arr) => (
+            {recentRows.map((item, idx) => (
               <PlaceSearchRow
                 key={item.id}
                 variant="recent"
@@ -552,11 +557,43 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
                 onPress={() => handleSelectPlace(item)}
                 onToggleHeart={() => toggleSaved(item)}
                 heartActive={!!item.saved}
-                isLast={idx === arr.length - 1}
+                isLast={idx === recentRows.length - 1 && frequentRows.length === 0}
               />
             ))}
 
-            {/* Photo grid — 3 columns, last tile opens search */}
+            {/* Frequently visited: this rider's most-repeated drop-offs */}
+            {frequentRows.length > 0 && (
+              <View>
+                <Text style={recentRows.length > 0 ? styles.sectionTitle : styles.sectionTitleFirst}>
+                  Frequently visited
+                </Text>
+                {frequentRows.map((item, idx) => (
+                  <PlaceSearchRow
+                    key={item.id}
+                    variant="recent"
+                    title={item.title}
+                    subtitle={
+                      item.visitCount ? `${item.visitCount} trips · ${item.subtitle}` : item.subtitle
+                    }
+                    onPress={() => handleSelectPlace(item)}
+                    onToggleHeart={() => toggleSaved(item)}
+                    heartActive={!!item.saved}
+                    isLast={idx === frequentRows.length - 1}
+                  />
+                ))}
+              </View>
+            )}
+
+            {/* Nearest places — live, 3-column photo grid, last tile opens search */}
+            <Text
+              style={
+                frequentRows.length > 0 || recentRows.length > 0
+                  ? styles.sectionTitle
+                  : styles.sectionTitleFirst
+              }
+            >
+              Nearest places
+            </Text>
             <View style={styles.grid}>
               {gridPlaces.map((item) => (
                 <QuickPickTile
@@ -570,47 +607,10 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
               <QuickPickTile type="search_more" onPress={openInlineSearch} tileWidth={tileWidth} />
             </View>
 
-            {/* Popular Places: horizontal chips with an orange arrow */}
-            {popularNearby.length > 0 && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Popular Places</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.chipRail}
-                >
-                  {popularNearby.map((item) => (
-                    <TouchableOpacity
-                      key={item.id}
-                      style={styles.popularChip}
-                      onPress={() => handleSelectPlace(item)}
-                      activeOpacity={0.8}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Go to ${item.title}`}
-                    >
-                      <View style={styles.popularTextWrap}>
-                        <Text style={styles.popularTitle} numberOfLines={1}>
-                          {item.title}
-                        </Text>
-                        {!!formatDistance(item.distanceKm) && (
-                          <Text style={styles.popularMeta} numberOfLines={1}>
-                            {formatDistance(item.distanceKm)}
-                          </Text>
-                        )}
-                      </View>
-                      <View style={styles.popularArrow}>
-                        <ArrowUpRight size={14} color="#FFFFFF" />
-                      </View>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-            )}
-
-            {noSuggestions && (
+            {noNearest && (
               <View style={styles.emptyCard}>
                 <Text style={styles.emptyTitle}>
-                  {hasLiveLocation ? 'No places found near you yet' : 'Turn on location for places near you'}
+                  {hasLiveLocation ? 'No places found near you yet' : 'Turn on location to see places near you'}
                 </Text>
                 <TouchableOpacity
                   style={styles.emptyBtn}
@@ -795,53 +795,17 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 14,
   },
-  section: {
-    marginTop: 22,
+  sectionTitleFirst: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginTop: 6,
   },
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: colors.textPrimary,
-    marginBottom: 12,
-  },
-  chipRail: {
-    gap: 10,
-    paddingRight: 8,
-  },
-  popularChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minWidth: 140,
-    maxWidth: 220,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#E5E9F0',
-    paddingLeft: 14,
-    paddingRight: 10,
-    paddingVertical: 10,
-  },
-  popularTextWrap: {
-    flex: 1,
-  },
-  popularTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.textPrimary,
-  },
-  popularMeta: {
-    fontSize: 11.5,
-    color: '#6B7280',
-    marginTop: 1,
-  },
-  popularArrow: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
+    marginTop: 22,
   },
 
   // ── Inline search states ────────────────────────────────────────────────────

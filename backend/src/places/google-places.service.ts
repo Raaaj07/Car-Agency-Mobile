@@ -25,6 +25,8 @@ export interface NearbyPlaceHit {
   rating: number | null;
   /** Number of Google ratings behind `rating`. */
   ratingCount: number | null;
+  /** Google place types (e.g. bus_station, train_station, university). */
+  types?: string[];
 }
 
 interface MetaCacheEntry {
@@ -38,7 +40,7 @@ interface PhotoCacheEntry {
   contentType: string;
 }
 
-export type NearbyRank = 'distance' | 'popularity';
+export type NearbyRank = 'distance' | 'popularity' | 'big';
 
 const SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 const NEARBY_URL = 'https://places.googleapis.com/v1/places:searchNearby';
@@ -91,6 +93,12 @@ export const NEAR_INCLUDED_TYPES = [
   'school',
 ];
 
+// "Big places" (home screen, right under recents): the transport hubs and
+// campuses riders actually travel to — bus stands, railway stations, colleges.
+// All Table A types.
+export const BIG_PLACE_TYPES = ['bus_station', 'train_station', 'university'] as const;
+export const BIG_INCLUDED_TYPES: string[] = [...BIG_PLACE_TYPES];
+
 // "Popular": destination-worthy places only. Hospitals, schools and bus
 // stops are not "popular places" no matter how many people use them.
 export const POPULAR_INCLUDED_TYPES = [
@@ -109,7 +117,7 @@ export const POPULAR_INCLUDED_TYPES = [
 
 const NEAR_FIELD_MASK =
   'places.id,places.displayName,places.formattedAddress,places.location,' +
-  'places.photos.name,places.photos.authorAttributions';
+  'places.photos.name,places.photos.authorAttributions,places.types';
 // Rating fields are only paid for on the popularity search.
 const POPULAR_FIELD_MASK = `${NEAR_FIELD_MASK},places.rating,places.userRatingCount`;
 
@@ -138,6 +146,16 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * A rejected/expired/disabled key fails every call the same way. Say so once
+ * (loudly) instead of one easy-to-miss warning per place.
+ */
+let keyProblemLoggedAt = 0;
+const KEY_PROBLEM_REPEAT_MS = 10 * 60 * 1000;
+function looksLikeKeyProblem(reason: string): boolean {
+  return /api key (expired|not valid)|API_KEY_INVALID|PERMISSION_DENIED|REQUEST_DENIED|billing/i.test(reason);
 }
 
 /** First ~200 chars of Google's error body — it names the real cause (key blocked, billing, API disabled). */
@@ -197,6 +215,7 @@ function parseHit(p: Record<string, unknown>): NearbyPlaceHit | null {
     photoAttribution: photo?.attribution ?? null,
     rating: typeof p.rating === 'number' ? p.rating : null,
     ratingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : null,
+    types: Array.isArray(p.types) ? (p.types as unknown[]).filter((t): t is string => typeof t === 'string') : [],
   };
 }
 
@@ -425,6 +444,14 @@ export class GooglePlacesService implements OnModuleInit {
   }
 
   /**
+   * "Big places": nearest bus stands, railway stations and colleges around a
+   * coordinate, NEAREST FIRST. Never throws — [] on any failure.
+   */
+  searchBigPlaces(lat: number, lng: number, radiusM = 10_000): Promise<NearbyPlaceHit[]> {
+    return this.searchNearby('big', lat, lng, radiusM);
+  }
+
+  /**
    * "Popular": the places Google ranks as most popular around a coordinate,
    * WITH ratings (rating + ratingCount). Default radius 50 km (the maximum
    * Google allows). Order is Google's popularity order — callers re-sort.
@@ -475,7 +502,12 @@ export class GooglePlacesService implements OnModuleInit {
             'X-Goog-FieldMask': rank === 'popularity' ? POPULAR_FIELD_MASK : NEAR_FIELD_MASK,
           },
           body: JSON.stringify({
-            includedTypes: rank === 'popularity' ? POPULAR_INCLUDED_TYPES : NEAR_INCLUDED_TYPES,
+            includedTypes:
+              rank === 'popularity'
+                ? POPULAR_INCLUDED_TYPES
+                : rank === 'big'
+                  ? BIG_INCLUDED_TYPES
+                  : NEAR_INCLUDED_TYPES,
             maxResultCount: MAX_RESULTS,
             rankPreference: rank === 'popularity' ? 'POPULARITY' : 'DISTANCE',
             languageCode: 'en',
@@ -488,9 +520,16 @@ export class GooglePlacesService implements OnModuleInit {
         FETCH_TIMEOUT_MS,
       );
       if (!res.ok) {
-        this.logger.warn(
-          `Places searchNearby (${rank}) failed (${lat},${lng}): HTTP ${res.status} ${await errorReason(res)}`,
-        );
+        const reason = await errorReason(res);
+        this.logger.warn(`Places searchNearby (${rank}) failed (${lat},${lng}): HTTP ${res.status} ${reason}`);
+        if (looksLikeKeyProblem(reason) && Date.now() - keyProblemLoggedAt > KEY_PROBLEM_REPEAT_MS) {
+          keyProblemLoggedAt = Date.now();
+          this.logger.error(
+            'GOOGLE_PLACES_API_KEY is rejected by Google (expired / invalid / billing off). ' +
+              'Home-screen places are falling back to Wikipedia only. Renew the key in Google Cloud Console ' +
+              '(APIs & Services → Credentials), update backend/.env and restart.',
+          );
+        }
         this.nearbyCache.set(cacheKey, { at: Date.now(), value: [], errored: true });
         return [];
       }

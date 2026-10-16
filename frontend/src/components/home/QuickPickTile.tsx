@@ -5,6 +5,7 @@ import { colors, radii } from '../../theme/theme';
 import { PlaceImage } from './PlaceImage';
 import { PlaceItem } from '../../api/places';
 import { usePlacesStore } from '../../store/placesStore';
+import { formatDistance } from '../../utils/distance';
 
 interface QuickPickTileProps {
   type: 'place' | 'home' | 'work' | 'search_more';
@@ -81,6 +82,11 @@ export const QuickPickTile: React.FC<QuickPickTileProps> = memo(
         <Text style={styles.tileLabel} numberOfLines={2}>
           {place?.title || label}
         </Text>
+        {!!formatDistance(place?.distanceKm) && (
+          <Text style={styles.tileMeta} numberOfLines={1}>
+            {formatDistance(place?.distanceKm)}
+          </Text>
+        )}
       </TouchableOpacity>
     );
   },
@@ -117,5 +123,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.textPrimary,
     lineHeight: 16,
+  },
+  tileMeta: {
+    paddingTop: 2,
+    fontSize: 11,
+    color: '#6B7280',
   },
 });
