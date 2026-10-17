@@ -143,8 +143,11 @@ class EnvironmentVariables {
   // (GET /places/photo/*) requires a verifiable access token instead of
   // serving anonymous traffic. Default off so existing APKs (whose <Image>
   // never sends a header) keep rendering; the owner flips it after rollout.
+  // Strictly "true" | "false": the photo controller only treats the exact string
+  // "true" as ON, so a typo such as "True" or "1" must fail at boot instead of
+  // silently leaving the billable photo proxy public.
   @IsOptional()
-  @IsString()
+  @IsIn(['true', 'false'], { message: 'REQUIRE_AUTH_FOR_PHOTOS must be exactly "true" or "false"' })
   REQUIRE_AUTH_FOR_PHOTOS?: string;
 
   @IsOptional()

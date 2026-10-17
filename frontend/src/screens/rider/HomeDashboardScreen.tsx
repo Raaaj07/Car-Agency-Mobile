@@ -61,7 +61,16 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   const setPickup = useRideStore((state) => state.setPickup);
   const setDropoff = useRideStore((state) => state.setDropoff);
 
-  const { bigPlaces, popular, frequent, error, fetchAll, suggestionsCoords, lastFetchedAt } = usePlacesStore();
+  // One selector per field: subscribing to the whole store re-rendered this
+  // screen on every unrelated change (e.g. each markImageBroken).
+  const bigPlaces = usePlacesStore((state) => state.bigPlaces);
+  const popular = usePlacesStore((state) => state.popular);
+  const frequent = usePlacesStore((state) => state.frequent);
+  const error = usePlacesStore((state) => state.error);
+  const fetchAll = usePlacesStore((state) => state.fetchAll);
+  const fetchLocationPlaces = usePlacesStore((state) => state.fetchLocationPlaces);
+  const suggestionsCoords = usePlacesStore((state) => state.suggestionsCoords);
+  const lastFetchedAt = usePlacesStore((state) => state.lastFetchedAt);
   const toggleSaved = usePlacesStore((state) => state.toggleSaved);
   const recordSearch = usePlacesStore((state) => state.recordSearch);
   // Rider's own recent searches + trips: shown only while typing in search.
@@ -235,8 +244,12 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
     // first real fix; moving around or revisiting the screen never re-searches.
     if (loadedWithLocationRef.current) return;
     loadedWithLocationRef.current = true;
-    void fetchAll({ lat: gpsCoords.latitude, lng: gpsCoords.longitude }, true);
-  }, [gpsCoords, locationStatus, fetchAll]);
+    // Location lists are requested directly (not chained inside fetchAll), so
+    // fetchAll's in-flight early return can never swallow the once-per-launch call.
+    const coords = { lat: gpsCoords.latitude, lng: gpsCoords.longitude };
+    void fetchLocationPlaces(coords);
+    void fetchAll(coords, true);
+  }, [gpsCoords, locationStatus, fetchAll, fetchLocationPlaces]);
 
   // ── Driver Polling ──────────────────────────────────────────────────────────
   useFocusEffect(
@@ -594,14 +607,16 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
                 <Text style={styles.emptyTitle}>
                   {hasLiveLocation ? 'No places found near you yet' : 'Turn on location to see places near you'}
                 </Text>
-                <TouchableOpacity
-                  style={styles.emptyBtn}
-                  onPress={openSettings}
-                  activeOpacity={0.85}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.emptyBtnText}>Enable location</Text>
-                </TouchableOpacity>
+                {!hasLiveLocation && (
+                  <TouchableOpacity
+                    style={styles.emptyBtn}
+                    onPress={openSettings}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.emptyBtnText}>Enable location</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
 

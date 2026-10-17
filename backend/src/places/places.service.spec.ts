@@ -95,6 +95,18 @@ describe('PlacesService — nearest places', () => {
       expect(items.map((i) => i.id)).toEqual(['g-same-gggg7777']);
     });
 
+    it('returns nothing (and never calls Google) for out-of-range coordinates on every list', async () => {
+      const { service, google } = makeService([hit('x-dddd4444', 1, 1)], undefined, [hit('y-eeee5555', 1, 1)], [hit('z-ffff6666', 1, 1)]);
+      for (const [lat, lng] of [[91, 78], [-91, 78], [11, 181], [11, -181], [1e9, 1e9], [Infinity, 78]]) {
+        expect(await service.getNearby(lat, lng)).toEqual([]);
+        expect(await service.getBigPlaces(lat, lng)).toEqual([]);
+        expect(await service.getPopular(lat, lng)).toEqual([]);
+      }
+      expect(google.searchNearbyByDistance).not.toHaveBeenCalled();
+      expect(google.searchBigPlaces).not.toHaveBeenCalled();
+      expect(google.searchNearbyByPopularity).not.toHaveBeenCalled();
+    });
+
     it('returns nothing (and does not call Google) for invalid coordinates', async () => {
       const { service, google } = makeService([hit('x-dddd4444', 1, 1)]);
       expect(await service.getNearby(NaN, 78)).toEqual([]);
@@ -186,6 +198,16 @@ describe('PlacesService — nearest places', () => {
       expect(rides.query).toHaveBeenCalledWith(expect.any(String), ['u1', 15]); // default 5 x 3
     });
 
+    it('picks the NEWEST drop-offs: recency ordering happens before the LIMIT', async () => {
+      const { service, rides } = makeHistory();
+
+      await service.getRecent('u1');
+      const sql = rides.query.mock.calls[0][0] as string;
+      // DISTINCT ON must be wrapped so the LIMIT applies after ORDER BY created_at DESC,
+      // not after ORDER BY geo_key (which would keep the alphabetically-first places).
+      expect(sql).toMatch(/\) latest\s+ORDER BY created_at DESC\s+LIMIT \$2/);
+    });
+
     it('clamps the limit into the 1..10 window', async () => {
       const { service, rides } = makeHistory();
 
@@ -219,6 +241,14 @@ describe('PlacesService — nearest places', () => {
       expect(items.every((i) => i.imageUrl === null)).toBe(true);
       // rider id, minimum visits (2), limit (5)
       expect(rides.query).toHaveBeenCalledWith(expect.any(String), ['u1', 2, 5]);
+    });
+
+    it('only COMPLETED rides count as visits (not cancelled or in-flight ones)', async () => {
+      const { service, rides } = makeHistory();
+      await service.getFrequent('u1');
+      const sql = rides.query.mock.calls[0][0] as string;
+      expect(sql).toMatch(/r\.status = 'completed'/);
+      expect(sql).not.toMatch(/<> 'cancelled'/);
     });
 
     it('a new rider with no repeat trips gets an empty list', async () => {

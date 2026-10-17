@@ -61,6 +61,10 @@ const byDistance = (a: PlaceItemDto, b: PlaceItemDto): number =>
 
 const normTitle = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
+/** Real WGS84 pair: rejects NaN/Infinity and out-of-range values before any Google call. */
+const isValidCoord = (lat: number, lng: number): boolean =>
+  Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+
 /** Straight-line distance rounded to 0.1 km (what the app displays). */
 function distanceKmBetween(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   return Math.round(haversineKm(a, b) * 10) / 10;
@@ -159,7 +163,7 @@ export class PlacesService {
    * fallback list: when neither source has anything the answer is [].
    */
   async getNearby(lat: number, lng: number, radiusM?: number): Promise<PlaceItemDto[]> {
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    if (!isValidCoord(lat, lng)) return [];
     const ref = { lat, lng };
     const radius = Math.min(
       Math.max(radiusM ?? DEFAULT_NEAR_RADIUS_M, NEAR_MIN_RADIUS_M),
@@ -187,7 +191,7 @@ export class PlacesService {
    * No fixed list: nothing found means [].
    */
   async getBigPlaces(lat: number, lng: number): Promise<PlaceItemDto[]> {
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    if (!isValidCoord(lat, lng)) return [];
     const ref = { lat, lng };
     const hits = (await this.google.searchBigPlaces(lat, lng, BIG_RADIUS_M)).filter((h) => !!h.photoName);
     const kindOf = (h: NearbyPlaceHit): string => {
@@ -227,7 +231,7 @@ export class PlacesService {
    * Live Google data topped up from Wikipedia sights; no fixed list.
    */
   async getPopular(lat: number, lng: number): Promise<PlaceItemDto[]> {
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    if (!isValidCoord(lat, lng)) return [];
     const ref = { lat, lng };
     const hits = await this.google.searchNearbyByPopularity(lat, lng, POPULAR_RADIUS_M);
     let items = hits
@@ -318,7 +322,7 @@ export class PlacesService {
     // Distinct dropoff by geoKey (lat/lng rounded to 4 decimals), newest first.
     // Exclude system-cancelled rides.
     const rows = await this.rides.query(
-      `SELECT DISTINCT ON (geo_key) geo_key, title, addr, lat, lng, created_at
+      `SELECT * FROM (SELECT DISTINCT ON (geo_key) geo_key, title, addr, lat, lng, created_at
        FROM (
          SELECT
            round(CAST((r.dropoff->>'lat') AS numeric), 4)::text || ',' || round(CAST((r.dropoff->>'lng') AS numeric), 4)::text AS geo_key,
@@ -332,7 +336,7 @@ export class PlacesService {
            AND NOT (r.status = 'cancelled' AND r."cancelledBy" = 'system')
            AND r.dropoff IS NOT NULL
        ) sub
-       ORDER BY geo_key, created_at DESC
+       ORDER BY geo_key, created_at DESC) latest ORDER BY created_at DESC
        LIMIT $2`,
       [userId, clampedLimit * 3],
     ) as Array<{ geo_key: string; title: string; addr: string; lat: number; lng: number; created_at: Date }>;
@@ -362,7 +366,8 @@ export class PlacesService {
    * "Frequently visited": the drop-offs this rider has gone to MOST OFTEN
    * (at least FREQUENT_MIN_VISITS trips), most-visited first, ties broken by
    * the most recent trip. Built purely from the rider's own ride history —
-   * a new rider simply gets []. Cancelled rides do not count as visits.
+   * a new rider simply gets []. Only COMPLETED rides count as visits: cancelled
+   * rides and ones still in flight (requested / matched / in progress) do not.
    */
   async getFrequent(userId: string, limit = 5): Promise<PlaceItemDto[]> {
     const safeLimit = Number.isFinite(limit) ? limit : 5;
@@ -383,7 +388,7 @@ export class PlacesService {
            r."createdAt" AS created_at
          FROM rides r
          WHERE r."riderId" = $1
-           AND r.status <> 'cancelled'
+           AND r.status = 'completed'
            AND r.dropoff IS NOT NULL
        ) sub
        GROUP BY geo_key
