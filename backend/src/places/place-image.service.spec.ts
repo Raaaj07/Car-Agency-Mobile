@@ -6,7 +6,6 @@ import {
 } from './place-image.service';
 import { GooglePlacesService } from './google-places.service';
 import { WikimediaService } from './wikimedia.service';
-import type { PlaceConfigItem } from './places.config';
 
 /**
  * SEC-7: the proxy cache was a plain Map — uncapped, "request many distinct
@@ -86,19 +85,19 @@ describe('PlaceImageService cache bounding (SEC-7)', () => {
  * at 3 hops, and every hop re-runs the host allowlist.
  */
 describe('PlaceImageService SSRF hardening (SEC-3)', () => {
-  let google: { fetchPlacePhoto: jest.Mock; fetchPlacePhotoById: jest.Mock };
+  let google: { fetchPlacePhotoById: jest.Mock; getKnownPlace: jest.Mock };
   let wiki: { findPhoto: jest.Mock };
   let service: PlaceImageService;
   let realFetch: typeof globalThis.fetch;
 
-  const item = (imageUrl: string): PlaceConfigItem => ({
-    id: 'ssrf-fixture',
-    title: 'Fixture',
-    subtitle: 'Test',
-    lat: 11.65,
-    lng: 78.16,
-    imageUrl,
-  });
+  // Drives download() through the live-place path: Google has no photo, the
+  // Wikimedia backup hands back `imageUrl`. Every call uses a fresh place id so
+  // the per-id negative cache cannot mask a later lookup.
+  let seq = 0;
+  const lookup = (imageUrl: string) => {
+    wiki.findPhoto.mockResolvedValue({ url: imageUrl, pageUrl: null });
+    return service.getLiveImage(`ChIJssrf${String(++seq).padStart(6, '0')}`);
+  };
 
   // A minimal Response stand-in — only what download() reads.
   const response = (status: number, contentType: string | null, bytes = 3) => ({
@@ -116,8 +115,8 @@ describe('PlaceImageService SSRF hardening (SEC-3)', () => {
 
   beforeEach(() => {
     google = {
-      fetchPlacePhoto: jest.fn().mockResolvedValue(null),
       fetchPlacePhotoById: jest.fn().mockResolvedValue(null),
+      getKnownPlace: jest.fn().mockReturnValue({ title: 'Fixture', subtitle: 'Test', lat: 11.65, lng: 78.16 }),
     };
     wiki = { findPhoto: jest.fn().mockResolvedValue(null) };
     service = new PlaceImageService(
@@ -135,7 +134,7 @@ describe('PlaceImageService SSRF hardening (SEC-3)', () => {
     const fetchMock = jest.fn().mockResolvedValue(redirect('http://169.254.169.254/latest/meta-data'));
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
-    const out = await service.getCuratedImage(item('https://upload.wikimedia.org/wikipedia/commons/x.jpg'));
+    const out = await lookup('https://upload.wikimedia.org/wikipedia/commons/x.jpg');
 
     expect(out).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1); // the internal hop was never fetched
@@ -148,7 +147,7 @@ describe('PlaceImageService SSRF hardening (SEC-3)', () => {
       .mockResolvedValueOnce(response(200, 'image/jpeg'));
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
-    const out = await service.getCuratedImage(item('https://commons.wikimedia.org/a.jpg'));
+    const out = await lookup('https://commons.wikimedia.org/a.jpg');
 
     expect(out?.contentType).toBe('image/jpeg');
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -161,7 +160,7 @@ describe('PlaceImageService SSRF hardening (SEC-3)', () => {
     );
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
-    const out = await service.getCuratedImage(item('https://commons.wikimedia.org/a.jpg'));
+    const out = await lookup('https://commons.wikimedia.org/a.jpg');
 
     expect(out).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(4); // initial + 3 hops, then stop
@@ -179,7 +178,7 @@ describe('PlaceImageService SSRF hardening (SEC-3)', () => {
       'https://[::1]/x.jpg', // IPv6 literal
       'https://localhost/x.jpg',
     ]) {
-      expect(await service.getCuratedImage(item(bad))).toBeNull();
+      expect(await lookup(bad)).toBeNull();
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });

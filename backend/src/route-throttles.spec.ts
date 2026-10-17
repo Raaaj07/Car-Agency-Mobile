@@ -35,9 +35,9 @@ describe('route-level @Throttle overrides (SEC-9)', () => {
     // Driver search walks the driver table; application uploads store bytes.
     { name: 'GET /drivers/nearby', handler: DriversController.prototype.findNearby, limit: 30 },
     { name: 'POST /drivers/apply', handler: DriversController.prototype.apply, limit: 5 },
-    // Places: nearby/popular trigger billable server-side Google searches;
+    // Places: big/popular trigger billable server-side Google searches;
     // saved-place writes are DB churn.
-    { name: 'GET /places/nearby', handler: PlacesController.prototype.getNearby, limit: 30 },
+    { name: 'GET /places/big', handler: PlacesController.prototype.getBig, limit: 30 },
     { name: 'GET /places/popular', handler: PlacesController.prototype.getPopular, limit: 30 },
     { name: 'POST /places/saved', handler: PlacesController.prototype.upsertSaved, limit: 20 },
     { name: 'DELETE /places/saved/:id', handler: PlacesController.prototype.deleteSaved, limit: 20 },

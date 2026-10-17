@@ -1,5 +1,4 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
-import type { PlaceConfigItem } from './places.config';
 import { GooglePlacesService, isValidGooglePlaceId } from './google-places.service';
 import { WikimediaService } from './wikimedia.service';
 import { WikipediaPlacesService, isValidWikiPageId } from './wikipedia-places.service';
@@ -116,18 +115,6 @@ export class PlaceImageService {
     private readonly wiki: WikimediaService,
     @Optional() private readonly wikiPlaces?: WikipediaPlacesService,
   ) {}
-
-  /**
-   * Image bytes for a curated place. Tries, in order:
-   *   1. Google Places photo (needs GOOGLE_PLACES_API_KEY + working billing)
-   *   2. the curated imageUrl from places.config.ts
-   *   3. a Wikimedia Commons search (title, then geo)
-   * Every step is verified by actually downloading image bytes, so a step that
-   * "resolves" but cannot be downloaded falls through to the next one.
-   */
-  getCuratedImage(item: PlaceConfigItem): Promise<PlaceImageBytes | null> {
-    return this.cached(`curated:${item.id}`, () => this.resolveCurated(item));
-  }
 
   /**
    * Image bytes for a LIVE Google place (Near You / Popular), by Google place
@@ -254,40 +241,6 @@ export class PlaceImageService {
     }
 
     this.logger.warn(`[${googlePlaceId}] NO image from Google or Wikimedia`);
-    return null;
-  }
-
-  private async resolveCurated(item: PlaceConfigItem): Promise<PlaceImageBytes | null> {
-    // 1. Google
-    try {
-      const g = await this.google.fetchPlacePhoto(item);
-      if (g) return g;
-      this.logger.warn(`[${item.id}] Google photo unavailable, trying curated URL`);
-    } catch (err) {
-      this.logger.warn(`[${item.id}] Google photo error: ${(err as Error)?.message ?? err}`);
-    }
-
-    // 2. Curated URL from places.config.ts
-    if (item.imageUrl) {
-      for (const url of candidateUrls(item.imageUrl)) {
-        const img = await this.download(url, item.id);
-        if (img) return img;
-      }
-      this.logger.warn(`[${item.id}] curated imageUrl failed, trying Wikimedia search`);
-    }
-
-    // 3. Wikimedia Commons search
-    try {
-      const w = await this.wiki.findPhoto(item.id, item.title, item.subtitle, item.lat, item.lng);
-      if (w?.url) {
-        const img = await this.download(w.url, item.id);
-        if (img) return img;
-      }
-    } catch (err) {
-      this.logger.warn(`[${item.id}] Wikimedia search error: ${(err as Error)?.message ?? err}`);
-    }
-
-    this.logger.warn(`[${item.id}] NO image from Google, curated URL or Wikimedia`);
     return null;
   }
 

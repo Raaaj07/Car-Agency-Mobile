@@ -1,7 +1,7 @@
 /// <reference types="jest" />
 import {
+  BIG_INCLUDED_TYPES,
   GooglePlacesService,
-  NEAR_INCLUDED_TYPES,
   POPULAR_INCLUDED_TYPES,
 } from './google-places.service';
 
@@ -41,7 +41,7 @@ describe('GooglePlacesService — Nearby Search request', () => {
   });
 
   it('only uses Table A place types (Table B types make Google reject the whole request)', () => {
-    for (const list of [NEAR_INCLUDED_TYPES, POPULAR_INCLUDED_TYPES]) {
+    for (const list of [BIG_INCLUDED_TYPES, POPULAR_INCLUDED_TYPES]) {
       for (const type of list) {
         expect(TABLE_B_ONLY).not.toContain(type);
         expect(TABLE_A_TYPES_WE_USE.has(type)).toBe(true);
@@ -50,7 +50,7 @@ describe('GooglePlacesService — Nearby Search request', () => {
   });
 
   it.each([
-    ['searchNearbyByDistance', 'DISTANCE', NEAR_INCLUDED_TYPES],
+    ['searchBigPlaces', 'DISTANCE', BIG_INCLUDED_TYPES],
     ['searchNearbyByPopularity', 'POPULARITY', POPULAR_INCLUDED_TYPES],
   ] as const)('%s sends rankPreference %s with the matching included types', async (method, rank, types) => {
     const fetchMock = jest.fn().mockResolvedValue({
@@ -100,7 +100,7 @@ describe('GooglePlacesService — Nearby Search request', () => {
       text: async () => JSON.stringify({ error: { status: 'INVALID_ARGUMENT', message: 'Unsupported types' } }),
     }) as unknown as typeof fetch;
     const failing = new GooglePlacesService({ get: () => 'test-key' } as never);
-    expect(await failing.searchNearbyByDistance(11.341, 77.7172)).toEqual([]);
+    expect(await failing.searchBigPlaces(11.341, 77.7172)).toEqual([]);
   });
 
   it('returns [] without calling Google when no API key is configured', async () => {
@@ -108,7 +108,7 @@ describe('GooglePlacesService — Nearby Search request', () => {
     global.fetch = fetchMock as unknown as typeof fetch;
     const service = new GooglePlacesService({ get: () => undefined } as never);
 
-    expect(await service.searchNearbyByDistance(11.341, 77.7172)).toEqual([]);
+    expect(await service.searchBigPlaces(11.341, 77.7172)).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

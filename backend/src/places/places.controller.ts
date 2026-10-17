@@ -44,8 +44,8 @@ export class PlacesController {
   ): Promise<PlaceItemDto[]> {
     // SEC-5: ?limit=abc passed the truthy check and arrived as NaN — which
     // slipped through the service's clamp (every NaN comparison is false)
-    // into `LIMIT $2` and surfaced as a 500. Same isFinite pattern as
-    // getNearby below; the service clamps the range (1..10) as well.
+    // into `LIMIT $2` and surfaced as a 500. The service clamps the range
+    // (1..10) as well.
     const parsed = limit ? Number.parseInt(limit, 10) : NaN;
     return this.service.getRecent(user.userId, Number.isFinite(parsed) ? parsed : 5);
   }
@@ -61,8 +61,8 @@ export class PlacesController {
   }
 
   // Home screen, right under recents: nearest bus stands, railway stations and
-  // colleges. The app calls this ONCE per app launch. Same Google-quota
-  // reasoning as nearby for the throttle.
+  // colleges. The app calls this ONCE per app launch. Each cache miss is a
+  // billable Google search, hence the 30/min route throttle.
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('big')
   getBig(@Query('lat') lat?: string, @Query('lng') lng?: string): Promise<PlaceItemDto[]> {
@@ -75,21 +75,5 @@ export class PlacesController {
   @Get('popular')
   getPopular(@Query('lat') lat?: string, @Query('lng') lng?: string): Promise<PlaceItemDto[]> {
     return this.service.getPopular(lat ? parseFloat(lat) : NaN, lng ? parseFloat(lng) : NaN);
-  }
-
-  // Route throttle: 30/min — nearby triggers a server-side Google Places
-  // search (billable per miss); the global 300/min would let one client burn
-  // the Places quota alone.
-  @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  @Get('nearby')
-  getNearby(
-    @Query('lat') lat?: string,
-    @Query('lng') lng?: string,
-    @Query('radius') radius?: string,
-  ): Promise<PlaceItemDto[]> {
-    const plat = lat ? parseFloat(lat) : NaN;
-    const plng = lng ? parseFloat(lng) : NaN;
-    const r = radius ? parseInt(radius, 10) : NaN;
-    return this.service.getNearby(plat, plng, Number.isFinite(r) ? r : undefined);
   }
 }

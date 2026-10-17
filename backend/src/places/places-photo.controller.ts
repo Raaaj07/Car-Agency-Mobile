@@ -14,18 +14,12 @@ import { JwtService } from '@nestjs/jwt';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { Public } from '../common/decorators/public.decorator';
-import { PLACES_CONFIG } from './places.config';
 import { PlaceImageService } from './place-image.service';
 
-// Deliberately NOT guarded: React Native <Image> cannot send the bearer
-// token. Security comes from the fixed allow-list — only curated config IDs
-// are servable, and the client can never pass a photoName or URL.
-const CURATED_BY_ID = new Map(
-  [...PLACES_CONFIG.quickPicks, ...PLACES_CONFIG.popular, ...PLACES_CONFIG.cityHighlights].map(
-    (item) => [item.id, item] as const,
-  ),
-);
-
+// Deliberately @Public(): React Native <Image> cannot send the bearer token
+// unless REQUIRE_AUTH_FOR_PHOTOS is on. The client only ever supplies a
+// strictly validated Google place id or Wikipedia page id — never a photoName
+// or URL — and every download is allow-listed server-side.
 @Public()
 @Controller('places/photo')
 export class PlacesPhotoController {
@@ -36,28 +30,13 @@ export class PlacesPhotoController {
     private readonly jwt: JwtService,
   ) {}
 
-  // Curated places: Google photo -> curated URL -> Wikimedia search, all
-  // downloaded server-side and streamed to the app. SEC-4: each cache miss
-  // triggers an outbound provider fetch (billable Google Places API), so the
-  // public route gets its own 120 req/min/IP cap on top of the global limit.
-  // Pass-4 (task 10): optional bearer auth (REQUIRE_AUTH_FOR_PHOTOS) — the
-  // token is checked INSIDE the handler (not the global guard) because the
-  // route must stay @Public() for the default-off rollout, while RN <Image>
-  // can attach the header to the request.
-  @Throttle({ default: { limit: 120, ttl: 60_000 } })
-  @Get(':configId')
-  async servePhoto(
-    @Param('configId') configId: string,
-    @Res({ passthrough: true }) res: Response,
-    @Req() req: Request,
-  ): Promise<StreamableFile> {
-    await this.requireTokenIfEnabled(req);
-    const item = CURATED_BY_ID.get(configId);
-    if (!item) throw new NotFoundException('Unknown place photo');
-    const photo = await this.images.getCuratedImage(item);
-    if (!photo) throw new NotFoundException('No photo available');
-    return this.sendPhoto(res, photo);
-  }
+  // SEC-4: every cache miss triggers an outbound provider fetch (billable), so
+  // each public photo route has its own 120 req/min/IP cap on top of the global
+  // limit. Pass-4 (task 10): optional bearer auth (REQUIRE_AUTH_FOR_PHOTOS) is
+  // checked INSIDE the handler (not the global guard) because the routes must
+  // stay @Public() for the default-off rollout, while RN <Image> can attach
+  // the header to the request. The old curated-config route (/places/photo/:id)
+  // was removed together with places.config.ts.
 
   // Guard-free photo proxy for live nearby/popular results. The client
   // supplies only a Google place ID (strictly validated); bytes are resolved

@@ -6,30 +6,18 @@ import { UpsertSavedPlaceDto } from './dto/upsert-saved-place.dto';
 import { PlaceItemDto, SavedPlaceDto } from './dto/place-item.dto';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { haversineKm } from '../common/geo-utils';
-import {
-  DEFAULT_NEAR_RADIUS_M,
-  GooglePlacesService,
-  NearbyPlaceHit,
-} from './google-places.service';
+import { GooglePlacesService, NearbyPlaceHit } from './google-places.service';
 import { WIKI_MAX_RADIUS_M, WikiPlaceHit, WikipediaPlacesService } from './wikipedia-places.service';
 
 function makeGeoKey(lat: number, lng: number): string {
   return `${lat.toFixed(4)},${lng.toFixed(4)}`;
 }
 
-// ── "Nearest places" ────────────────────────────────────────────────────────
-// Live places within a few kilometres of the rider, nearest first. Nothing in
-// this file is a fixed list of places: every item comes from Google Places,
-// Wikipedia, or the rider's own ride history.
-const NEAR_MIN_RADIUS_M = 1_000;
-const NEAR_MAX_RADIUS_M = 10_000;
-const NEARBY_MAX_ITEMS = 10;
+// ── Shared ────────────────────────────────────────────────────────
+// Nothing in this file is a fixed list of places: every item comes from Google
+// Places, Wikipedia, or the rider's own ride history.
 // A place this close to another result is the same place — keep the first.
 const DUPLICATE_KM = 0.2;
-// When Google returns fewer than this many places WITH a photo (no key, quota,
-// outage, or a small town), the list is topped up from Wikipedia so the home
-// screen is not left empty.
-const MIN_LIVE_RESULTS = 6;
 
 // ── "Big places" (bus stands, railway stations, colleges) ───────────────────
 const BIG_RADIUS_M = 10_000;
@@ -157,34 +145,6 @@ export class PlacesService {
   }
 
   /**
-   * "Nearest places": the closest places with a photo around the rider's
-   * CURRENT location (default 5 km, at most 10 km), nearest first, each with
-   * `distanceKm`. Google first, topped up from Wikipedia. There is NO fixed
-   * fallback list: when neither source has anything the answer is [].
-   */
-  async getNearby(lat: number, lng: number, radiusM?: number): Promise<PlaceItemDto[]> {
-    if (!isValidCoord(lat, lng)) return [];
-    const ref = { lat, lng };
-    const radius = Math.min(
-      Math.max(radiusM ?? DEFAULT_NEAR_RADIUS_M, NEAR_MIN_RADIUS_M),
-      NEAR_MAX_RADIUS_M,
-    );
-    const hits = await this.google.searchNearbyByDistance(lat, lng, radius);
-    // Only places Google actually has a photo for: a card without a picture is
-    // never shown on the home screen.
-    const withPhoto = hits.filter((h) => !!h.photoName);
-    this.logger.log(
-      `Nearest (${lat.toFixed(3)},${lng.toFixed(3)}, ${radius} m): ${hits.length} Google places, ${withPhoto.length} with a photo`,
-    );
-    let items = withPhoto.map((h) => this.liveItem(h, ref)).sort(byDistance);
-    if (items.length < MIN_LIVE_RESULTS) {
-      const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, NEARBY_MAX_ITEMS);
-      items = this.mergeUnique(items, wiki).sort(byDistance);
-    }
-    return items.slice(0, NEARBY_MAX_ITEMS);
-  }
-
-  /**
    * "Big places": the nearest bus stands, railway stations and colleges around
    * the rider (live Google data, photo required, at most BIG_PER_KIND of each
    * kind), nearest first. Topped up from Wikipedia when Google has too few.
@@ -270,32 +230,39 @@ export class PlacesService {
   async upsertSaved(userId: string, dto: UpsertSavedPlaceDto): Promise<SavedPlaceDto> {
     const geoKey = makeGeoKey(dto.lat, dto.lng);
 
-    // If a label (home/work) is being set, remove the previous entry with that label for this user.
-    if (dto.label) {
-      await this.savedPlaces.delete({ userId, label: dto.label });
-    }
+    // One transaction: deleting the previous home/work entry and saving the new
+    // one must succeed or fail together, otherwise a failed save would leave the
+    // rider with no Home/Work at all.
+    return this.savedPlaces.manager.transaction(async (manager) => {
+      const repo = manager.getRepository(SavedPlaceEntity);
 
-    // Upsert by (userId, geoKey).
-    const existing = await this.savedPlaces.findOne({ where: { userId, geoKey } });
-    if (existing) {
-      existing.title = dto.title;
-      existing.address = dto.address;
-      if (dto.label !== undefined) existing.label = dto.label ?? null;
-      const saved = await this.savedPlaces.save(existing);
+      // If a label (home/work) is being set, remove the previous entry with that label for this user.
+      if (dto.label) {
+        await repo.delete({ userId, label: dto.label });
+      }
+
+      // Upsert by (userId, geoKey).
+      const existing = await repo.findOne({ where: { userId, geoKey } });
+      if (existing) {
+        existing.title = dto.title;
+        existing.address = dto.address;
+        if (dto.label !== undefined) existing.label = dto.label ?? null;
+        const saved = await repo.save(existing);
+        return { id: saved.id, label: saved.label, title: saved.title, address: saved.address, lat: saved.lat, lng: saved.lng };
+      }
+
+      const entity = repo.create({
+        userId,
+        title: dto.title,
+        address: dto.address,
+        lat: dto.lat,
+        lng: dto.lng,
+        geoKey,
+        label: dto.label ?? null,
+      });
+      const saved = await repo.save(entity);
       return { id: saved.id, label: saved.label, title: saved.title, address: saved.address, lat: saved.lat, lng: saved.lng };
-    }
-
-    const entity = this.savedPlaces.create({
-      userId,
-      title: dto.title,
-      address: dto.address,
-      lat: dto.lat,
-      lng: dto.lng,
-      geoKey,
-      label: dto.label ?? null,
     });
-    const saved = await this.savedPlaces.save(entity);
-    return { id: saved.id, label: saved.label, title: saved.title, address: saved.address, lat: saved.lat, lng: saved.lng };
   }
 
   async deleteSaved(userId: string, id: string): Promise<void> {

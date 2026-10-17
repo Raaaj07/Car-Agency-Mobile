@@ -5,6 +5,23 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Places / Home-screen Review Pass (2026-10-17)
+
+Fixes from the project review, backend + frontend, each covered by tests where it can be:
+
+- **Recents order** - `PlacesService.getRecent` ordered AFTER `LIMIT`; the query is now wrapped so recency ordering happens first.
+- **Frequent places** - `getFrequent` counts only `completed` rides.
+- **Coordinate checks** - `getBigPlaces`/`getPopular` and the Google search reject NaN/Infinity and out-of-range lat/lng before any Google call.
+- **Bounded caches** - new `common/bounded-map.ts`; Google metadata/photo/nearby caches have hard caps (2000 / 200 / 500).
+- **Home screen** - empty-state button only without live location; per-field zustand selectors instead of subscribing to the whole store; `fetchLocationPlaces` and `fetchAll` no longer chained.
+- **Saved places** - `upsertSaved` replaces the old Home/Work label and saves the new place in ONE transaction (a failed save can no longer leave the rider with no Home/Work).
+- **Env** - `REQUIRE_AUTH_FOR_PHOTOS` must be exactly `true` or `false` when set (an empty `REQUIRE_AUTH_FOR_PHOTOS=` line now fails boot).
+- **Removed dead code** - `GET /places/nearby`, `placesApi.getNearby`, the curated-places config + resolver, public `GET /places/photo/:configId`, Google `searchNearbyByDistance`/'distance' rank, and 4 unused frontend components. Moved (not deleted) to `_to_delete/` - delete that folder once the frontend `tsc` + lint pass.
+
+Still owner-side: renew the Google Places key (Wikipedia fallback is active meanwhile), device-test the home sheet and tab bar.
+
+---
+
 ## Admin Dashboard Overhaul + Bug Fix Pass (2026-10-05)
 
 Second pass, seven phases, one commit per phase (`d7e5d14` â†’ `6fd5de0` â†’ `76307d2` â†’ `91e5bd9` â†’ `ec479c1` â†’ cleanup commit).

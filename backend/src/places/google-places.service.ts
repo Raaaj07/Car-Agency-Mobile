@@ -1,6 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { PlaceConfigItem } from './places.config';
 import { BoundedMap } from '../common/bounded-map';
 
 export interface ResolvedPlacePhoto {
@@ -41,9 +40,8 @@ interface PhotoCacheEntry {
   contentType: string;
 }
 
-export type NearbyRank = 'distance' | 'popularity' | 'big';
+export type NearbyRank = 'popularity' | 'big';
 
-const SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 const NEARBY_URL = 'https://places.googleapis.com/v1/places:searchNearby';
 const FETCH_TIMEOUT_MS = 8000;
 // Metadata: 24 h positive / 10 min negative. Photo bytes: 1 h.
@@ -66,38 +64,16 @@ const NEARBY_CACHE_MAX = 500;
 /** Places API (New) searchNearby accepts a radius of 0-50 000 m. */
 export const MAX_SEARCH_RADIUS_M = 50_000;
 const MIN_SEARCH_RADIUS_M = 500;
-/** Default radius of the distance-ranked ("Near You") search. */
+/** Fallback radius when a caller passes a non-finite radius. */
 export const DEFAULT_NEAR_RADIUS_M = 5_000;
 /** searchNearby returns at most 20 places per call. */
 const MAX_RESULTS = 20;
 
-// "Near You": everyday places people actually travel to — transit, campuses,
-// hospitals, food, worship, malls, plus the sights.
-//
-// IMPORTANT: every value must be a Places API (New) "Table A" type. Table B
+// IMPORTANT (applies to every includedTypes list below): every value must be a Places API (New) "Table A" type. Table B
 // types (e.g. `place_of_worship`, `establishment`, `food`, `health`) can only
 // APPEAR in responses — sending one in `includedTypes` makes Google reject the
 // WHOLE request with HTTP 400, so both home-screen lists came back empty.
 // Places of worship are therefore requested by their Table A types.
-export const NEAR_INCLUDED_TYPES = [
-  'tourist_attraction',
-  'museum',
-  'park',
-  'zoo',
-  'amusement_park',
-  'stadium',
-  'shopping_mall',
-  'university',
-  'hospital',
-  'transit_station',
-  'bus_station',
-  'train_station',
-  'hindu_temple',
-  'church',
-  'mosque',
-  'restaurant',
-  'school',
-];
 
 // "Big places" (home screen, right under recents): the transport hubs and
 // campuses riders actually travel to — bus stands, railway stations, colleges.
@@ -194,13 +170,6 @@ function photoOfPlace(place: unknown): { name: string; attribution: string | nul
   return { name: photo.name, attribution };
 }
 
-function firstPhotoOf(payload: unknown): { name: string; attribution: string | null } | null {
-  if (typeof payload !== 'object' || payload === null) return null;
-  const places = (payload as { places?: unknown }).places;
-  if (!Array.isArray(places) || places.length === 0) return null;
-  return photoOfPlace(places[0]);
-}
-
 /** Parse one `places[]` entry of a searchNearby response. Null when unusable. */
 function parseHit(p: Record<string, unknown>): NearbyPlaceHit | null {
   const googlePlaceId = typeof p.id === 'string' ? p.id : '';
@@ -260,101 +229,6 @@ export class GooglePlacesService implements OnModuleInit {
       return null;
     }
     return key;
-  }
-
-  /**
-   * Resolve a curated place to a Google photo reference. Uses the curated
-   * photoName when present, otherwise Places API (New) text search biased
-   * to the curated coordinates. Never throws — returns null on any failure.
-   */
-  async resolvePhoto(item: PlaceConfigItem): Promise<ResolvedPlacePhoto | null> {
-    const cached = this.metaCache.get(item.id);
-    if (cached) {
-      const ttl = cached.value ? META_TTL_POSITIVE_MS : META_TTL_NEGATIVE_MS;
-      if (Date.now() - cached.at < ttl) return cached.value;
-      this.metaCache.delete(item.id);
-    }
-
-    const key = this.apiKey;
-    if (!key) return null;
-
-    // Curated override wins — no Google call needed.
-    if (item.photoName) {
-      const resolved: ResolvedPlacePhoto = {
-        googlePlaceId: item.googlePlaceId ?? '',
-        photoName: item.photoName,
-        photoAttribution: item.photoAttribution ?? null,
-      };
-      this.metaCache.set(item.id, { at: Date.now(), value: resolved });
-      return resolved;
-    }
-
-    try {
-      const res = await fetchWithTimeout(
-        SEARCH_URL,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Goog-Api-Key': key,
-            'X-Goog-FieldMask': 'places.id,places.photos.name,places.photos.authorAttributions',
-          },
-          body: JSON.stringify({
-            textQuery: `${item.title}, ${item.subtitle}, India`,
-            regionCode: 'IN',
-            languageCode: 'en',
-            maxResultCount: 1,
-            locationBias: {
-              circle: {
-                center: { latitude: item.lat, longitude: item.lng },
-                radius: 5000.0,
-              },
-            },
-          }),
-        },
-        FETCH_TIMEOUT_MS,
-      );
-      if (!res.ok) {
-        this.logger.warn(
-          `Places searchText failed for ${item.id}: HTTP ${res.status} ${await errorReason(res)}`,
-        );
-        this.metaCache.set(item.id, { at: Date.now(), value: null });
-        return null;
-      }
-      const payload: unknown = await res.json();
-      if (typeof payload !== 'object' || payload === null || !Array.isArray((payload as { places?: unknown }).places)) {
-        this.metaCache.set(item.id, { at: Date.now(), value: null });
-        return null;
-      }
-      const places = (payload as { places: Array<{ id?: unknown }> }).places;
-      const googlePlaceId = places.length > 0 && typeof places[0].id === 'string' ? places[0].id : '';
-      const photo = firstPhotoOf(payload);
-      if (!photo || !photo.name) {
-        this.metaCache.set(item.id, { at: Date.now(), value: null });
-        return null;
-      }
-      const resolved: ResolvedPlacePhoto = {
-        googlePlaceId,
-        photoName: photo.name,
-        photoAttribution: photo.attribution,
-      };
-      this.metaCache.set(item.id, { at: Date.now(), value: resolved });
-      return resolved;
-    } catch (err) {
-      this.logger.warn(`Places searchText error for ${item.id}: ${(err as Error)?.message ?? err}`);
-      this.metaCache.set(item.id, { at: Date.now(), value: null });
-      return null;
-    }
-  }
-
-  /**
-   * Download the resolved photo bytes server-side (the API key never leaves
-   * the server). Returns null when there is no photo or the fetch fails.
-   */
-  async fetchPlacePhoto(item: PlaceConfigItem): Promise<FetchedPlacePhoto | null> {
-    const resolved = await this.resolvePhoto(item);
-    if (!resolved) return null;
-    return this.fetchMedia(resolved.photoName, item.id);
   }
 
   /**
@@ -437,19 +311,6 @@ export class GooglePlacesService implements OnModuleInit {
   }
 
   /**
-   * "Near You": places closest to a coordinate, NEAREST FIRST (Google's own
-   * distance ranking). Default radius 5 km, up to 50 km.
-   * Never throws — returns [] on any failure (incl. missing API key).
-   */
-  searchNearbyByDistance(
-    lat: number,
-    lng: number,
-    radiusM = DEFAULT_NEAR_RADIUS_M,
-  ): Promise<NearbyPlaceHit[]> {
-    return this.searchNearby('distance', lat, lng, radiusM);
-  }
-
-  /**
    * "Big places": nearest bus stands, railway stations and colleges around a
    * coordinate, NEAREST FIRST. Never throws — [] on any failure.
    */
@@ -509,12 +370,7 @@ export class GooglePlacesService implements OnModuleInit {
             'X-Goog-FieldMask': rank === 'popularity' ? POPULAR_FIELD_MASK : NEAR_FIELD_MASK,
           },
           body: JSON.stringify({
-            includedTypes:
-              rank === 'popularity'
-                ? POPULAR_INCLUDED_TYPES
-                : rank === 'big'
-                  ? BIG_INCLUDED_TYPES
-                  : NEAR_INCLUDED_TYPES,
+            includedTypes: rank === 'popularity' ? POPULAR_INCLUDED_TYPES : BIG_INCLUDED_TYPES,
             maxResultCount: MAX_RESULTS,
             rankPreference: rank === 'popularity' ? 'POPULARITY' : 'DISTANCE',
             languageCode: 'en',
