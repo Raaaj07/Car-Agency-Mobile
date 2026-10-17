@@ -364,7 +364,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   const gridWidth = windowWidth - 40;
   const gridGap = 10;
   const tileWidth = Math.floor((gridWidth - gridGap * 2) / 3);
-  const popularCardWidth = Math.floor((gridWidth - 12) / 2.15);
+  const popularCardWidth = Math.floor((gridWidth - 20) / 2.6);
 
   const hasLiveLocation = locationStatus === 'granted';
   const loadedOnce = lastFetchedAt !== null;
@@ -794,14 +794,14 @@ const styles = StyleSheet.create({
     marginTop: 14,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '700',
     color: colors.textPrimary,
-    marginTop: 22,
-    marginBottom: 12,
+    marginTop: 20,
+    marginBottom: 10,
   },
   popularList: {
-    gap: 12,
+    gap: 10,
     paddingRight: 20,
   },
 

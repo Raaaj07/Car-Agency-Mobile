@@ -12,7 +12,7 @@ interface Props {
   cardWidth: number;
 }
 
-const IMAGE_HEIGHT = 112;
+const IMAGE_HEIGHT = 78;
 
 /**
  * "Popular Places" card (Rapido style): bold name top-left, yellow circular
@@ -34,14 +34,14 @@ export const PopularPlaceCard: React.FC<Props> = memo(({ place, onPress, cardWid
           {place.title}
         </Text>
         <View style={styles.arrow}>
-          <ArrowRight size={16} color="#111827" />
+          <ArrowRight size={13} color="#111827" />
         </View>
       </View>
       <PlaceImage
         uri={place.imageUrl}
-        width={cardWidth - 16}
+        width={cardWidth - 14}
         height={IMAGE_HEIGHT}
-        borderRadius={12}
+        borderRadius={10}
         onFail={() => markImageBroken(place.id)}
       />
     </TouchableOpacity>
@@ -55,28 +55,29 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E5E9F0',
-    borderRadius: 16,
-    padding: 8,
-    gap: 8,
+    borderRadius: 14,
+    padding: 6,
+    gap: 6,
   },
   top: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 6,
     paddingHorizontal: 2,
-    minHeight: 38,
+    minHeight: 32,
   },
   title: {
     flex: 1,
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 12.5,
+    lineHeight: 16,
+    fontWeight: '700',
     color: colors.textPrimary,
   },
   arrow: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     backgroundColor: '#FFC928',
     alignItems: 'center',
     justifyContent: 'center',
