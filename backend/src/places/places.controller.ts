@@ -60,6 +60,23 @@ export class PlacesController {
     return this.service.getFrequent(user.userId, Number.isFinite(parsed) ? parsed : 5);
   }
 
+  // Home screen, right under recents: nearest bus stands, railway stations and
+  // colleges. The app calls this ONCE per app launch. Same Google-quota
+  // reasoning as nearby for the throttle.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('big')
+  getBig(@Query('lat') lat?: string, @Query('lng') lng?: string): Promise<PlaceItemDto[]> {
+    return this.service.getBigPlaces(lat ? parseFloat(lat) : NaN, lng ? parseFloat(lng) : NaN);
+  }
+
+  // Home screen "Popular Places": well-rated sights near the rider. Called once
+  // per app launch.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('popular')
+  getPopular(@Query('lat') lat?: string, @Query('lng') lng?: string): Promise<PlaceItemDto[]> {
+    return this.service.getPopular(lat ? parseFloat(lat) : NaN, lng ? parseFloat(lng) : NaN);
+  }
+
   // Route throttle: 30/min — nearby triggers a server-side Google Places
   // search (billable per miss); the global 300/min would let one client burn
   // the Places quota alone.

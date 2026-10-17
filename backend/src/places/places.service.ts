@@ -31,6 +31,23 @@ const DUPLICATE_KM = 0.2;
 // screen is not left empty.
 const MIN_LIVE_RESULTS = 6;
 
+// ── "Big places" (bus stands, railway stations, colleges) ───────────────────
+const BIG_RADIUS_M = 10_000;
+const BIG_MAX_ITEMS = 6;
+// At most this many of each kind, so one kind (say 6 colleges) cannot crowd out
+// the bus stand and the railway station.
+const BIG_PER_KIND = 2;
+// Wikipedia top-up only counts as a "big place" when its name says so.
+const BIG_WORDS = /(bus (stand|station|terminus|stop)|railway|junction|station|college|university|institute|polytechnic)/i;
+// Below this many results the list is topped up from Wikipedia.
+const BIG_MIN_RESULTS = 3;
+
+// ── "Popular places" ────────────────────────────────────────────────────────
+const POPULAR_RADIUS_M = 25_000;
+const POPULAR_MIN_RATING = 4.0;
+const POPULAR_MIN_RATING_COUNT = 25;
+const POPULAR_MAX_ITEMS = 10;
+
 // ── "Frequently visited" ────────────────────────────────────────────────────
 // A drop-off only counts as "frequent" once the rider has been there this
 // many times; otherwise it is just a recent trip (shown under recents).
@@ -106,11 +123,13 @@ export class PlacesService {
     ref: { lat: number; lng: number },
     radiusM: number,
     limit: number,
+    keep: (h: WikiPlaceHit) => boolean = () => true,
   ): Promise<PlaceItemDto[]> {
     if (!this.wiki) return [];
     try {
       const hits = await this.wiki.searchNearby(ref.lat, ref.lng, Math.min(radiusM, WIKI_MAX_RADIUS_M));
       return hits
+        .filter(keep)
         .map((h) => this.wikiItem(h, ref))
         .sort(byDistance)
         .slice(0, limit);
@@ -157,6 +176,74 @@ export class PlacesService {
       items = this.mergeUnique(items, wiki).sort(byDistance);
     }
     return items.slice(0, NEARBY_MAX_ITEMS);
+  }
+
+  /**
+   * "Big places": the nearest bus stands, railway stations and colleges around
+   * the rider (live Google data, photo required, at most BIG_PER_KIND of each
+   * kind), nearest first. Topped up from Wikipedia when Google has too few.
+   * No fixed list: nothing found means [].
+   */
+  async getBigPlaces(lat: number, lng: number): Promise<PlaceItemDto[]> {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    const ref = { lat, lng };
+    const hits = (await this.google.searchBigPlaces(lat, lng, BIG_RADIUS_M)).filter((h) => !!h.photoName);
+    const kindOf = (h: NearbyPlaceHit): string => {
+      const t = h.types ?? [];
+      if (t.includes('bus_station')) return 'bus';
+      if (t.includes('train_station')) return 'train';
+      if (t.includes('university')) return 'campus';
+      return 'other';
+    };
+    const perKind = new Map<string, number>();
+    const live = hits
+      .map((h) => ({ kind: kindOf(h), item: this.liveItem(h, ref) }))
+      .sort((a, b) => byDistance(a.item, b.item))
+      .filter(({ kind }) => {
+        const n = perKind.get(kind) ?? 0;
+        if (n >= BIG_PER_KIND) return false;
+        perKind.set(kind, n + 1);
+        return true;
+      })
+      .map(({ item }) => item);
+    this.logger.log(
+      `Big places (${lat.toFixed(3)},${lng.toFixed(3)}): ${hits.length} Google places with a photo, ${live.length} kept`,
+    );
+    let items = live;
+    if (items.length < BIG_MIN_RESULTS) {
+      const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, 20, (h) =>
+        BIG_WORDS.test(`${h.title} ${h.description}`),
+      );
+      items = this.mergeUnique(items, wiki).sort(byDistance);
+    }
+    return items.slice(0, BIG_MAX_ITEMS);
+  }
+
+  /**
+   * "Popular places" nearby: well-rated, destination-worthy places (sights,
+   * temples, parks, malls…) within 25 km, photo required, nearest first.
+   * Live Google data topped up from Wikipedia sights; no fixed list.
+   */
+  async getPopular(lat: number, lng: number): Promise<PlaceItemDto[]> {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    const ref = { lat, lng };
+    const hits = await this.google.searchNearbyByPopularity(lat, lng, POPULAR_RADIUS_M);
+    let items = hits
+      .filter(
+        (h) =>
+          !!h.photoName &&
+          h.rating !== null &&
+          h.rating >= POPULAR_MIN_RATING &&
+          (h.ratingCount ?? 0) >= POPULAR_MIN_RATING_COUNT,
+      )
+      .map((h) => this.liveItem(h, ref))
+      .sort(byDistance);
+    this.logger.log(`Popular (${lat.toFixed(3)},${lng.toFixed(3)}): ${hits.length} Google places, ${items.length} kept`);
+    if (items.length < MIN_LIVE_RESULTS) {
+      const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, POPULAR_MAX_ITEMS, (h) => h.attraction);
+      items = this.mergeUnique(items, wiki).sort(byDistance);
+    }
+    return items.slice(0, POPULAR_MAX_ITEMS);
   }
 
   async getSaved(userId: string): Promise<SavedPlaceDto[]> {

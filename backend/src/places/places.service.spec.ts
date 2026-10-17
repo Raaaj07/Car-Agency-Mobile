@@ -22,9 +22,11 @@ const wikiHit = (pageId: string, title: string, lat: number, lng: number, attrac
   thumbUrl: `https://upload.wikimedia.org/wikipedia/commons/thumb/${pageId}.jpg`, attraction,
 });
 
-function makeService(near: unknown[] = [], wikiHits?: unknown[]) {
+function makeService(near: unknown[] = [], wikiHits?: unknown[], big: unknown[] = [], popular: unknown[] = []) {
   const google = {
     searchNearbyByDistance: jest.fn().mockResolvedValue(near),
+    searchBigPlaces: jest.fn().mockResolvedValue(big),
+    searchNearbyByPopularity: jest.fn().mockResolvedValue(popular),
   };
   const wiki = wikiHits ? { searchNearby: jest.fn().mockResolvedValue(wikiHits) } : undefined;
   const service = new PlacesService({} as never, {} as never, google as never, wiki as never);
@@ -97,6 +99,66 @@ describe('PlacesService — nearest places', () => {
       const { service, google } = makeService([hit('x-dddd4444', 1, 1)]);
       expect(await service.getNearby(NaN, 78)).toEqual([]);
       expect(google.searchNearbyByDistance).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getBigPlaces', () => {
+    const typed = (id: string, lat: number, lng: number, types: string[], photo = true) => ({
+      ...hit(id, lat, lng, null, null, photo ? `places/${id}/photos/p1` : null),
+      types,
+    });
+
+    it('keeps at most 2 per kind, nearest first, photo only', async () => {
+      const { service, google } = makeService([], undefined, [
+        typed('c1-aaaa1111', 11.665, 78.147, ['university']),
+        typed('c2-bbbb2222', 11.666, 78.148, ['university']),
+        typed('c3-cccc3333', 11.667, 78.149, ['university']),
+        typed('bus-dddd4444', 11.7, 78.16, ['bus_station']),
+        typed('nop-eeee5555', 11.664, 78.1461, ['train_station'], false),
+      ]);
+      const items = await service.getBigPlaces(SALEM.lat, SALEM.lng);
+      expect(google.searchBigPlaces).toHaveBeenCalledWith(SALEM.lat, SALEM.lng, 10000);
+      expect(items.map((i) => i.id)).toEqual(['g-c1-aaaa1111', 'g-c2-bbbb2222', 'g-bus-dddd4444']);
+    });
+
+    it('has no fixed list and ignores invalid coordinates', async () => {
+      const { service, google } = makeService();
+      expect(await service.getBigPlaces(SALEM.lat, SALEM.lng)).toEqual([]);
+      expect(await service.getBigPlaces(NaN, 1)).toEqual([]);
+      expect(google.searchBigPlaces).toHaveBeenCalledTimes(1);
+    });
+
+    it('tops up from Wikipedia only with bus/rail/college places', async () => {
+      const { service } = makeService([], [
+        wikiHit('1', 'Erode Junction railway station', 11.342, 77.718),
+        wikiHit('2', 'Some Temple', 11.343, 77.719),
+      ]);
+      const items = await service.getBigPlaces(ERODE.lat, ERODE.lng);
+      expect(items.map((i) => i.id)).toEqual(['w-1']);
+    });
+  });
+
+  describe('getPopular', () => {
+    it('keeps well-rated places with a photo, nearest first', async () => {
+      const { service, google } = makeService([], undefined, [], [
+        hit('far-aaaa1111', 11.75, 78.2, 4.6, 900),
+        hit('near-bbbb2222', 11.665, 78.147, 4.3, 120),
+        hit('low-cccc3333', 11.666, 78.147, 3.2, 500),
+        hit('few-dddd4444', 11.667, 78.147, 4.8, 3),
+        hit('nop-eeee5555', 11.668, 78.147, 4.8, 500, null),
+      ]);
+      const items = await service.getPopular(SALEM.lat, SALEM.lng);
+      expect(google.searchNearbyByPopularity).toHaveBeenCalledWith(SALEM.lat, SALEM.lng, 25000);
+      expect(items.map((i) => i.id)).toEqual(['g-near-bbbb2222', 'g-far-aaaa1111']);
+    });
+
+    it('tops up from Wikipedia attractions only', async () => {
+      const { service } = makeService([], [
+        wikiHit('1', 'Erode Fort', 11.342, 77.718, true),
+        wikiHit('2', 'Some Ward', 11.343, 77.719, false),
+      ]);
+      const items = await service.getPopular(ERODE.lat, ERODE.lng);
+      expect(items.map((i) => i.id)).toEqual(['w-1']);
     });
   });
 

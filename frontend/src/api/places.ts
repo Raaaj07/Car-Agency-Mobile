@@ -67,6 +67,22 @@ export const placesApi = {
   getFrequent: async (limit = 5): Promise<PlaceItem[]> =>
     (await api.get<PlaceItem[]>('/places/frequent', { params: { limit } })).data,
 
+  /** GET /places/big?lat=&lng= — nearest bus stands, railway stations, colleges */
+  getBig: async (coords: { lat: number; lng: number }): Promise<PlaceItem[]> =>
+    (
+      await api.get<PlaceItem[]>('/places/big', {
+        params: { lat: coords.lat, lng: coords.lng },
+      })
+    ).data.map(absolutizeImageUrl),
+
+  /** GET /places/popular?lat=&lng= — popular places near the rider */
+  getPopular: async (coords: { lat: number; lng: number }): Promise<PlaceItem[]> =>
+    (
+      await api.get<PlaceItem[]>('/places/popular', {
+        params: { lat: coords.lat, lng: coords.lng },
+      })
+    ).data.map(absolutizeImageUrl),
+
   /** GET /places/nearby?lat=&lng=[&radius=] — live location-based suggestions */
   getNearby: async (coords: { lat: number; lng: number }): Promise<PlaceItem[]> =>
     (

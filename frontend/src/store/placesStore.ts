@@ -1,8 +1,8 @@
 /**
  * placesStore – Zustand store for home-screen place data.
  *
- * Home data is live only: `nearby` (closest places around the rider's GPS)
- * and `frequent` (this rider's most-visited drop-offs). Nothing is hardcoded.
+ * Home data is live only: `bigPlaces` / `popular` (around the rider's GPS,
+ * fetched once per app launch) and `frequent` (this rider's most-visited drop-offs). Nothing is hardcoded.
  *
  * fetchAll() runs 5 requests with Promise.allSettled so one failure does not
  * blank all sections. Anything that failed is retried ONCE, silently, after a
@@ -32,7 +32,12 @@ interface PlacesState {
    *  account is discarded instead of repopulating the store after logout. */
   generation: number;
   saved: SavedPlace[];
-  nearby: PlaceItem[];
+  /** Nearest bus stands, railway stations and colleges (fetched once per app launch). */
+  bigPlaces: PlaceItem[];
+  /** Popular places near the rider (fetched once per app launch). */
+  popular: PlaceItem[];
+  /** True once the location-based lists were requested this launch. */
+  placesRequested: boolean;
   /** Rider's most-visited drop-offs (ride history, most trips first). */
   frequent: PlaceItem[];
   promos: Promo[];
@@ -50,6 +55,12 @@ interface PlacesState {
   markImageBroken: (id: string) => void;
 
   fetchAll: (coords?: { lat: number; lng: number }, force?: boolean) => Promise<void>;
+  /**
+   * Location-based lists (big places + popular). Calls the API ONCE per app
+   * launch: later calls are no-ops, so photos load once and nothing re-searches
+   * until the app is closed and reopened. Retried only if every request failed.
+   */
+  fetchLocationPlaces: (coords: { lat: number; lng: number }) => Promise<void>;
   toggleSaved: (place: PlaceItem) => Promise<void>;
   setHomeWork: (label: 'home' | 'work', place: PlaceItem) => Promise<void>;
   /** Remember a destination the rider picked (bumps to the top, deduped by geo-key). */
@@ -72,7 +83,9 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
   searchRecents: [],
   generation: 0,
   saved: [],
-  nearby: [],
+  bigPlaces: [],
+  popular: [],
+  placesRequested: false,
   frequent: [],
   promos: [],
   loading: false,
@@ -103,7 +116,6 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
       () => placesApi.getSaved(),
       () => placesApi.getFrequent(10),
       () => promosApi.getActive(),
-      () => (coords ? placesApi.getNearby(coords) : Promise.resolve([] as PlaceItem[])),
     ];
     const results = await Promise.allSettled(tasks.map((t) => t()));
 
@@ -117,12 +129,11 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
       });
     }
 
-    const [recentRes, savedRes, frequentRes, promosRes, nearbyRes] = results as unknown as [
+    const [recentRes, savedRes, frequentRes, promosRes] = results as unknown as [
       PromiseSettledResult<PlaceItem[]>,
       PromiseSettledResult<SavedPlace[]>,
       PromiseSettledResult<PlaceItem[]>,
       PromiseSettledResult<Promo[]>,
-      PromiseSettledResult<PlaceItem[]>,
     ];
 
     const allFailed = results.every((r) => r.status === 'rejected');
@@ -141,17 +152,40 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
     if (savedRes.status === 'fulfilled') next.saved = savedRes.value;
     if (frequentRes.status === 'fulfilled') next.frequent = frequentRes.value;
     if (promosRes.status === 'fulfilled') next.promos = promosRes.value;
-    if (nearbyRes.status === 'fulfilled') next.nearby = nearbyRes.value;
 
     if (allFailed) {
       // Both attempts failed for every request: show the manual retry row.
       next.error = "Couldn't load suggestions.";
-    } else if (coords) {
-      // Remember WHERE these suggestions are for, so the home screen only
-      // re-fetches once the rider has actually moved.
-      next.suggestionsCoords = coords;
     }
 
+    set(next);
+    // Location-based lists load once per launch (no-op after the first call).
+    if (coords) void get().fetchLocationPlaces(coords);
+  },
+
+  fetchLocationPlaces: async (coords) => {
+    if (get().placesRequested) return;
+    const generation = get().generation;
+    set({ placesRequested: true });
+
+    const tasks = [() => placesApi.getBig(coords), () => placesApi.getPopular(coords)];
+    const results = await Promise.allSettled(tasks.map((t) => t()));
+    const failedIdx = results.flatMap((r, i) => (r.status === 'rejected' ? [i] : []));
+    if (failedIdx.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      const again = await Promise.allSettled(failedIdx.map((i) => tasks[i]()));
+      failedIdx.forEach((originalIdx, k) => {
+        results[originalIdx] = again[k];
+      });
+    }
+    if (get().generation !== generation) return;
+
+    const [bigRes, popularRes] = results;
+    const next: Partial<PlacesState> = { suggestionsCoords: coords };
+    if (bigRes.status === 'fulfilled') next.bigPlaces = bigRes.value;
+    if (popularRes.status === 'fulfilled') next.popular = popularRes.value;
+    // Both failed even after the retry (offline): allow a later attempt.
+    if (results.every((r) => r.status === 'rejected')) next.placesRequested = false;
     set(next);
   },
 
@@ -266,7 +300,9 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
       recent: [],
       searchRecents: [],
       saved: [],
-      nearby: [],
+      bigPlaces: [],
+      popular: [],
+      placesRequested: false,
       frequent: [],
       promos: [],
       loading: false,
