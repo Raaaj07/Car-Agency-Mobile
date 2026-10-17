@@ -33,20 +33,22 @@ const MIN_LIVE_RESULTS = 6;
 
 // ── "Big places" (bus stands, railway stations, colleges) ───────────────────
 const BIG_RADIUS_M = 10_000;
-const BIG_MAX_ITEMS = 6;
+const BIG_MAX_ITEMS = 9;
 // At most this many of each kind, so one kind (say 6 colleges) cannot crowd out
 // the bus stand and the railway station.
-const BIG_PER_KIND = 2;
+const BIG_PER_KIND = 3;
 // Wikipedia top-up only counts as a "big place" when its name says so.
 const BIG_WORDS = /(bus (stand|station|terminus|stop)|railway|junction|station|college|university|institute|polytechnic)/i;
 // Below this many results the list is topped up from Wikipedia.
-const BIG_MIN_RESULTS = 3;
+const BIG_MIN_RESULTS = 6;
 
 // ── "Popular places" ────────────────────────────────────────────────────────
 const POPULAR_RADIUS_M = 25_000;
-const POPULAR_MIN_RATING = 4.0;
-const POPULAR_MIN_RATING_COUNT = 25;
-const POPULAR_MAX_ITEMS = 10;
+const POPULAR_MIN_RATING = 3.8;
+const POPULAR_MIN_RATING_COUNT = 10;
+const POPULAR_MAX_ITEMS = 12;
+// Below this many results the list is topped up from Wikipedia sights.
+const POPULAR_MIN_RESULTS = 8;
 
 // ── "Frequently visited" ────────────────────────────────────────────────────
 // A drop-off only counts as "frequent" once the rider has been there this
@@ -239,7 +241,7 @@ export class PlacesService {
       .map((h) => this.liveItem(h, ref))
       .sort(byDistance);
     this.logger.log(`Popular (${lat.toFixed(3)},${lng.toFixed(3)}): ${hits.length} Google places, ${items.length} kept`);
-    if (items.length < MIN_LIVE_RESULTS) {
+    if (items.length < POPULAR_MIN_RESULTS) {
       const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, POPULAR_MAX_ITEMS, (h) => h.attraction);
       items = this.mergeUnique(items, wiki).sort(byDistance);
     }

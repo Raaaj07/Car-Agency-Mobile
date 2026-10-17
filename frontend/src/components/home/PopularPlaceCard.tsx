@@ -12,7 +12,7 @@ interface Props {
   cardWidth: number;
 }
 
-const IMAGE_HEIGHT = 78;
+const IMAGE_HEIGHT = 86;
 
 /**
  * "Popular Places" card (Rapido style): bold name top-left, yellow circular
@@ -69,8 +69,8 @@ const styles = StyleSheet.create({
   },
   title: {
     flex: 1,
-    fontSize: 12.5,
-    lineHeight: 16,
+    fontSize: 11.5,
+    lineHeight: 15,
     fontWeight: '700',
     color: colors.textPrimary,
   },

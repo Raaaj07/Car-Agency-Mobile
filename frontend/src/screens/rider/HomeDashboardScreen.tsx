@@ -46,7 +46,7 @@ let pointSeq = 0;
 
 // Big-place photo tiles (bus stands, stations, colleges) shown before the
 // "Search for other places" tile.
-const GRID_PLACE_COUNT = 5;
+const GRID_PLACE_COUNT = 8;
 // Rows (frequent first, then recent) shown directly under the search box.
 const RECENT_ROW_COUNT = 3;
 
@@ -107,7 +107,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   const HEADER_HEIGHT = 80;
   // Room for the recent rows (~62 each) shown under the search box. Anything
   // below (frequent, nearest) is reached by scrolling the sheet.
-  const recentRowsHeight = recentRows.length * 62;
+  const recentRowsHeight = Math.min(recentRows.length, 3) * 62;
 
   const defaultVisibleHeight = Math.max(
     windowHeight * 0.5,
@@ -364,7 +364,7 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   const gridWidth = windowWidth - 40;
   const gridGap = 10;
   const tileWidth = Math.floor((gridWidth - gridGap * 2) / 3);
-  const popularCardWidth = Math.floor((gridWidth - 20) / 2.6);
+  const popularCardWidth = Math.floor((gridWidth - 20) / 1.95);
 
   const hasLiveLocation = locationStatus === 'granted';
   const loadedOnce = lastFetchedAt !== null;

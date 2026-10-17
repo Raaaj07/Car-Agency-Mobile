@@ -108,17 +108,18 @@ describe('PlacesService — nearest places', () => {
       types,
     });
 
-    it('keeps at most 2 per kind, nearest first, photo only', async () => {
+    it('keeps at most 3 per kind, nearest first, photo only', async () => {
       const { service, google } = makeService([], undefined, [
         typed('c1-aaaa1111', 11.665, 78.147, ['university']),
         typed('c2-bbbb2222', 11.666, 78.148, ['university']),
         typed('c3-cccc3333', 11.667, 78.149, ['university']),
+        typed('c4-ffff6666', 11.668, 78.15, ['university']),
         typed('bus-dddd4444', 11.7, 78.16, ['bus_station']),
         typed('nop-eeee5555', 11.664, 78.1461, ['train_station'], false),
       ]);
       const items = await service.getBigPlaces(SALEM.lat, SALEM.lng);
       expect(google.searchBigPlaces).toHaveBeenCalledWith(SALEM.lat, SALEM.lng, 10000);
-      expect(items.map((i) => i.id)).toEqual(['g-c1-aaaa1111', 'g-c2-bbbb2222', 'g-bus-dddd4444']);
+      expect(items.map((i) => i.id)).toEqual(['g-c1-aaaa1111', 'g-c2-bbbb2222', 'g-c3-cccc3333', 'g-bus-dddd4444']);
     });
 
     it('has no fixed list and ignores invalid coordinates', async () => {
