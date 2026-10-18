@@ -2,7 +2,6 @@ import React, { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { ArrowRight } from 'lucide-react-native';
 import { PlaceImage } from './PlaceImage';
-import { usePlacesStore } from '../../store/placesStore';
 import { PlaceItem } from '../../api/places';
 import { colors } from '../../theme/theme';
 
@@ -16,11 +15,10 @@ const IMAGE_HEIGHT = 86;
 
 /**
  * "Popular Places" card (Rapido style): bold name top-left, yellow circular
- * arrow top-right, landscape photo underneath. A photo that fails for good
- * removes the card from the list (photo-only rule).
+ * arrow top-right, landscape photo underneath. A photo that cannot load shows
+ * a map-pin placeholder; the card stays so the list is never emptied.
  */
 export const PopularPlaceCard: React.FC<Props> = memo(({ place, onPress, cardWidth }) => {
-  const markImageBroken = usePlacesStore((s) => s.markImageBroken);
   return (
     <TouchableOpacity
       style={[styles.card, { width: cardWidth }]}
@@ -42,7 +40,6 @@ export const PopularPlaceCard: React.FC<Props> = memo(({ place, onPress, cardWid
         width={cardWidth - 14}
         height={IMAGE_HEIGHT}
         borderRadius={10}
-        onFail={() => markImageBroken(place.id)}
       />
     </TouchableOpacity>
   );

@@ -10,7 +10,9 @@ import { useRideStore } from '../../store/rideStore';
 
 interface Props {
   onBack?: () => void;
-  onConfirmRide?: () => void;
+  // May be async: the Confirm Booking button locks itself until it settles,
+  // so a double/triple tap can never book twice.
+  onConfirmRide?: () => void | Promise<void>;
 }
 
 export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) => {

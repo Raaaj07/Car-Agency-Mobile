@@ -3,6 +3,7 @@ import {
   BIG_INCLUDED_TYPES,
   GooglePlacesService,
   POPULAR_INCLUDED_TYPES,
+  keyProblemHint,
 } from './google-places.service';
 
 // Types verified as Places API (New) "Table A" — the ONLY types Nearby Search
@@ -101,6 +102,14 @@ describe('GooglePlacesService — Nearby Search request', () => {
     }) as unknown as typeof fetch;
     const failing = new GooglePlacesService({ get: () => 'test-key' } as never);
     expect(await failing.searchBigPlaces(11.341, 77.7172)).toEqual([]);
+  });
+
+  it('tells an app-restricted key apart from an expired one', () => {
+    const restricted = keyProblemHint(
+      'PERMISSION_DENIED Requests from this Android client application <empty> are blocked.',
+    );
+    expect(restricted).toMatch(/Application restrictions = None/);
+    expect(keyProblemHint('API_KEY_INVALID API key expired.')).toMatch(/expired \/ invalid \/ billing/);
   });
 
   it('returns [] without calling Google when no API key is configured', async () => {

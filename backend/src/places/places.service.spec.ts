@@ -4,7 +4,7 @@ import { PlacesService } from './places.service';
 const SALEM = { lat: 11.6643, lng: 78.146 };
 const ERODE = { lat: 11.341, lng: 77.7172 };
 
-// Google hits carry a photo by default: places without one are never returned.
+// Google hits carry a photo by default, but a photo is NOT required to be listed (the photo proxy falls back to Wikimedia).
 const hit = (
   id: string,
   lat: number,
@@ -46,23 +46,28 @@ describe('PlacesService — location-based home lists', () => {
   });
 
   describe('getBigPlaces', () => {
-    const typed = (id: string, lat: number, lng: number, types: string[], photo = true) => ({
-      ...hit(id, lat, lng, null, null, photo ? `places/${id}/photos/p1` : null),
+    const typed = (
+      id: string, lat: number, lng: number, types: string[],
+      rating: number | null = null, count: number | null = null, photo = true,
+    ) => ({
+      ...hit(id, lat, lng, rating, count, photo ? `places/${id}/photos/p1` : null),
       types,
     });
 
-    it('keeps at most 3 per kind, nearest first, photo only', async () => {
+    it('keeps the 2 BEST-RATED of each kind (photo not required), shown nearest first', async () => {
       const { service, google } = makeService([], undefined, [
-        typed('c1-aaaa1111', 11.665, 78.147, ['university']),
-        typed('c2-bbbb2222', 11.666, 78.148, ['university']),
-        typed('c3-cccc3333', 11.667, 78.149, ['university']),
-        typed('c4-ffff6666', 11.668, 78.15, ['university']),
+        typed('c1-aaaa1111', 11.665, 78.147, ['university'], 4.0, 50),
+        typed('c2-bbbb2222', 11.666, 78.148, ['university'], 4.8, 300),
+        typed('c3-cccc3333', 11.667, 78.149, ['university'], 4.5, 100),
+        typed('c4-ffff6666', 11.668, 78.15, ['university'], 3.0, 10),
         typed('bus-dddd4444', 11.7, 78.16, ['bus_station']),
-        typed('nop-eeee5555', 11.664, 78.1461, ['train_station'], false),
+        typed('nop-eeee5555', 11.664, 78.1461, ['train_station'], null, null, false),
       ]);
       const items = await service.getBigPlaces(SALEM.lat, SALEM.lng);
       expect(google.searchBigPlaces).toHaveBeenCalledWith(SALEM.lat, SALEM.lng, 10000);
-      expect(items.map((i) => i.id)).toEqual(['g-c1-aaaa1111', 'g-c2-bbbb2222', 'g-c3-cccc3333', 'g-bus-dddd4444']);
+      expect(items.map((i) => i.id)).toEqual([
+        'g-nop-eeee5555', 'g-c2-bbbb2222', 'g-c3-cccc3333', 'g-bus-dddd4444',
+      ]);
     });
 
     it('has no fixed list and ignores invalid coordinates', async () => {
@@ -83,17 +88,29 @@ describe('PlacesService — location-based home lists', () => {
   });
 
   describe('getPopular', () => {
-    it('keeps well-rated places with a photo, nearest first', async () => {
+    it('lists the BEST-RATED places first (review count weighed), photo not required', async () => {
       const { service, google } = makeService([], undefined, [], [
         hit('far-aaaa1111', 11.75, 78.2, 4.6, 900),
         hit('near-bbbb2222', 11.665, 78.147, 4.3, 120),
-        hit('low-cccc3333', 11.666, 78.147, 3.2, 500),
-        hit('few-dddd4444', 11.667, 78.147, 4.8, 3),
-        hit('nop-eeee5555', 11.668, 78.147, 4.8, 500, null),
+        hit('low-cccc3333', 11.666, 78.147, 3.2, 500), // below the 3.5 floor
+        hit('few-dddd4444', 11.667, 78.147, 4.8, 3), // too few reviews to trust
+        hit('nop-eeee5555', 11.668, 78.147, 4.8, 500, null), // no photo in the search result: still listed
       ]);
       const items = await service.getPopular(SALEM.lat, SALEM.lng);
       expect(google.searchNearbyByPopularity).toHaveBeenCalledWith(SALEM.lat, SALEM.lng, 25000);
-      expect(items.map((i) => i.id)).toEqual(['g-near-bbbb2222', 'g-far-aaaa1111']);
+      expect(items.map((i) => i.id)).toEqual(['g-nop-eeee5555', 'g-far-aaaa1111', 'g-near-bbbb2222']);
+    });
+
+    it('returns at most 6 places: the highest-rated ones', async () => {
+      const many = Array.from({ length: 8 }, (_, i) =>
+        hit(`p${i}-xxxxxxx`, 11.665 + i * 0.001, 78.147, 4 + i * 0.1, 100),
+      );
+      const { service } = makeService([], undefined, [], many);
+      const items = await service.getPopular(SALEM.lat, SALEM.lng);
+      expect(items).toHaveLength(6);
+      expect(items.map((i) => i.id)).toEqual(
+        ['g-p7-xxxxxxx', 'g-p6-xxxxxxx', 'g-p5-xxxxxxx', 'g-p4-xxxxxxx', 'g-p3-xxxxxxx', 'g-p2-xxxxxxx'],
+      );
     });
 
     it('returns relative proxy image URLs and distanceKm, never absolute URLs', async () => {

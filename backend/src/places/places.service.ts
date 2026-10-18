@@ -21,22 +21,33 @@ const DUPLICATE_KM = 0.2;
 
 // ── "Big places" (bus stands, railway stations, colleges) ───────────────────
 const BIG_RADIUS_M = 10_000;
-const BIG_MAX_ITEMS = 9;
-// At most this many of each kind, so one kind (say 6 colleges) cannot crowd out
-// the bus stand and the railway station.
-const BIG_PER_KIND = 3;
+const BIG_MAX_ITEMS = 6;
+// At most this many of each kind (the best-rated ones), so one kind (say 6
+// colleges) cannot crowd out the bus stand and the railway station.
+const BIG_PER_KIND = 2;
 // Wikipedia top-up only counts as a "big place" when its name says so.
 const BIG_WORDS = /(bus (stand|station|terminus|stop)|railway|junction|station|college|university|institute|polytechnic)/i;
 // Below this many results the list is topped up from Wikipedia.
-const BIG_MIN_RESULTS = 6;
+const BIG_MIN_RESULTS = 4;
 
 // ── "Popular places" ────────────────────────────────────────────────────────
 const POPULAR_RADIUS_M = 25_000;
-const POPULAR_MIN_RATING = 3.8;
-const POPULAR_MIN_RATING_COUNT = 10;
-const POPULAR_MAX_ITEMS = 12;
+// Floors only: the list is the BEST-RATED places that pass them, top 6.
+const POPULAR_MIN_RATING = 3.5;
+const POPULAR_MIN_RATING_COUNT = 5;
+const POPULAR_MAX_ITEMS = 6;
 // Below this many results the list is topped up from Wikipedia sights.
-const POPULAR_MIN_RESULTS = 8;
+const POPULAR_MIN_RESULTS = 4;
+
+// Rating score = Bayesian average: a place with 3 reviews of 5 stars must not
+// beat one with 900 reviews of 4.6. Unrated places score the prior (neutral).
+const PRIOR_RATING = 4.0;
+const PRIOR_WEIGHT = 20;
+const ratingScore = (h: { rating: number | null; ratingCount: number | null }): number => {
+  if (h.rating === null) return PRIOR_RATING;
+  const n = h.ratingCount ?? 0;
+  return (h.rating * n + PRIOR_RATING * PRIOR_WEIGHT) / (n + PRIOR_WEIGHT);
+};
 
 // ── "Frequently visited" ────────────────────────────────────────────────────
 // A drop-off only counts as "frequent" once the rider has been there this
@@ -153,7 +164,8 @@ export class PlacesService {
   async getBigPlaces(lat: number, lng: number): Promise<PlaceItemDto[]> {
     if (!isValidCoord(lat, lng)) return [];
     const ref = { lat, lng };
-    const hits = (await this.google.searchBigPlaces(lat, lng, BIG_RADIUS_M)).filter((h) => !!h.photoName);
+    // No photo requirement here: the photo proxy falls back to Wikimedia, and the app hides a card whose image fails.
+    const hits = await this.google.searchBigPlaces(lat, lng, BIG_RADIUS_M);
     const kindOf = (h: NearbyPlaceHit): string => {
       const t = h.types ?? [];
       if (t.includes('bus_station')) return 'bus';
@@ -163,17 +175,20 @@ export class PlacesService {
     };
     const perKind = new Map<string, number>();
     const live = hits
-      .map((h) => ({ kind: kindOf(h), item: this.liveItem(h, ref) }))
-      .sort((a, b) => byDistance(a.item, b.item))
+      .map((h) => ({ kind: kindOf(h), score: ratingScore(h), item: this.liveItem(h, ref) }))
+      // best-rated first (nearest breaks ties), keep the top BIG_PER_KIND of each kind…
+      .sort((a, b) => b.score - a.score || byDistance(a.item, b.item))
       .filter(({ kind }) => {
         const n = perKind.get(kind) ?? 0;
         if (n >= BIG_PER_KIND) return false;
         perKind.set(kind, n + 1);
         return true;
       })
-      .map(({ item }) => item);
+      .map(({ item }) => item)
+      // …then show them nearest first.
+      .sort(byDistance);
     this.logger.log(
-      `Big places (${lat.toFixed(3)},${lng.toFixed(3)}): ${hits.length} Google places with a photo, ${live.length} kept`,
+      `Big places (${lat.toFixed(3)},${lng.toFixed(3)}): Google returned ${hits.length} (${hits.filter((h) => !!h.photoName).length} with a photo in the search result), ${live.length} kept`,
     );
     let items = live;
     if (items.length < BIG_MIN_RESULTS) {
@@ -194,20 +209,28 @@ export class PlacesService {
     if (!isValidCoord(lat, lng)) return [];
     const ref = { lat, lng };
     const hits = await this.google.searchNearbyByPopularity(lat, lng, POPULAR_RADIUS_M);
+    // Best-rated first. No photo requirement: the photo proxy falls back to Wikimedia, and the app hides a card whose image fails.
     let items = hits
       .filter(
         (h) =>
-          !!h.photoName &&
           h.rating !== null &&
           h.rating >= POPULAR_MIN_RATING &&
           (h.ratingCount ?? 0) >= POPULAR_MIN_RATING_COUNT,
       )
-      .map((h) => this.liveItem(h, ref))
-      .sort(byDistance);
-    this.logger.log(`Popular (${lat.toFixed(3)},${lng.toFixed(3)}): ${hits.length} Google places, ${items.length} kept`);
+      .sort((a, b) => ratingScore(b) - ratingScore(a))
+      .slice(0, POPULAR_MAX_ITEMS)
+      .map((h) => this.liveItem(h, ref));
+    const noPhoto = hits.filter((h) => !h.photoName).length;
+    const noRating = hits.filter((h) => h.rating === null).length;
+    const fewRatings = hits.filter((h) => (h.ratingCount ?? 0) < POPULAR_MIN_RATING_COUNT).length;
+    const lowRating = hits.filter((h) => h.rating !== null && h.rating < POPULAR_MIN_RATING).length;
+    this.logger.log(
+      `Popular (${lat.toFixed(3)},${lng.toFixed(3)}): ${hits.length} Google places, ${items.length} kept ` +
+        `| dropped for: no photo ${noPhoto}, no rating ${noRating}, <${POPULAR_MIN_RATING_COUNT} ratings ${fewRatings}, rating <${POPULAR_MIN_RATING} ${lowRating}`,
+    );
     if (items.length < POPULAR_MIN_RESULTS) {
       const wiki = await this.wikiNearby(ref, WIKI_MAX_RADIUS_M, POPULAR_MAX_ITEMS, (h) => h.attraction);
-      items = this.mergeUnique(items, wiki).sort(byDistance);
+      items = this.mergeUnique(items, wiki);
     }
     return items.slice(0, POPULAR_MAX_ITEMS);
   }

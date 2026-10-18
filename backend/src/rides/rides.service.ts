@@ -60,6 +60,21 @@ const MIN_TRIP_DISTANCE_KM = 0.1; // pickup == dropoff (< 100 m straight-line)
 // Soft flags: a driver ping older than this is too stale to judge.
 const FLAG_FRESH_MS = 5 * 60_000;
 const FLAG_DISTANCE_KM = 1;
+// A repeat POST /rides for the SAME trip this soon after the first is a
+// double-tap / network retry: replay the existing ride instead of answering 409.
+const DUPLICATE_BOOKING_WINDOW_MS = 60_000;
+// Redis timer bookkeeping is best-effort (the stale sweeps are the safety net),
+// so it must never make a booking or cancel wait on a slow/unreachable Redis.
+const REDIS_TIMER_WAIT_MS = 1_500;
+function raceTimeout<T>(p: Promise<T>, ms = REDIS_TIMER_WAIT_MS): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 type ServiceAreaBbox = { minLat: number; minLng: number; maxLat: number; maxLng: number };
 
@@ -332,7 +347,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
 
   private async armTimer(kind: 'offer' | 'search', rideId: string, timeoutMs: number): Promise<void> {
     try {
-      await this.redis.zadd(RIDE_TIMERS_KEY, Date.now() + timeoutMs, `${kind}:${rideId}`);
+      await raceTimeout(this.redis.zadd(RIDE_TIMERS_KEY, Date.now() + timeoutMs, `${kind}:${rideId}`));
     } catch (err) {
       // Booking must not fail because Redis blipped — sweepStaleRides() is
       // the safety net for a timer that never made it to the zset.
@@ -342,7 +357,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
 
   private async clearTimer(kind: 'offer' | 'search', rideId: string): Promise<void> {
     try {
-      await this.redis.zrem(RIDE_TIMERS_KEY, `${kind}:${rideId}`);
+      await raceTimeout(this.redis.zrem(RIDE_TIMERS_KEY, `${kind}:${rideId}`));
     } catch (err) {
       this.logger.warn(`Failed to clear ${kind} timer for ride ${rideId}: ${(err as Error).message}`);
     }
@@ -563,15 +578,21 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // Rules: no second active ride as rider; online drivers must go offline
   // first (they cannot book while advertising availability).
   async create(riderId: string, dto: CreateRideDto): Promise<any> {
-    const active = await this.rides.count({
-      where: { riderId, status: In([...ACTIVE_RIDE_STATUSES]) },
-    });
+    // The two checks are independent: run them together (one round trip less).
+    const [active, ownDriver] = await Promise.all([
+      this.rides.count({
+        where: { riderId, status: In([...ACTIVE_RIDE_STATUSES]) },
+      }),
+      this.drivers.findByUserId(riderId).catch(() => null),
+    ]);
     if (active > 0) {
+      // Double-tap / retry of the SAME booking: hand back that ride, not an error.
+      const replay = await this.replayRecentBooking(riderId, dto);
+      if (replay) return replay;
       // 409 (not 400): "the resource is in a state that rejects this
       // request" — the frontend surfaces the message either way.
       throw new ConflictException('You already have an active ride. Cancel or complete it first.');
     }
-    const ownDriver = await this.drivers.findByUserId(riderId).catch(() => null);
     if (ownDriver?.isOnline) {
       throw new BadRequestException('Go offline as a driver before booking a ride.');
     }
@@ -648,6 +669,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     };
 
     let ride: RideEntity;
+    try {
     if (promoCode) {
       // SEC-9: the promo cap check and the ride INSERT commit together while
       // the promo row is locked FOR UPDATE (promos assertBookable) —
@@ -659,6 +681,15 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       });
     } else {
       ride = await persist(makeRide(0));
+    }
+    } catch (err) {
+      // Lost the race to our OWN twin request (double-tap): the unique index
+      // rejected this INSERT because the first one already created the ride.
+      if (err instanceof ConflictException) {
+        const replay = await this.replayRecentBooking(riderId, dto);
+        if (replay) return replay;
+      }
+      throw err;
     }
 
     let matchResult: { status: 'offered' | 'no_drivers'; candidates: number } = {
@@ -676,6 +707,39 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     return {
       ...this.toRiderView(reloaded),
       match: matchResult,
+    };
+  }
+
+  /**
+   * Double-tap / network-retry guard for POST /rides. When the rider already
+   * has an ACTIVE ride created in the last minute for the SAME trip (same
+   * vehicle, same pickup and dropoff), that ride IS this request: return it in
+   * the normal booking shape instead of a 409, so the app shows one clean
+   * booking and never an error for the second tap.
+   */
+  private async replayRecentBooking(riderId: string, dto: CreateRideDto): Promise<any | null> {
+    const recent = await this.rides.findOne({
+      where: {
+        riderId,
+        status: In([...ACTIVE_RIDE_STATUSES]),
+        createdAt: MoreThan(new Date(Date.now() - DUPLICATE_BOOKING_WINDOW_MS)),
+      },
+      order: { createdAt: 'DESC' },
+    });
+    if (!recent) return null;
+    const close = (a: { lat: number; lng: number }, b: { lat: number; lng: number }): boolean =>
+      Math.abs(a.lat - b.lat) < 1e-4 && Math.abs(a.lng - b.lng) < 1e-4;
+    if (
+      recent.vehicleType !== dto.vehicleType ||
+      !close(recent.pickup, dto.pickup) ||
+      !close(recent.dropoff, dto.dropoff)
+    ) {
+      return null;
+    }
+    const reloaded = await this.findById(recent.id, riderId);
+    return {
+      ...this.toRiderView(reloaded),
+      match: { status: recent.driverId ? 'offered' : 'no_drivers', candidates: recent.driverId ? 1 : 0 },
     };
   }
 
@@ -1268,6 +1332,14 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         throw new ForbiddenException('Not your ride');
       }
       effectiveRole = isDriver && !isRider ? 'driver' : isRider && !isDriver ? 'rider' : role === 'admin' ? 'rider' : role;
+      // Double-tap / retry: the SAME party cancelling a ride they already
+      // cancelled is a success (idempotent), not a 400. Nothing is written,
+      // no timer or driver is touched twice.
+      if (ride.status === 'cancelled' && ride.cancelledBy === effectiveRole) {
+        await queryRunner.rollbackTransaction().catch(() => {});
+        const same = await this.getOrThrow(rideId).catch(() => ride);
+        return effectiveRole === 'driver' ? this.toDriverView(same) : this.toRiderView(same);
+      }
       if (ride.status === 'completed' || ride.status === 'cancelled') {
         throw new BadRequestException(`Ride is already ${ride.status}`);
       }
@@ -1326,11 +1398,16 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     // (offered driver stuck, or the search window never auto-cancelling).
     // A rare stale-timer fire on a cancelled ride is safe: every handler
     // re-reads the ride and no-ops unless it is still in the right state.
-    await this.clearOfferTimeout(rideId);
-    await this.clearSearchTimeout(rideId);
+    // Both clears are bounded (raceTimeout) and run together: a slow Redis
+    // must not make a committed cancel hang for seconds.
+    await Promise.all([this.clearOfferTimeout(rideId), this.clearSearchTimeout(rideId)]);
 
     if (ride.driverId) {
-      await this.drivers.setAvailability(ride.driverId, true);
+      // The cancel is already committed: a hiccup freeing the driver must not
+      // turn it into an error for the rider (the stale sweep is the safety net).
+      await raceTimeout(this.drivers.setAvailability(ride.driverId, true)).catch((err) =>
+        this.logger.error(`Failed to free driver ${ride.driverId} after cancel of ${rideId}: ${(err as Error).message}`),
+      );
     }
 
     // Reload with relations so the response keeps riderName/driver info the

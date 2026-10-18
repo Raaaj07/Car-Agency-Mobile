@@ -38,6 +38,9 @@ class RedisLifecycle implements OnApplicationShutdown {
           port: Number(config.get<string>('REDIS_PORT') ?? 6379),
           password: config.get<string>('REDIS_PASSWORD') || undefined,
           maxRetriesPerRequest: 3,
+          // A command never hangs for ages when Redis is slow/unreachable:
+          // it fails fast so booking/cancel stay responsive.
+          commandTimeout: 4000,
           enableReadyCheck: true,
           retryStrategy: (times) => Math.min(times * 200, 5000),
           // Only enable TLS when the server actually expects it.

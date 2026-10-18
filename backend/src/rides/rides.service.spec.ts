@@ -305,6 +305,29 @@ describe('RidesService phase-1 fixes', () => {
       expect(queryRunner.manager.save).not.toHaveBeenCalled();
     });
 
+    it('double-tap: cancelling a ride the same rider ALREADY cancelled succeeds (no 400, no second write)', async () => {
+      const ride = requestedRide({ riderId: 'owner', status: 'cancelled', cancelledBy: 'rider' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      rides.findOne.mockResolvedValue(ride);
+
+      const result = await service.cancel('r1', 'owner', 'rider', { reason: 'second tap' });
+
+      expect(result.status).toBe('cancelled');
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+      expect(drivers.setAvailability).not.toHaveBeenCalled(); // nothing freed twice
+    });
+
+    it('a ride the SYSTEM cancelled still answers 400 to a rider cancel', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(
+        requestedRide({ riderId: 'owner', status: 'cancelled', cancelledBy: 'system' }),
+      );
+
+      await expect(
+        service.cancel('r1', 'owner', 'rider', { reason: 'too late to cancel' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
     it('SEC-11: a failed COMMIT keeps the timers armed (Redis cannot roll back)', async () => {
       await internals.scheduleOfferTimeout('r1', 15_000);
       await fake.zadd(RIDE_TIMERS_KEY, Date.now() + 90_000, 'search:r1');
@@ -438,6 +461,44 @@ describe('RidesService phase-1 fixes', () => {
       expect(drivers.findNearby).not.toHaveBeenCalled();
       expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
       expect(queryRunner.manager.save).not.toHaveBeenCalled();
+    });
+
+    it('double-tap: the loser of the race gets the SAME ride back, not a 409', async () => {
+      rides.count.mockResolvedValue(0);
+      drivers.findByUserId.mockResolvedValue(null);
+      rides.save.mockRejectedValueOnce(Object.assign(new Error('dup'), { code: '23505' }));
+      // The first tap's ride: same trip, created moments ago.
+      rides.findOne.mockResolvedValue(requestedRide({ createdAt: new Date() }));
+
+      const out = await service.create('u1', bookingDto);
+
+      expect(out).toMatchObject({ id: 'r1', status: 'requested' });
+      expect(out.match).toEqual({ status: 'no_drivers', candidates: 0 });
+      expect(drivers.findNearby).not.toHaveBeenCalled(); // no second offer storm
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+    });
+
+    it('double-tap arriving AFTER the first ride exists also replays it', async () => {
+      rides.count.mockResolvedValue(1);
+      drivers.findByUserId.mockResolvedValue(null);
+      rides.findOne.mockResolvedValue(requestedRide({ createdAt: new Date() }));
+
+      const out = await service.create('u1', bookingDto);
+
+      expect(out).toMatchObject({ id: 'r1' });
+      expect(rides.save).not.toHaveBeenCalled();
+      expect(drivers.findNearby).not.toHaveBeenCalled();
+    });
+
+    it('a DIFFERENT trip while one is active is still a 409', async () => {
+      rides.count.mockResolvedValue(1);
+      drivers.findByUserId.mockResolvedValue(null);
+      rides.findOne.mockResolvedValue(
+        requestedRide({ createdAt: new Date(), dropoff: { address: 'Elsewhere', lat: 14.5, lng: 78.5 } }),
+      );
+
+      await expect(service.create('u1', bookingDto)).rejects.toThrow(ConflictException);
+      expect(rides.save).not.toHaveBeenCalled();
     });
 
     it('rematch() re-checks ownership under the row lock', async () => {

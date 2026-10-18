@@ -140,6 +140,27 @@ function looksLikeKeyProblem(reason: string): boolean {
   return /api key (expired|not valid)|API_KEY_INVALID|PERMISSION_DENIED|REQUEST_DENIED|billing/i.test(reason);
 }
 
+/**
+ * What to tell the owner when Google rejects the key. A key restricted to
+ * "Android apps" / "iOS apps" / "Websites" is refused for every server call
+ * ("Requests from this Android client application <empty> are blocked") - a
+ * different fix from an expired key.
+ */
+export function keyProblemHint(reason: string): string {
+  if (/client application|referer|referrer|IP address.*not allowed|blocked/i.test(reason)) {
+    return (
+      'GOOGLE_PLACES_API_KEY is RESTRICTED in a way that blocks server calls (Google said: "' + reason + '"). ' +
+      'A backend key must have Application restrictions = None (or IP addresses = this server), ' +
+      'and API restrictions = Places API (New). Do not reuse the Android/iOS app key. ' +
+      'Fix in Google Cloud Console > APIs & Services > Credentials, then restart the backend.'
+    );
+  }
+  return (
+    'GOOGLE_PLACES_API_KEY is rejected by Google (expired / invalid / billing off / Places API (New) not enabled). ' +
+    'Check Google Cloud Console > APIs & Services > Credentials, update backend/.env and restart.'
+  );
+}
+
 /** First ~200 chars of Google's error body — it names the real cause (key blocked, billing, API disabled). */
 async function errorReason(res: Response): Promise<string> {
   try {
@@ -205,6 +226,8 @@ export class GooglePlacesService implements OnModuleInit {
   >(NEARBY_CACHE_MAX);
   private readonly knownHits = new Map<string, NearbyPlaceHit>();
   private missingKeyWarned = false;
+  private sampleLogs = 0;
+  private detailsNoPhotoLogs = 0;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -271,6 +294,12 @@ export class GooglePlacesService implements OnModuleInit {
       const payload: unknown = await res.json();
       const photo = photoOfPlace(payload);
       if (!photo || !photo.name) {
+        if (this.detailsNoPhotoLogs < 3) {
+          this.detailsNoPhotoLogs += 1;
+          this.logger.warn(
+            `Places details for ${placeId} returned no photos. Response keys: ${Object.keys((payload as object) ?? {}).join(',')}`,
+          );
+        }
         this.metaCache.set(cacheKey, { at: Date.now(), value: null });
         return null;
       }
@@ -367,7 +396,8 @@ export class GooglePlacesService implements OnModuleInit {
           headers: {
             'Content-Type': 'application/json',
             'X-Goog-Api-Key': key,
-            'X-Goog-FieldMask': rank === 'popularity' ? POPULAR_FIELD_MASK : NEAR_FIELD_MASK,
+            // Ratings are requested for both lists: both are ranked by rating.
+            'X-Goog-FieldMask': POPULAR_FIELD_MASK,
           },
           body: JSON.stringify({
             includedTypes: rank === 'popularity' ? POPULAR_INCLUDED_TYPES : BIG_INCLUDED_TYPES,
@@ -387,16 +417,17 @@ export class GooglePlacesService implements OnModuleInit {
         this.logger.warn(`Places searchNearby (${rank}) failed (${lat},${lng}): HTTP ${res.status} ${reason}`);
         if (looksLikeKeyProblem(reason) && Date.now() - keyProblemLoggedAt > KEY_PROBLEM_REPEAT_MS) {
           keyProblemLoggedAt = Date.now();
-          this.logger.error(
-            'GOOGLE_PLACES_API_KEY is rejected by Google (expired / invalid / billing off). ' +
-              'Home-screen places are falling back to Wikipedia only. Renew the key in Google Cloud Console ' +
-              '(APIs & Services → Credentials), update backend/.env and restart.',
-          );
+          this.logger.error(`${keyProblemHint(reason)} Home-screen places are falling back to Wikipedia only.`);
         }
         this.nearbyCache.set(cacheKey, { at: Date.now(), value: [], errored: true });
         return [];
       }
       const payload = (await res.json()) as { places?: Array<Record<string, unknown>> };
+      if (this.sampleLogs < 2 && Array.isArray(payload.places) && payload.places.length > 0) {
+        this.sampleLogs += 1;
+        // Diagnostic: shows whether Google sends `photos` at all (first 2 searches only).
+        this.logger.log(`searchNearby (${rank}) raw sample: ${JSON.stringify(payload.places[0]).slice(0, 500)}`);
+      }
       const hits: NearbyPlaceHit[] = [];
       for (const p of Array.isArray(payload.places) ? payload.places : []) {
         const hit = parseHit(p);

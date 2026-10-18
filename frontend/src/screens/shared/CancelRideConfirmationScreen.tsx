@@ -11,7 +11,7 @@ import { useAuthStore } from '../../store/authStore';
 
 interface Props {
   onBack?: () => void;
-  onConfirmCancel?: (reason: string) => void;
+  onConfirmCancel?: (reason: string) => void | Promise<void>;
 }
 
 const reasons = [
@@ -27,12 +27,20 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
   const setCancellationReason = useRideStore((state) => state.setCancellationReason);
   const activeRide = useRideStore((state) => state.activeRide);
   const [selectedReason, setSelectedReason] = useState<string>(storeReason || reasons[0]);
+  // True while the cancel request is in flight: locks the confirm button (no
+  // second request) and the "Keep My Ride" button (no leaving mid-cancel).
+  const [cancelling, setCancelling] = useState(false);
   const insets = useSafeAreaInsets();
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    if (cancelling) return;
     setCancellationReason(selectedReason);
-    if (onConfirmCancel) {
-      onConfirmCancel(selectedReason);
+    if (!onConfirmCancel) return;
+    setCancelling(true);
+    try {
+      await onConfirmCancel(selectedReason);
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -122,6 +130,7 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
             onPress={handleConfirm}
             variant="danger"
             size="large"
+            loading={cancelling}
           />
         )}
         {onBack && (
@@ -130,6 +139,7 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
             onPress={onBack}
             variant="outline"
             size="medium"
+            disabled={cancelling}
           />
         )}
       </View>
