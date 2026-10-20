@@ -49,7 +49,6 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
       `Fare: ₹${Number(activeRide.fareBreakdown?.total ?? 0).toFixed(2)}`,
       Number(activeRide.tipAmount ?? 0) > 0 ? `Tip: ₹${Number(activeRide.tipAmount).toFixed(2)}` : null,
       `Total: ₹${totalPaid.toFixed(2)}`,
-      `Payment: ${String(activeRide.paymentMethod).toUpperCase()} (${activeRide.paymentStatus})`,
       driver?.name ? `Driver: ${driver.name}${vehicleInfo ? ` · ${vehicleInfo}` : ''}` : null,
     ].filter((l): l is string => !!l);
     try {

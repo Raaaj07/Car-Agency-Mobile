@@ -58,7 +58,7 @@ export interface DriverStats {
   today: { trips: number; earnings: number };
   week: { trips: number; earnings: number; tips: number };
   month: { trips: number; earnings: number; tips: number };
-  daily: Array<{ date: string; trips: number; earnings: number }>;
+  daily: { date: string; trips: number; earnings: number }[];
   acceptance: { rate: number | null; accepted: number; declinedOrMissed: number; windowDays: number };
   availability: {
     state: 'online' | 'on_trip' | 'offline';

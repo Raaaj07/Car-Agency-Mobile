@@ -94,12 +94,7 @@ export const DriverEarningsScreen: React.FC = () => {
 
       {stats && (
         <>
-          <Card
-            style={[
-              styles.statusCard,
-              stats.availability.state === 'offline' && styles.statusCardOffline,
-            ]}
-          >
+          <Card style={stats.availability.state === 'offline' ? styles.statusCardOffline : styles.statusCard}>
             <Text style={styles.statusText}>{stats.availability.message}</Text>
           </Card>
 
