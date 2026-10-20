@@ -138,9 +138,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     const state = useAuthStore.getState();
     if (remote && state.accessToken) {
       // Best-effort server revocation; never blocks local logout.
+      // The refresh token is read NOW: tokenManager.clear() below runs before
+      // this dynamic import resolves.
+      const refreshForServer = state.refreshToken ?? tokenManager.getRefreshToken() ?? undefined;
+      const accessForServer = state.accessToken;
       import('../api/auth').then(({ authApi }) =>
-        authApi.logout().catch(() => {}),
+        authApi.logout(refreshForServer, accessForServer).catch(() => {}),
       );
+      // Stop pushes for this account on this device (needs the token NOW).
+      import('../lib/push').then((m) => m.unregisterPush(accessForServer)).catch(() => {});
     }
     disconnectSocket();
     // D-4: a signed-out driver must not keep the background location service.

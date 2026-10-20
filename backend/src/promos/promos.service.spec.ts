@@ -85,11 +85,16 @@ function buildService(promos: PromoRow[], completedRides = 0) {
     increment: jest.fn().mockResolvedValue({ affected: 1 }),
     manager: managerMock as unknown as EntityManager,
   };
+  const auditLogsRepo = {
+    create: jest.fn((row: unknown) => row),
+    save: jest.fn().mockImplementation(async (row: unknown) => row),
+  };
   const service = new PromosService(
     ridesRepo as unknown as Repository<RideEntity>,
     promoRepo as unknown as Repository<PromoEntity>,
+    auditLogsRepo as any,
   );
-  return { service, promoRepo, ridesRepo, saveMock, managerMock };
+  return { service, promoRepo, ridesRepo, saveMock, managerMock, auditLogsRepo };
 }
 
 const dto = (overrides: Partial<PromoAdminDto> = {}): PromoAdminDto => ({
@@ -555,6 +560,40 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
       const { service, promoRepo } = buildService([promoRow()]);
       await service.listAdmin();
       expect(promoRepo.find).toHaveBeenCalledWith({ order: { createdAt: 'DESC' } });
+    });
+
+    it('writes audit rows on create, update, and remove (Task 12)', async () => {
+      const { service, auditLogsRepo } = buildService([]);
+
+      const created = await service.createPromo(dto({ code: 'AUDITTEST', discountAmount: 15 }), 'admin-1');
+      expect(auditLogsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: 'admin-1',
+          action: 'promo_create',
+          targetType: 'promo',
+          targetId: created.id,
+        }),
+      );
+
+      await service.updatePromo(created.id, dto({ code: 'AUDITTEST', discountAmount: 25 }), 'admin-1');
+      expect(auditLogsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: 'admin-1',
+          action: 'promo_update',
+          targetType: 'promo',
+          targetId: created.id,
+        }),
+      );
+
+      await service.removePromo(created.id, 'admin-1');
+      expect(auditLogsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: 'admin-1',
+          action: 'promo_delete',
+          targetType: 'promo',
+          targetId: created.id,
+        }),
+      );
     });
   });
 });

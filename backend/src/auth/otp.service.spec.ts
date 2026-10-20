@@ -276,4 +276,37 @@ describe('OtpService', () => {
       expect(failCounters.get(failKey)).toBe(1);
     });
   });
+
+  describe('OTP_LENGTH configuration (Task 9)', () => {
+    it('defaults to 4 in development', () => {
+      const dev = new OtpService(
+        redis as unknown as Redis,
+        { get: (k: string) => (k === 'NODE_ENV' ? 'development' : undefined) } as unknown as ConfigService,
+      );
+      expect(dev.otpLength).toBe(4);
+    });
+
+    it('defaults to 6 in production', () => {
+      const prod = new OtpService(
+        redis as unknown as Redis,
+        { get: (k: string) => (k === 'NODE_ENV' ? 'production' : undefined) } as unknown as ConfigService,
+      );
+      expect(prod.otpLength).toBe(6);
+    });
+
+    it('allows 4 digits in production when ALLOW_4_DIGIT_OTP=true is set', () => {
+      const prod = new OtpService(
+        redis as unknown as Redis,
+        {
+          get: (k: string) => {
+            if (k === 'NODE_ENV') return 'production';
+            if (k === 'ALLOW_4_DIGIT_OTP') return 'true';
+            if (k === 'OTP_LENGTH') return '4';
+            return undefined;
+          },
+        } as unknown as ConfigService,
+      );
+      expect(prod.otpLength).toBe(4);
+    });
+  });
 });

@@ -39,8 +39,9 @@ export interface Ride {
 }
 
 export const ridesApi = {
-  create: async (input: { pickup: RideLocation; dropoff: RideLocation; vehicleType: string; promoCode?: string | null; paymentMethod?: PaymentMethod; allowUpgrade?: boolean }) =>
-    (await api.post<Ride>('/rides', input)).data,
+  create: async (input: { pickup: RideLocation; dropoff: RideLocation; vehicleType: string; promoCode?: string | null; paymentMethod?: PaymentMethod; allowUpgrade?: boolean }, idempotencyKey?: string) =>
+    // Idempotency-Key: a retry/double-tap of the SAME booking replays the first result.
+    (await api.post<Ride>('/rides', input, idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : undefined)).data,
   // R-1: "Retry" after a no-drivers match — re-runs the search server-side
   // instead of waiting out the search timeout.
   rematch: async (rideId: string) => (await api.post<Ride>(`/rides/${rideId}/rematch`)).data,
@@ -59,7 +60,7 @@ export const ridesApi = {
     return data && typeof data === 'object' ? data : null;
   },
   cancel: async (rideId: string, reason: string) => (await api.patch<Ride>(`/rides/${rideId}/cancel`, { reason })).data,
-  review: async (rideId: string, input: { rating: number; compliments: string[]; tipAmount: number }) =>
+  review: async (rideId: string, input: { rating: number; compliments: string[]; tipAmount: number; comment?: string }) =>
     (await api.patch<Ride>(`/rides/${rideId}/review`, input)).data,
   accept: async (rideId: string) => (await api.patch<Ride>(`/rides/${rideId}/accept`)).data,
   decline: async (rideId: string) => (await api.patch<Ride>(`/rides/${rideId}/decline`)).data,

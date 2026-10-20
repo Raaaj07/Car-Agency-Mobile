@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Ip, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Ip, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
@@ -34,8 +34,8 @@ export class AuthController {
   @Throttle({ default: { limit: 30, ttl: 300_000 } })
   @Post('otp/verify')
   @HttpCode(HttpStatus.OK)
-  verifyOtp(@Body() dto: VerifyOtpDto, @Ip() ip: string) {
-    return this.auth.verifyOtp(dto, ip);
+  verifyOtp(@Body() dto: VerifyOtpDto, @Ip() ip: string, @Headers('user-agent') userAgent?: string) {
+    return this.auth.verifyOtp(dto, ip, userAgent);
   }
 
   // SEC-3: refresh presents a refresh token (not a bearer), so it stays
@@ -54,23 +54,32 @@ export class AuthController {
   @Throttle({ default: { limit: 30, ttl: 300_000 } })
   @Post('google')
   @HttpCode(HttpStatus.OK)
-  googleSignIn(@Body() dto: GoogleSignInDto) {
-    return this.auth.googleSignIn(dto.idToken);
+  googleSignIn(@Body() dto: GoogleSignInDto, @Headers('user-agent') userAgent?: string) {
+    return this.auth.googleSignIn(dto.idToken, userAgent);
   }
 
   @Public()
   @Throttle({ default: { limit: 30, ttl: 300_000 } })
   @Post('apple')
   @HttpCode(HttpStatus.OK)
-  appleSignIn(@Body() dto: AppleSignInDto) {
-    return this.auth.appleSignIn(dto.identityToken, dto.fullName);
+  appleSignIn(@Body() dto: AppleSignInDto, @Headers('user-agent') userAgent?: string) {
+    return this.auth.appleSignIn(dto.identityToken, dto.fullName, userAgent);
   }
 
   // From here down: default-deny (global JwtAuthGuard — no @Public needed).
+  // Task 2: logout accepts the refresh token in the body to revoke only the
+  // current device session. Old clients that omit it revoke all sessions.
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  logout(@CurrentUser() user: AuthenticatedUser) {
-    return this.auth.logout(user.userId);
+  logout(@CurrentUser() user: AuthenticatedUser, @Body() body: { refreshToken?: string }) {
+    return this.auth.logout(user.userId, body?.refreshToken, user.sessionId);
+  }
+
+  // Task 2: "log out everywhere" — revokes all sessions for this user.
+  @Post('logout-everywhere')
+  @HttpCode(HttpStatus.OK)
+  logoutEverywhere(@CurrentUser() user: AuthenticatedUser) {
+    return this.auth.logoutEverywhere(user.userId);
   }
 
   @Get('me')

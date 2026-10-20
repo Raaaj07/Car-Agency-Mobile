@@ -98,10 +98,13 @@ export const RiderHomeStackNavigator: React.FC = () => {
                 // is nearby. Backend defaults this to false.
                 allowUpgrade: true,
               };
+              // One key per confirm press: reused by the automatic retries below,
+              // so a double-tap / lost response never books twice.
+              const idempotencyKey = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
               const bookOnce = async () => {
                 beginBooking();
                 try {
-                  const ride = await ridesApi.create(bookingInput);
+                  const ride = await ridesApi.create(bookingInput, idempotencyKey);
                   setActiveRide(ride);
                   // R-1: remember whether the search came back empty so
                   // FindingDriver can show the honest "no drivers" state.
@@ -236,7 +239,6 @@ export const RiderHomeStackNavigator: React.FC = () => {
               resetRide();
               goToRideCancelled(rootNavigation, { reason });
             }}
-            onEmergencyPress={() => rootNavigation.navigate('RideAnnouncementsSettings')}
           />
         )}
       </Stack.Screen>
@@ -250,11 +252,11 @@ export const RiderHomeStackNavigator: React.FC = () => {
               resetRide();
               resetRiderHomeStack(navigation);
             }}
-            onSubmitReview={async (rating, compliments, tipAmount) => {
+            onSubmitReview={async (rating, compliments, tipAmount, comment) => {
               const ride = useRideStore.getState().activeRide;
               if (!ride) return Alert.alert('Ride unavailable', 'No active ride was found.');
               try {
-                const updated = await ridesApi.review(ride.id, { rating, compliments, tipAmount });
+                const updated = await ridesApi.review(ride.id, { rating, compliments, tipAmount, ...(comment ? { comment } : {}) });
                 setActiveRide(updated);
                 // No silent auto-payment here: the rider pays the UPI QR on
                 // the driver's phone and the driver taps "Amount Received",

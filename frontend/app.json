@@ -76,6 +76,7 @@
         }
       ],
       "expo-secure-store",
+      "expo-notifications",
       "@react-native-google-signin/google-signin"
     ],
     "extra": {

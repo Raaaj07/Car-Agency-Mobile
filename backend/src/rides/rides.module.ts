@@ -11,7 +11,12 @@ import { RidesGateway } from './gateway/rides.gateway';
 import { RidesController } from './rides.controller';
 import { RidesService } from './rides.service';
 import { RouteDistanceService } from './route-distance.service';
+import { DriverStatsController } from './driver-stats.controller';
+import { DriverStatsService } from './driver-stats.service';
+import { SafetyController } from './safety.controller';
+import { SafetyService } from './safety.service';
 import { PromosModule } from '../promos/promos.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -19,6 +24,7 @@ import { PromosModule } from '../promos/promos.module';
     TypeOrmModule.forFeature([RideEntity, DriverEntity, UserEntity]),
     DriversModule,
     PromosModule,
+    NotificationsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -27,8 +33,8 @@ import { PromosModule } from '../promos/promos.module';
       }),
     }),
   ],
-  controllers: [RidesController],
-  providers: [RidesService, RidesGateway, RouteDistanceService],
+  controllers: [RidesController, SafetyController, DriverStatsController],
+  providers: [RidesService, RidesGateway, RouteDistanceService, SafetyService, DriverStatsService],
   exports: [RidesService, RidesGateway, RouteDistanceService, TypeOrmModule],
 })
 export class RidesModule {}

@@ -66,10 +66,13 @@ export class OtpService {
     private readonly config: ConfigService,
   ) {
     this.ttlSeconds = this.config.get<number>('OTP_TTL_SECONDS') ?? 300;
-    // Env vars are strings at runtime — convert once here instead of relying
-    // on implicit coercion at every use site.
-    const len = Math.trunc(Number(this.config.get<string>('OTP_LENGTH') ?? 4));
-    this.otpLength = Number.isFinite(len) && len >= 4 ? Math.min(len, 8) : 4;
+    // Task 9: In production default to 6 digits unless ALLOW_4_DIGIT_OTP=true is set.
+    const isProd = (this.config.get<string>('NODE_ENV') ?? 'development') === 'production';
+    const allow4Digit = (this.config.get<string>('ALLOW_4_DIGIT_OTP') ?? 'false') === 'true';
+    const rawLen = this.config.get<string>('OTP_LENGTH');
+    const defaultLen = isProd && !allow4Digit ? 6 : 4;
+    const len = rawLen !== undefined ? Math.trunc(Number(rawLen)) : defaultLen;
+    this.otpLength = Number.isFinite(len) && len >= 4 ? Math.min(len, 8) : defaultLen;
     // AU-1: per-phone SMS bomb guard (defaults are intentionally strict).
     this.sendMax = this.config.get<number>('OTP_SEND_MAX') ?? 3;
     this.sendWindowSeconds = this.config.get<number>('OTP_SEND_WINDOW_SECONDS') ?? 600;

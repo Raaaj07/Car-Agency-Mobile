@@ -54,7 +54,21 @@ export interface DriverApplication {
   hasVehiclePhoto: boolean;
 }
 
+export interface DriverStats {
+  today: { trips: number; earnings: number };
+  week: { trips: number; earnings: number; tips: number };
+  month: { trips: number; earnings: number; tips: number };
+  daily: Array<{ date: string; trips: number; earnings: number }>;
+  acceptance: { rate: number | null; accepted: number; declinedOrMissed: number; windowDays: number };
+  availability: {
+    state: 'online' | 'on_trip' | 'offline';
+    reason: 'not_approved' | 'location_stale' | 'manual' | null;
+    message: string;
+  };
+}
+
 export const driversApi = {
+  stats: async (): Promise<DriverStats> => (await api.get<DriverStats>('/drivers/me/stats')).data,
   apply: async (
     input: { vehicleType: VehicleType; carModel: string; plateNumber: string; licenseNumber: string; rcNumber?: string },
     files: { licenseImage: { uri: string; name: string; type: string }; rcImage: { uri: string; name: string; type: string }; vehiclePhoto?: { uri: string; name: string; type: string } },

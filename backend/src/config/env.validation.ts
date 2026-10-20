@@ -100,6 +100,15 @@ class EnvironmentVariables {
   @IsBooleanString()
   OTP_DEV_MODE?: string;
 
+  /**
+   * Task 9: Explicit opt-in flag required to run 4-digit OTPs in production.
+   * Without this flag, OTP_LENGTH defaults to 6 in production and any value < 6
+   * is refused with a boot error.
+   */
+  @IsOptional()
+  @IsBooleanString()
+  ALLOW_4_DIGIT_OTP?: string;
+
   @IsOptional()
   @IsBooleanString()
   PAYMENTS_DEV_MODE?: string;
@@ -299,6 +308,16 @@ export function validateEnv(config: Record<string, unknown>) {
     }
     if ((validated as unknown as Record<string, unknown>).DB_SYNCHRONIZE === 'true') {
       throw new Error('Invalid environment configuration:\nDB_SYNCHRONIZE must never be "true" in production');
+    }
+
+    // Task 9: OTP_LENGTH defaults to 6 in production. Refuse < 6 unless ALLOW_4_DIGIT_OTP=true.
+    const otpLen = (validated as unknown as Record<string, unknown>).OTP_LENGTH;
+    const allow4Digit = (validated as unknown as Record<string, unknown>).ALLOW_4_DIGIT_OTP === 'true';
+    if (otpLen !== undefined && Number(otpLen) < 6 && !allow4Digit) {
+      throw new Error(
+        'Invalid environment configuration:\nOTP_LENGTH must be >= 6 in production. ' +
+        'To support legacy 4-digit client apps temporarily, set ALLOW_4_DIGIT_OTP=true explicitly.',
+      );
     }
     const cors = (validated as unknown as Record<string, unknown>).CORS_ORIGIN;
     if (cors === '*' || !cors) {

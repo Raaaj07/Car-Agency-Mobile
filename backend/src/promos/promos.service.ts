@@ -39,6 +39,8 @@ function isUniqueViolation(e: unknown): boolean {
  *  - `recordRedemption` runs inside the completion's ride-lock transaction so
  *    the discount, the redemption row and the cap counter move together.
  */
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
+
 @Injectable()
 export class PromosService {
   private readonly logger = new Logger(PromosService.name);
@@ -48,7 +50,30 @@ export class PromosService {
     private readonly rides: Repository<RideEntity>,
     @InjectRepository(PromoEntity)
     private readonly promos: Repository<PromoEntity>,
+    @InjectRepository(AdminAuditLogEntity)
+    private readonly auditLogs: Repository<AdminAuditLogEntity>,
   ) {}
+
+  private async logAudit(
+    actorUserId: string | undefined,
+    action: 'promo_create' | 'promo_update' | 'promo_delete',
+    targetId: string,
+    meta?: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.auditLogs.save(
+        this.auditLogs.create({
+          actorUserId: actorUserId ?? null,
+          action,
+          targetType: 'promo',
+          targetId,
+          meta: meta ?? null,
+        }),
+      );
+    } catch (err) {
+      this.logger.error(`Failed to write promo audit log: ${(err as Error).message}`);
+    }
+  }
 
   private normalize(code: string): string {
     return code.trim().toUpperCase();
@@ -281,7 +306,7 @@ export class PromosService {
     return this.promos.find({ order: { createdAt: 'DESC' } });
   }
 
-  async createPromo(dto: PromoAdminDto): Promise<PromoEntity> {
+  async createPromo(dto: PromoAdminDto, actorUserId?: string): Promise<PromoEntity> {
     const code = this.normalize(dto.code);
     const clash = await this.promos.findOne({ where: { code } });
     if (clash) throw new ConflictException(`Promo code "${code}" already exists.`);
@@ -300,7 +325,12 @@ export class PromosService {
       validTo,
       maxRedemptions: dto.maxRedemptions ?? null,
     });
-    return this.saveGuarded(promo);
+    const saved = await this.saveGuarded(promo);
+    await this.logAudit(actorUserId, 'promo_create', saved.id, {
+      code: saved.code,
+      discountAmount: saved.discountAmount,
+    });
+    return saved;
   }
 
   /**
@@ -308,7 +338,7 @@ export class PromosService {
    * form; optional fields are only touched when present (null clears copy or
    * a validity date).
    */
-  async updatePromo(id: string, dto: PromoAdminDto): Promise<PromoEntity> {
+  async updatePromo(id: string, dto: PromoAdminDto, actorUserId?: string): Promise<PromoEntity> {
     const promo = await this.promos.findOne({ where: { id } });
     if (!promo) throw new NotFoundException(`Promo "${id}" not found`);
     const code = this.normalize(dto.code);
@@ -327,12 +357,15 @@ export class PromosService {
     if (dto.validTo !== undefined) promo.validTo = dto.validTo ? new Date(dto.validTo) : null;
     if (dto.maxRedemptions !== undefined) promo.maxRedemptions = dto.maxRedemptions ?? null;
     this.assertWindow(promo.validFrom, promo.validTo);
-    return this.saveGuarded(promo);
+    const saved = await this.saveGuarded(promo);
+    await this.logAudit(actorUserId, 'promo_update', saved.id, { code: saved.code });
+    return saved;
   }
 
-  async removePromo(id: string): Promise<{ id: string }> {
+  async removePromo(id: string, actorUserId?: string): Promise<{ id: string }> {
     const { affected } = await this.promos.delete({ id });
     if (!affected) throw new NotFoundException(`Promo "${id}" not found`);
+    await this.logAudit(actorUserId, 'promo_delete', id);
     // promo_redemptions.promoId is SET NULL and the code is denormalised
     // there, so redemption history survives the delete.
     return { id };

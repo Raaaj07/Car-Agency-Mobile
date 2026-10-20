@@ -59,6 +59,36 @@ export function connectSocket(token: string, role?: 'rider' | 'driver' | 'admin'
     }
   });
 
+  // Task 7: server emitted session:expired (token expired or user deactivated).
+  // Attempt silent refresh first, then reconnect; if refresh fails (401/403),
+  // handleUnauthorized logs out.
+  socket.on('session:expired', async () => {
+    const refreshToken = tokenManager.getRefreshToken();
+    if (!refreshToken) {
+      socket.disconnect();
+      tokenManager.handleUnauthorized();
+      return;
+    }
+    try {
+      const axios = (await import('axios')).default;
+      const res = await axios.post(`${API_URL}/auth/refresh`, { refreshToken }, { timeout: 10_000 });
+      const { accessToken: next, refreshToken: nextRefresh } = res.data ?? {};
+      if (next) {
+        tokenManager.setTokens({ accessToken: next, ...(nextRefresh ? { refreshToken: nextRefresh } : {}) });
+        socket.connect();
+        return;
+      }
+    } catch (e: any) {
+      if (e?.response?.status === 401 || e?.response?.status === 403) {
+        socket.disconnect();
+        tokenManager.handleUnauthorized();
+        return;
+      }
+    }
+    // If refresh failed due to network, don't force logout; socket will retry when network returns
+    socket.connect();
+  });
+
   socket.on('connect', async () => {
     socketInstance = socket;
     notifyListeners();

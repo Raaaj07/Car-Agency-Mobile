@@ -8,6 +8,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
@@ -36,6 +37,7 @@ import { computeFareBreakdown, computeNumericPrice } from './fare-catalog';
 import { RouteDistanceService } from './route-distance.service';
 import { RidesGateway } from './gateway/rides.gateway';
 import { PromosService } from '../promos/promos.service';
+import { PushService } from '../notifications/push.service';
 
 
 
@@ -110,6 +112,8 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly promosService: PromosService,
     private readonly routes: RouteDistanceService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    // Optional so unit tests (and a missing module) never block the ride flow.
+    @Optional() private readonly push?: PushService,
   ) {
     this.requestTimeoutSeconds = this.config.get<number>('RIDE_REQUEST_TIMEOUT_SECONDS') ?? 15;
     this.searchTimeoutSeconds = this.config.get<number>('RIDE_SEARCH_TIMEOUT_SECONDS') ?? 90;
@@ -577,7 +581,20 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // POST /rides — create + trigger nearest-driver matching.
   // Rules: no second active ride as rider; online drivers must go offline
   // first (they cannot book while advertising availability).
-  async create(riderId: string, dto: CreateRideDto): Promise<any> {
+  // Task 11: Idempotency-Key support stored in Redis for 60 seconds
+  async create(riderId: string, dto: CreateRideDto, idempotencyKey?: string): Promise<any> {
+    if (idempotencyKey) {
+      const cacheKey = `idempotency:rides:${riderId}:${idempotencyKey}`;
+      try {
+        const cached = await raceTimeout(this.redis.get(cacheKey));
+        if (cached) {
+          return JSON.parse(cached);
+        }
+      } catch (err) {
+        this.logger.warn(`Idempotency check failed: ${(err as Error).message}`);
+      }
+    }
+
     // The two checks are independent: run them together (one round trip less).
     const [active, ownDriver] = await Promise.all([
       this.rides.count({
@@ -588,7 +605,13 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (active > 0) {
       // Double-tap / retry of the SAME booking: hand back that ride, not an error.
       const replay = await this.replayRecentBooking(riderId, dto);
-      if (replay) return replay;
+      if (replay) {
+        if (idempotencyKey) {
+          const cacheKey = `idempotency:rides:${riderId}:${idempotencyKey}`;
+          await raceTimeout(this.redis.set(cacheKey, JSON.stringify(replay), 'EX', 60)).catch(() => {});
+        }
+        return replay;
+      }
       // 409 (not 400): "the resource is in a state that rejects this
       // request" — the frontend surfaces the message either way.
       throw new ConflictException('You already have an active ride. Cancel or complete it first.');
@@ -704,10 +727,15 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     const reloaded = await this.findById(ride.id, riderId);
-    return {
+    const response = {
       ...this.toRiderView(reloaded),
       match: matchResult,
     };
+    if (idempotencyKey) {
+      const cacheKey = `idempotency:rides:${riderId}:${idempotencyKey}`;
+      await raceTimeout(this.redis.set(cacheKey, JSON.stringify(response), 'EX', 60)).catch(() => {});
+    }
+    return response;
   }
 
   /**
@@ -1440,6 +1468,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
 
       ride.rating = dto.rating;
       ride.compliments = dto.compliments ?? [];
+      ride.ratingComment = dto.comment?.trim() ? dto.comment.trim() : null;
       ride.tipAmount = dto.tipAmount ?? 0;
       await manager.save(ride);
 
@@ -1586,6 +1615,8 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   // `driverUserId` (optional): callers that already know the driver's user id
   // pass it so we skip the extra drivers.findById() lookup and emit at once.
   private pushStatus(ride: RideEntity, driverUserId?: string): void {
+    // Background notification for the rider (deduped per ride+status inside).
+    void this.push?.notifyRider(ride);
     if (driverUserId) {
       this.gateway.emitRideStatus(ride.id, ride.riderId, driverUserId, this.toStatusPayload(ride));
       return;

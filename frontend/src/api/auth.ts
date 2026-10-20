@@ -64,5 +64,20 @@ export const authApi = {
       })
     ).data;
   },
-  logout: async () => (await api.post('/auth/logout')).data,
+  // Sends the refresh token so the server ends THIS device's session only
+  // (other devices stay signed in). Tokens that carry a session id make the
+  // body redundant, but older sessions still need it.
+  // The access token is passed explicitly: the store clears tokenManager right
+  // after calling this, so the request interceptor would otherwise send no
+  // Authorization header and the server would never revoke anything.
+  logout: async (refreshToken?: string, accessToken?: string) =>
+    (
+      await api.post(
+        '/auth/logout',
+        refreshToken ? { refreshToken } : {},
+        accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : undefined,
+      )
+    ).data,
+  // Ends every session of this account ("log out everywhere").
+  logoutEverywhere: async () => (await api.post('/auth/logout-everywhere')).data as { ok: true },
 };

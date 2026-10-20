@@ -5,6 +5,33 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Security hardening + safety/push/earnings pass (2026-10-20)
+
+Finishes the 20-item hardening prompt. Antigravity did most of it; the rest and several fixes were done here. **Nothing below was compiled or run by the author — run the checks at the end.**
+
+**Auth / sessions (items 1-3, 7)**
+- Per-device `refresh_sessions` (rotation + 30 s grace + replay revokes only that session). Fixed: grace path returned a token whose hash was never stored (next refresh looked like a replay); replay revoked ALL sessions; no migration path for pre-session logins (legacy `users.refreshTokenHash` is now adopted into a session).
+- Access tokens carry `sid`; `JwtStrategy` rejects tokens of a revoked session. Logout revokes just the current device; `POST /auth/logout-everywhere`.
+- Frontend `logout()` never authenticated its server call (tokens were cleared first) — now passes them explicitly. Network errors no longer log the user out.
+- HS256 + `iss`/`aud` (old tokens accepted until 2026-11-18).
+
+**Realtime (items 5-6)** - gateway driver cache, expiry timers + `session:expired`; Socket.IO Redis adapter now reads the app's `REDIS_*` vars (it read an unset `REDIS_URL` and never enabled) with a bounded connect timeout and in-memory fallback.
+
+**New features**
+- **Safety (15):** emergency contact (`/safety/emergency-contact`), expiring read-only live trip link (`/safety/rides/:id/share`, public `/safety/share/:token[/view]`, token stored hashed, 6 h / 30 min after trip), SOS (`/safety/rides/:id/sos`, structured error log + `rides.sosAt`). App: Profile form, SOS / Share Trip buttons on the trip screen. SOS does not yet notify admins live.
+- **Push (14):** `device_tokens`, `/notifications/*`, rider alerts (driver found / on the way / started / completed / cancelled) via Expo push, once per ride+status, opt-out in Profile, token removed on logout. Needs `expo-notifications` + `expo-device` and a dev build (no remote push in Expo Go on Android) and FCM credentials.
+- **Driver stats (16):** `GET /drivers/me/stats` — today / 7-day / 30-day earnings, daily bars, acceptance rate (accepted vs declined/timed-out, 30 d), "offline because…" message. Shown on the Earnings screen.
+- **Rider (17):** optional rating comment (`rides.ratingComment`, admin-only), `Idempotency-Key` on booking, shareable text receipt on the Ride Completed screen.
+- **Observability (18):** optional backend Sentry (`SENTRY_DSN` + `npm i @sentry/node`; unexpected 5xx only, no PII). `/health` reports postgres/redis. Frontend Sentry not done (needs a native build).
+
+**Schema:** migrations `1791700000000` (sessions), `1791800000000` (safety), `1791800001000` (rating comment), `1791800002000` (push). All are also in `schema-repair.ts` and the boot-time `REQUIRED_SCHEMA` check (dev auto-repairs; production refuses to start until `npm run migration:run` / `db:repair`).
+
+**Tests fixed:** `route-throttles.spec` (cancel/review = 5), `health.controller.spec` (postgres/redis fields), `uuid-pipes.spec` (promo admin id is arg 1; safety routes added).
+
+**Known gaps:** admin live SOS alert; driver-side push for new offers; frontend Sentry; npm audit not run; "Get ₹50 Off Your Return Trip" card on Ride Completed is hard-coded copy with no real promo behind it.
+
+---
+
 ## Places / Home-screen Review Pass (2026-10-17)
 
 Fixes from the project review, backend + frontend, each covered by tests where it can be:

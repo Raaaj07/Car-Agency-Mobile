@@ -8,6 +8,7 @@ import { DataSource } from 'typeorm';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { SCHEMA_REPAIR_STATEMENTS } from './database/schema-repair';
+import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 
 // Prefer IPv4 for every outbound connection (DB, Redis, Google, Wikipedia).
 // On many Windows/home networks the IPv6 route is dead, and Node then tries
@@ -19,13 +20,25 @@ setDefaultResultOrder('ipv4first');
 // is missing, POST /rides (INSERT) fails with a bare HTTP 500 — so check at
 // boot instead of leaving the rider staring at "Booking failed".
 const REQUIRED_SCHEMA: Record<string, string[]> = {
-  rides: ['offeredAt', 'offerExpiresAt', 'declinedDriverIds', 'otpAttempts', 'otpLockedUntil', 'paymentMarkedBy'],
+  rides: [
+    'offeredAt',
+    'offerExpiresAt',
+    'declinedDriverIds',
+    'otpAttempts',
+    'otpLockedUntil',
+    'paymentMarkedBy',
+    'shareTokenHash',
+    'sosAt',
+    'ratingComment',
+  ],
+  refresh_sessions: ['userId', 'tokenHash', 'previousTokenHash', 'revokedAt'],
+  device_tokens: ['userId', 'token'],
   drivers: ['approvedAt', 'upiVpa', 'status'],
   promos: ['code', 'discountAmount', 'redemptionCount'],
   admin_audit_logs: ['action', 'targetId'],
   // SEC-2b: updateMe/googleSignIn write and read it — a drifted DB without
   // it 500s on PATCH /auth/me and on every Google sign-in.
-  users: ['emailVerified'],
+  users: ['emailVerified', 'emergencyContactPhone', 'pushEnabled'],
 };
 
 async function findSchemaProblems(ds: DataSource): Promise<string[]> {
@@ -120,7 +133,33 @@ async function findSchemaForBoot(app: INestApplication, autoRepair: boolean): Pr
   }
 }
 
+// Optional error reporting. Inert unless SENTRY_DSN is set AND @sentry/node is
+// installed (`npm i @sentry/node`) — never a hard dependency, never fatal.
+// Exported so the exception filter can report 5xx without importing Sentry.
+function initSentry(): void {
+  const dsn = process.env.SENTRY_DSN;
+  if (!dsn) return;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Sentry = require('@sentry/node');
+    Sentry.init({
+      dsn,
+      environment: process.env.NODE_ENV ?? 'development',
+      tracesSampleRate: 0,
+      // Never ship request bodies / headers (OTPs, tokens, phone numbers).
+      sendDefaultPii: false,
+    });
+    (globalThis as { __sentry?: unknown }).__sentry = Sentry;
+    // eslint-disable-next-line no-console
+    console.log('[sentry] error reporting enabled');
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn('[sentry] SENTRY_DSN is set but @sentry/node is not installed — reporting disabled');
+  }
+}
+
 async function bootstrap() {
+  initSentry();
   // Pass-4 (task 5): rawBody keeps the exact bytes of every request so the
   // Razorpay webhook can verify its HMAC signature over what was sent (a
   // re-serialized JSON body would re-order keys and break the signature).
@@ -161,24 +200,34 @@ async function bootstrap() {
         'reachable, in which case keep it false so X-Forwarded-For cannot be spoofed.',
     );
   }
-  // Pass-4 (task 4): warn, don't fail — the shipped APK still uses 4-digit
-  // OTP entry, so a hard boot refusal would take the app offline. The risk
-  // is real (10 guesses/hour/phone is ~2.4%/day per number with 4 digits),
-  // and admin promotion at OTP login is already disabled for short codes.
-  const otpLength = Number(config.get<string>('OTP_LENGTH') ?? 4);
+  // Task 9: OTP_LENGTH defaults to 6 in production. Refuse < 6 without ALLOW_4_DIGIT_OTP=true.
+  const allow4Digit = (config.get<string>('ALLOW_4_DIGIT_OTP') ?? 'false') === 'true';
+  const rawOtpLen = config.get<string>('OTP_LENGTH');
+  const otpLength = Number(rawOtpLen ?? (isProd && !allow4Digit ? 6 : 4));
   if (isProd && otpLength < 6) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[OTP] OTP_LENGTH=${otpLength} in production: phones with ${otpLength}-digit codes are ` +
-        'brute-forceable (per-IP and per-phone caps limit the rate but not the risk), and admin ' +
-        'promotion at OTP login is disabled for them. Set OTP_LENGTH=6 once the updated APK is out.',
-    );
+    if (allow4Digit) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[OTP] WARNING: ALLOW_4_DIGIT_OTP=true is enabled in production! Phones will receive 4-digit codes. ` +
+          '4-digit codes are vulnerable to brute force. Set OTP_LENGTH=6 once all clients are updated.',
+      );
+    } else {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[OTP] ERROR: OTP_LENGTH=${otpLength} in production is insecure and refused without ALLOW_4_DIGIT_OTP=true.`,
+      );
+    }
   }
   // CORS_ORIGIN may be "*" in dev, or a comma-separated allowlist in prod.
   const rawOrigin = config.get<string>('CORS_ORIGIN') ?? '*';
   const origin =
     rawOrigin === '*' ? (isProd ? false : '*') : rawOrigin.split(',').map((s) => s.trim()).filter(Boolean);
   app.enableCors({ origin });
+
+  // Task 6: Socket.IO Redis adapter for multi-instance realtime scaling
+  const redisIoAdapter = new RedisIoAdapter(app);
+  await redisIoAdapter.connectToRedis(config);
+  app.useWebSocketAdapter(redisIoAdapter);
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

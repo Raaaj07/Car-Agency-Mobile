@@ -41,6 +41,16 @@ export const AppNavigator: React.FC = () => {
     restoreSession();
   }, [restoreSession]);
 
+  // Push: register this device once the account is signed in and complete.
+  const pushReady = isAuthenticated && user?.profileComplete !== false;
+  useEffect(() => {
+    if (!pushReady) return;
+    void import('../lib/push').then(async (m) => {
+      await m.configurePushHandler();
+      await m.registerForPush();
+    });
+  }, [pushReady]);
+
   if (!hydrated) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>

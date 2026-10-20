@@ -41,6 +41,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     if (!isHttpException) {
       this.logger.error(exception instanceof Error ? exception.stack : exception);
+      // Optional Sentry (see initSentry in main.ts): unexpected errors only,
+      // never 4xx. Wrapped so reporting can never break the response.
+      try {
+        (globalThis as { __sentry?: { captureException(e: unknown): void } }).__sentry?.captureException(exception);
+      } catch {
+        /* ignore */
+      }
     }
 
     response.status(status).json({

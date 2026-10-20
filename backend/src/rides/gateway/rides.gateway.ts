@@ -19,8 +19,18 @@ import { JwtPayload } from '../../auth/strategies/jwt.strategy';
 import { ApplicationEventsService } from '../../common/events/application-events.service';
 import { RideEntity } from '../entities/ride.entity';
 
+interface DriverLocationCache {
+  driverId: string;
+  isApproved: boolean;
+  activeRideId: string | null;
+}
+
 interface AuthedSocket extends Socket {
-  data: { userId?: string; role?: 'rider' | 'driver' | 'admin' | null };
+  data: {
+    userId?: string;
+    role?: 'rider' | 'driver' | 'admin' | null;
+    driverCache?: DriverLocationCache;
+  };
 }
 
 /**
@@ -54,6 +64,9 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // throttles). WeakMap so a disconnected socket's counter is collectable.
   private readonly joinLeaveBudget = new WeakMap<object, { windowStart: number; count: number }>();
 
+  // Task 7: track expiry timers per socket so they can be cleared on disconnect
+  private readonly expiryTimers = new WeakMap<object, NodeJS.Timeout>();
+
   private static readonly JOIN_LEAVE_LIMIT = 20;
   private static readonly JOIN_LEAVE_WINDOW_MS = 60_000;
   // Same shape ParseUUIDPipe accepts; a malformed id must not reach findOne.
@@ -82,9 +95,27 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!token) {
         throw new Error('missing token');
       }
-      const payload = this.jwt.verify<JwtPayload>(token, {
+      // Task 3: pin algorithm to HS256 to prevent algorithm confusion attacks.
+      const payload = this.jwt.verify<JwtPayload & { exp?: number }>(token, {
         secret: this.config.get<string>('JWT_ACCESS_SECRET'),
+        algorithms: ['HS256'],
       });
+
+      // Task 3: verify iss/aud claims with 30-day grace period for old tokens.
+      const CLAIMS_GRACE_DEADLINE = new Date('2026-11-18T00:00:00Z');
+      const now = new Date();
+      const gracePeriodActive = now < CLAIMS_GRACE_DEADLINE;
+      if (payload.iss && payload.iss !== 'vazhi-api') {
+        throw new Error('invalid token issuer');
+      }
+      if (payload.aud) {
+        const audArr = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+        if (!audArr.includes('vazhi-app')) throw new Error('invalid token audience');
+      }
+      if (!gracePeriodActive && (!payload.iss || !payload.aud)) {
+        throw new Error('token missing required claims');
+      }
+
       // Reject sockets whose user is missing or deactivated, matching the
       // HTTP JwtStrategy (which does a DB lookup for the same reason).
       const user = await this.users.findOne({ where: { id: payload.sub } });
@@ -98,14 +129,47 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (client.data.role === 'admin') {
         await client.join('admins');
       }
+
+      // Task 7: Schedule disconnect when access token expires.
+      // Emits session:expired before disconnecting so the client can refresh tokens and reconnect.
+      if (payload.exp) {
+        const msUntilExpiry = payload.exp * 1000 - Date.now();
+        if (msUntilExpiry > 0) {
+          const timer = setTimeout(async () => {
+            this.handleSessionExpired(client, 'token_expired');
+          }, msUntilExpiry);
+          this.expiryTimers.set(client, timer);
+        } else {
+          // Already expired
+          this.handleSessionExpired(client, 'token_expired');
+        }
+      }
     } catch (err) {
       this.logger.warn(`Rejected socket connection: ${(err as Error).message}`);
       client.disconnect(true);
     }
   }
 
-  handleDisconnect(_client: AuthedSocket): void {
+  handleDisconnect(client: AuthedSocket): void {
+    // Task 5: clean up driver location cache on disconnect
+    delete client.data?.driverCache;
+
+    // Task 7: clear token expiry timer on disconnect
+    const timer = this.expiryTimers.get(client);
+    if (timer) {
+      clearTimeout(timer);
+    }
     // Rooms are cleaned up automatically by Socket.IO on disconnect.
+  }
+
+  // Task 7: Disconnect socket and emit session:expired event
+  private handleSessionExpired(client: AuthedSocket, reason: string): void {
+    try {
+      client.emit('session:expired', { reason });
+      client.disconnect(true);
+    } catch {
+      // Ignore disconnect errors
+    }
   }
 
   private userRoom(userId: string) {
@@ -191,6 +255,8 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // Driver app streams its position while a ride is active; relayed 1:1 to
   // whoever else is in the ride room (the rider). Authorized by approved
   // driver status + ride ownership — never by the JWT role claim. (B9/B11 fix.)
+  // Task 5: driver approved status and active ride id are cached on client.data.driverCache.
+  // This avoids two DB reads per message per driver during the trip.
   @SubscribeMessage('driver:location')
   async onDriverLocation(
     @ConnectedSocket() client: AuthedSocket,
@@ -205,14 +271,32 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const last = this.lastLocationAt.get(client) ?? 0;
     if (now - last < 2000) return;
     this.lastLocationAt.set(client, now);
-    const driver = await this.drivers.findOne({ where: { userId } }).catch(() => null);
-    if (!driver || (driver as any).status !== 'approved') return;
-    const ride = await this.rides.findOne({ where: { id: data.rideId } }).catch(() => null);
-    if (!ride || ride.driverId !== driver.id) return;
-    // Pass-4 (task 7): relay only while the trip is live — a completed /
-    // cancelled ride must stop leaking positions (the driver app can keep
-    // streaming for a moment after the trip ends).
-    if (!['matched', 'driver_en_route', 'in_progress'].includes(ride.status)) return;
+
+    // Task 5: check or populate driver approval cache on this socket
+    let cache = client.data.driverCache;
+    if (!cache) {
+      const driver = await this.drivers.findOne({ where: { userId } }).catch(() => null);
+      if (!driver || (driver as any).status !== 'approved') return;
+      cache = {
+        driverId: driver.id,
+        isApproved: true,
+        activeRideId: null,
+      };
+      client.data.driverCache = cache;
+    }
+    if (!cache.isApproved) return;
+
+    // Task 5: verify active ride ID (cached per socket; invalidated on status change)
+    if (cache.activeRideId !== data.rideId) {
+      const ride = await this.rides.findOne({ where: { id: data.rideId } }).catch(() => null);
+      if (!ride || ride.driverId !== cache.driverId) return;
+      // Pass-4 (task 7): relay only while the trip is live — a completed /
+      // cancelled ride must stop leaking positions (the driver app can keep
+      // streaming for a moment after the trip ends).
+      if (!['matched', 'driver_en_route', 'in_progress'].includes(ride.status)) return;
+      cache.activeRideId = ride.id;
+    }
+
     // Optional compass/course heading (degrees, 0 = north, clockwise) so the
     // rider's car marker can face the direction of travel. Relayed only when
     // it is a sane number — a missing/invalid heading is simply omitted and the
@@ -261,6 +345,12 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   /** Server-initiated push: driver application status change (reject/suspend). */
   emitDriverStatus(driverUserId: string, payload: unknown): void {
+    // Task 5 & 7: invalidate driver cache and check if suspended
+    this.invalidateDriverCacheForUser(driverUserId);
+    const status = (payload as any)?.status;
+    if (status === 'suspended' || status === 'rejected') {
+      this.disconnectUserSockets(driverUserId, 'driver_suspended');
+    }
     this.server.to(this.userRoom(driverUserId)).emit('driver:status', payload);
   }
 
@@ -276,6 +366,9 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   /** Server-initiated push: a status change to the rider (and driver, if online). */
   emitRideStatus(rideId: string, riderUserId: string, driverUserId: string | null, payload: any): void {
+    // Task 5: Invalidate cached active ride id on ride status changes
+    this.invalidateDriverCacheForRide(rideId);
+
     // Rider receives full payload including pickupOtp
     this.server.to(this.userRoom(riderUserId)).emit('ride:status', payload);
 
@@ -289,5 +382,38 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.server.to(this.userRoom(driverUserId)).emit('ride:status', driverPayload);
     }
     this.server.to(this.rideRoom(rideId)).emit('ride:status', driverPayload);
+  }
+
+  /** Task 5: Invalidate driver location cache when ride status changes */
+  private invalidateDriverCacheForRide(rideId: string): void {
+    if (!this.server?.sockets?.sockets) return;
+    for (const [, socket] of this.server.sockets.sockets) {
+      const authed = socket as unknown as AuthedSocket;
+      if (authed.data?.driverCache?.activeRideId === rideId) {
+        authed.data.driverCache.activeRideId = null;
+      }
+    }
+  }
+
+  /** Task 5: Invalidate driver cache when driver status changes */
+  private invalidateDriverCacheForUser(userId: string): void {
+    if (!this.server?.sockets?.sockets) return;
+    for (const [, socket] of this.server.sockets.sockets) {
+      const authed = socket as unknown as AuthedSocket;
+      if (authed.data?.userId === userId) {
+        delete authed.data.driverCache;
+      }
+    }
+  }
+
+  /** Task 7: Disconnect sockets for deactivated / suspended user */
+  private disconnectUserSockets(userId: string, reason: string): void {
+    if (!this.server?.sockets?.sockets) return;
+    for (const [, socket] of this.server.sockets.sockets) {
+      const authed = socket as unknown as AuthedSocket;
+      if (authed.data?.userId === userId) {
+        this.handleSessionExpired(authed, reason);
+      }
+    }
   }
 }

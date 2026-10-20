@@ -1112,5 +1112,32 @@ describe('RidesService phase-1 fixes', () => {
         expect(rides.manager.save).not.toHaveBeenCalled();
       });
     });
+
+    describe('Idempotency-Key support (Task 11)', () => {
+      it('returns cached response when the same idempotency key is presented within 60s', async () => {
+        const cachedPayload = { id: 'ride-cached-1', status: 'requested', fareBreakdown: { total: 100 } };
+        // Seed Redis with the idempotency key
+        await (service as any).redis.set(
+          'idempotency:rides:rider-1:key-123',
+          JSON.stringify(cachedPayload),
+          'EX',
+          60,
+        );
+
+        const result = await service.create(
+          'rider-1',
+          {
+            vehicleType: 'auto',
+            pickup: { address: 'A', lat: 11.66, lng: 78.15 },
+            dropoff: { address: 'B', lat: 11.67, lng: 78.16 },
+          },
+          'key-123',
+        );
+
+        expect(result).toEqual(cachedPayload);
+        // Did not create a new ride
+        expect(rides.create).not.toHaveBeenCalled();
+      });
+    });
   });
 });

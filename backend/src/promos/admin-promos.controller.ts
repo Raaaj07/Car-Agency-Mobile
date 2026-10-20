@@ -1,4 +1,6 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { Roles, RolesGuard } from '../common/guards/roles.guard';
 import { PromosService } from './promos.service';
 import { PromoAdminDto } from './dto/promo-admin.dto';
@@ -8,6 +10,7 @@ import { PromoAdminDto } from './dto/promo-admin.dto';
  * guarded like the rest of the admin console (JWT + admin role). The admin
  * promo screen (Account → Promo codes) drives these. Authentication itself is
  * now global (SEC-1 default-deny); only the admin-role check stays here.
+ * Task 12: Every mutating admin endpoint writes an audit row to admin_audit_logs.
  */
 @UseGuards(RolesGuard)
 @Roles('admin')
@@ -21,21 +24,25 @@ export class AdminPromosController {
     return this.service.listAdmin();
   }
 
-  /** POST /admin/promos — create (409 on a duplicate code). */
+  /** POST /admin/promos — create (409 on a duplicate code). Writes audit row. */
   @Post()
-  create(@Body() dto: PromoAdminDto) {
-    return this.service.createPromo(dto);
+  create(@CurrentUser() user: AuthenticatedUser, @Body() dto: PromoAdminDto) {
+    return this.service.createPromo(dto, user.userId);
   }
 
-  /** PATCH /admin/promos/:id — edit; null clears copy/validity fields. */
+  /** PATCH /admin/promos/:id — edit; null clears copy/validity fields. Writes audit row. */
   @Patch(':id')
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: PromoAdminDto) {
-    return this.service.updatePromo(id, dto);
+  update(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PromoAdminDto,
+  ) {
+    return this.service.updatePromo(id, dto, user.userId);
   }
 
-  /** DELETE /admin/promos/:id — redemption history survives (SET NULL). */
+  /** DELETE /admin/promos/:id — redemption history survives (SET NULL). Writes audit row. */
   @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.service.removePromo(id);
+  remove(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.service.removePromo(id, user.userId);
   }
 }

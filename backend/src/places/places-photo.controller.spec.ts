@@ -2,6 +2,8 @@ import { StreamableFile, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Request, Response } from 'express';
+import { Repository } from 'typeorm';
+import { UserEntity } from '../auth/entities/user.entity';
 import { PlaceImageService } from './place-image.service';
 import { PlacesPhotoController } from './places-photo.controller';
 
@@ -10,20 +12,24 @@ import { PlacesPhotoController } from './places-photo.controller';
  * Default OFF (old APKs keep working); REQUIRE_AUTH_FOR_PHOTOS=true makes an
  * unverifiable token a 401. The token is verified with the SAME
  * JwtService/secret as the rest of the app.
+ * Task 4: when auth is enabled, also reject tokens whose user is missing
+ * or inactive in the DB.
  */
-describe('PlacesPhotoController optional auth (pass-4 task-10)', () => {
+describe('PlacesPhotoController optional auth (pass-4 task-10 / task-4)', () => {
   const SECRET = 'photo_secret_test_fake';
   const GOOGLE_ID = 'ChIJfake12345678';
 
   let images: { getLiveImage: jest.Mock; getWikiPlaceImage: jest.Mock };
   let jwt: JwtService;
   let res: { setHeader: jest.Mock };
+  let usersRepo: { findOne: jest.Mock };
 
-  const build = (env: Record<string, string | undefined>) =>
+  const build = (env: Record<string, string | undefined>, usersOverride?: { findOne: jest.Mock }) =>
     new PlacesPhotoController(
       images as unknown as PlaceImageService,
       { get: (k: string) => env[k] } as unknown as ConfigService,
       jwt,
+      (usersOverride ?? usersRepo) as unknown as Repository<UserEntity>,
     );
 
   const reqWith = (auth?: string) =>
@@ -38,6 +44,10 @@ describe('PlacesPhotoController optional auth (pass-4 task-10)', () => {
     };
     jwt = new JwtService({ secret: SECRET });
     res = { setHeader: jest.fn() };
+    // Default: active user found in DB.
+    usersRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'u1', isActive: true }),
+    };
   });
 
   it('serves without a token when the flag is off (default)', async () => {
@@ -71,7 +81,7 @@ describe('PlacesPhotoController optional auth (pass-4 task-10)', () => {
     expect(images.getLiveImage).not.toHaveBeenCalled();
   });
 
-  it('serves a valid token when the flag is on', async () => {
+  it('serves a valid token for an active user when the flag is on', async () => {
     const token = jwt.sign({ sub: 'u1' });
 
     const out = await build({ REQUIRE_AUTH_FOR_PHOTOS: 'true' }).serveGooglePhoto(
@@ -81,6 +91,37 @@ describe('PlacesPhotoController optional auth (pass-4 task-10)', () => {
     );
 
     expect(out).toBeInstanceOf(StreamableFile);
+  });
+
+  // Task 4: new tests for missing/inactive user rejection.
+  it('rejects with 401 when the user is not found in the DB (task-4)', async () => {
+    const missingUser = { findOne: jest.fn().mockResolvedValue(null) };
+    const token = jwt.sign({ sub: 'u-missing' });
+
+    await expect(
+      build({ REQUIRE_AUTH_FOR_PHOTOS: 'true' }, missingUser).serveGooglePhoto(
+        GOOGLE_ID,
+        res as unknown as Response,
+        reqWith(`Bearer ${token}`),
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(images.getLiveImage).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 401 when the user is inactive (task-4)', async () => {
+    const inactiveUser = {
+      findOne: jest.fn().mockResolvedValue({ id: 'u-inactive', isActive: false }),
+    };
+    const token = jwt.sign({ sub: 'u-inactive' });
+
+    await expect(
+      build({ REQUIRE_AUTH_FOR_PHOTOS: 'true' }, inactiveUser).serveGooglePhoto(
+        GOOGLE_ID,
+        res as unknown as Response,
+        reqWith(`Bearer ${token}`),
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(images.getLiveImage).not.toHaveBeenCalled();
   });
 
   it('applies the same gate to the Wikipedia (w/:pageId) proxy', async () => {

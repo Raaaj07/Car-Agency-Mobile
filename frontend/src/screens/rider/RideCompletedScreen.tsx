@@ -1,7 +1,7 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Share } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CheckCircle2, Clock, Navigation, Home } from 'lucide-react-native';
+import { CheckCircle2, Clock, Navigation, Home, Receipt } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
@@ -34,10 +34,35 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
       ? Math.max(1, Math.round((ended - started) / 60000))
       : null;
   })();
+  // Receipt: plain-text summary through the system share sheet (save, WhatsApp,
+  // email…). Built only from this ride's own data; nothing is invented.
+  const shareReceipt = async () => {
+    if (!activeRide) return;
+    const when = activeRide.completedAt ?? activeRide.createdAt;
+    const lines = [
+      'Vazhi ride receipt',
+      `Ride: ${activeRide.id}`,
+      when ? `Date: ${new Date(when).toLocaleString()}` : null,
+      `From: ${activeRide.pickup?.address ?? '-'}`,
+      `To: ${activeRide.dropoff?.address ?? '-'}`,
+      distanceKm > 0 ? `Distance: ${distanceKm.toFixed(1)} km` : null,
+      `Fare: ₹${Number(activeRide.fareBreakdown?.total ?? 0).toFixed(2)}`,
+      Number(activeRide.tipAmount ?? 0) > 0 ? `Tip: ₹${Number(activeRide.tipAmount).toFixed(2)}` : null,
+      `Total: ₹${totalPaid.toFixed(2)}`,
+      `Payment: ${String(activeRide.paymentMethod).toUpperCase()} (${activeRide.paymentStatus})`,
+      driver?.name ? `Driver: ${driver.name}${vehicleInfo ? ` · ${vehicleInfo}` : ''}` : null,
+    ].filter((l): l is string => !!l);
+    try {
+      await Share.share({ message: lines.join('\n') });
+    } catch {
+      // Share sheet dismissed/unavailable — nothing to recover.
+    }
+  };
+
   return (
     <View style={styles.container}>
       <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 190 + insets.bottom }]}
         showsVerticalScrollIndicator={false}
       >
         {/* Celebration Banner */}
@@ -100,7 +125,14 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
         </Card>
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom, gap: 10 }]}>
+        <Button
+          title="Share receipt"
+          onPress={shareReceipt}
+          variant="outline"
+          size="large"
+          leftIcon={<Receipt size={20} color={colors.primary} />}
+        />
         <Button
           title="Back to Home Dashboard"
           onPress={onGoHome}

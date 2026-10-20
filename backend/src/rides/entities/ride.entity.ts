@@ -131,6 +131,10 @@ export class RideEntity {
   @Column({ type: 'jsonb', nullable: true })
   compliments?: string[] | null;
 
+  // Optional free-text feedback typed with the rating (admin-visible only).
+  @Column({ type: 'varchar', length: 300, nullable: true })
+  ratingComment?: string | null;
+
   @Column({ type: 'int', default: 0 })
   tipAmount!: number;
 
@@ -166,4 +170,18 @@ export class RideEntity {
 
   @Column({ type: 'timestamptz', nullable: true })
   cancelledAt?: Date | null;
+
+  // Safety: SHA-256 of the live-share token (raw token is only ever returned
+  // once, to the rider), its expiry, and the SOS flag + last known position.
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  shareTokenHash?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  shareExpiresAt?: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  sosAt?: Date | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  sosLocation?: { lat: number; lng: number } | null;
 }

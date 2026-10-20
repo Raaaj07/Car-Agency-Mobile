@@ -17,6 +17,8 @@ import {
   ArrowLeftRight,
   Megaphone,
   Trash2,
+  ShieldAlert,
+  Bell,
 } from 'lucide-react-native';
 import { CompositeNavigationProp, useNavigation, useFocusEffect } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -27,6 +29,8 @@ import { useAuthStore } from '../../store/authStore';
 import { useRideStore } from '../../store/rideStore';
 import { authApi } from '../../api/auth';
 import { driversApi, DriverApplication } from '../../api/drivers';
+import { safetyApi } from '../../api/safety';
+import { pushPrefsApi } from '../../lib/push';
 import { getApiError } from '../../api/client';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
@@ -115,6 +119,75 @@ export const ProfileScreen: React.FC = () => {
   // Pass-4 (task 12): guards the destructive delete so a double-tap can't
   // fire two DELETE requests; also drives the spinner on the row.
   const [isDeleting, setIsDeleting] = useState(false);
+  // Safety: emergency contact (used by the SOS / trip-share flow).
+  const [contactOpen, setContactOpen] = useState(false);
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactSaved, setContactSaved] = useState<{ name: string | null; phone: string | null } | null>(null);
+  const [contactBusy, setContactBusy] = useState(false);
+  const [contactError, setContactError] = useState<string | undefined>();
+
+  // Push opt-out (server-side flag; null until loaded).
+  const [pushOn, setPushOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    pushPrefsApi
+      .get()
+      .then((p) => setPushOn(p.enabled))
+      .catch(() => {});
+  }, []);
+  const togglePush = async () => {
+    const next = !(pushOn ?? true);
+    setPushOn(next); // optimistic
+    try {
+      await pushPrefsApi.set(next);
+    } catch (err) {
+      setPushOn(!next);
+      Alert.alert('Could not update', getApiError(err));
+    }
+  };
+
+  const loadContact = useCallback(async () => {
+    try {
+      const c = await safetyApi.getEmergencyContact();
+      setContactSaved(c);
+      setContactName(c.name ?? '');
+      setContactPhone(c.phone ?? '');
+    } catch {
+      // Offline — the form still works; keep what we had.
+    }
+  }, []);
+  useEffect(() => {
+    Promise.resolve().then(loadContact);
+  }, [loadContact]);
+
+  const saveContact = async () => {
+    setContactBusy(true);
+    setContactError(undefined);
+    try {
+      const c = await safetyApi.setEmergencyContact(contactName.trim(), contactPhone.replace(/[\s-]/g, ''));
+      setContactSaved(c);
+      setContactOpen(false);
+    } catch (err) {
+      setContactError(getApiError(err));
+    } finally {
+      setContactBusy(false);
+    }
+  };
+
+  const removeContact = async () => {
+    setContactBusy(true);
+    try {
+      await safetyApi.clearEmergencyContact();
+      setContactSaved({ name: null, phone: null });
+      setContactName('');
+      setContactPhone('');
+      setContactOpen(false);
+    } catch (err) {
+      setContactError(getApiError(err));
+    } finally {
+      setContactBusy(false);
+    }
+  };
 
   const loadApp = useCallback(async () => {
     try {
@@ -448,12 +521,53 @@ export const ProfileScreen: React.FC = () => {
             />
             <MenuRow
               plain
+              icon={<Bell size={20} color={colors.primary} />}
+              title="Ride notifications"
+              subtitle={pushOn === false ? 'Off — tap to turn on' : 'On — tap to turn off'}
+              onPress={togglePush}
+            />
+            <MenuRow
+              plain
+              icon={<ShieldAlert size={20} color={colors.primary} />}
+              title="Emergency contact"
+              subtitle={contactSaved?.phone ? `${contactSaved.name ?? ''} · ${contactSaved.phone}` : 'Added to your SOS and trip sharing'}
+              onPress={() => setContactOpen((o) => !o)}
+            />
+            <MenuRow
+              plain
               icon={<HelpCircle size={20} color={colors.primary} />}
               title="Help & support"
               onPress={() => navigation.navigate('HelpSupport')}
               last
             />
           </Card>
+
+          {contactOpen && (
+            <Card style={styles.card}>
+              <Input label="Contact name" value={contactName} onChangeText={setContactName} />
+              <Input
+                label="Contact phone"
+                value={contactPhone}
+                onChangeText={setContactPhone}
+                keyboardType="phone-pad"
+                error={contactError}
+              />
+              <View style={styles.editRow}>
+                {contactSaved?.phone ? (
+                  <Button title="Remove" variant="outline" onPress={removeContact} disabled={contactBusy} style={styles.editBtn} />
+                ) : (
+                  <Button title="Cancel" variant="outline" onPress={() => setContactOpen(false)} style={styles.editBtn} />
+                )}
+                <Button
+                  title="Save"
+                  onPress={saveContact}
+                  loading={contactBusy}
+                  disabled={contactBusy || contactName.trim().length < 2 || contactPhone.replace(/\D/g, '').length < 10}
+                  style={styles.editBtn}
+                />
+              </View>
+            </Card>
+          )}
 
           {status === 'pending' && (
             <Card style={styles.card}>

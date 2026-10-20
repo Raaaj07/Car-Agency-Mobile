@@ -314,15 +314,14 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
     })),
 }));
 
-// ── Photo-only place lists ────────────────────────────────────────────────────
+// ── Place lists ────────────────────────────────────────────────────────────
 
 /**
- * The place cards on the home screen (nearest places) are photo cards: a place that has no photo from the API, or whose
- * photo fails to load, is not rendered at all.
+ * Task 19: Keep placeholder cards (map-pin) when no photo exists or image fails to load.
+ * Do not hide cards for missing images.
  */
 export const useVisiblePlaces = (places: PlaceItem[]): PlaceItem[] => {
-  const broken = usePlacesStore((state) => state.brokenImages);
-  return useMemo(() => places.filter((p) => !!p.imageUrl && !broken[p.id]), [places, broken]);
+  return places;
 };
 
 // ── Merged recents (local searches + server ride history) ─────────────────────

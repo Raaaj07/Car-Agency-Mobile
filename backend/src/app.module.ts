@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -18,6 +18,8 @@ import { PaymentsModule } from './payments/payments.module';
 import { AdminModule } from './admin/admin.module';
 import { PlacesModule } from './places/places.module';
 import { PromosModule } from './promos/promos.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 
 @Module({
   imports: [
@@ -87,6 +89,7 @@ import { PromosModule } from './promos/promos.module';
     AdminModule,
     PlacesModule,
     PromosModule,
+    NotificationsModule,
   ],
   providers: [
     // Order matters: rate-limit first (cheap, caps request volume before any
@@ -97,4 +100,8 @@ import { PromosModule } from './promos/promos.module';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestLoggerMiddleware).forRoutes('*');
+  }
+}

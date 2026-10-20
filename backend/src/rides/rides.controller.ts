@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
@@ -21,10 +21,15 @@ export class RidesController {
   // service rejects double-booking and online-driver booking.
   // Route throttle: booking is the most expensive mutation (driver match, SMS
   // hints) — 5/min is far above any real booking pace but caps scripted spam.
+  // Task 11: per-endpoint throttle + Idempotency-Key header support
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post()
-  create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateRideDto) {
-    return this.rides.create(user.userId, dto);
+  create(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateRideDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.rides.create(user.userId, dto, idempotencyKey);
   }
 
   // R-1: "Retry" when the search came back with no drivers — re-runs the
@@ -128,16 +133,16 @@ export class RidesController {
   }
 
   // CancelRideConfirmationScreen (either party can cancel).
-  // Route throttle: 10/min — cancel spam cannot be used to flap match state.
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  // Task 11: 5/min per user — cancel spam cannot be used to flap match state.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Patch(':id/cancel')
   cancel(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelRideDto) {
     return this.rides.cancel(id, user.userId, user.role ?? 'rider', dto);
   }
 
   // ReviewRideScreen's onSubmitReview (ownership checked in service).
-  // Route throttle: 10/min — reviews are write-once anyway (409 on re-review).
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  // Task 11: 5/min per user — reviews are write-once anyway (409 on re-review).
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Patch(':id/review')
   review(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SubmitReviewDto) {
     return this.rides.submitReview(id, user.userId, dto);

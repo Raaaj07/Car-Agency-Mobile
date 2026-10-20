@@ -215,6 +215,15 @@ function parseHit(p: Record<string, unknown>): NearbyPlaceHit | null {
   };
 }
 
+export interface PlacesDiagnosticsResult {
+  keyConfigured: boolean;
+  keyValid: boolean;
+  keyRestrictionsProblem: boolean;
+  billingError: boolean;
+  photosReturned: boolean;
+  details: string;
+}
+
 @Injectable()
 export class GooglePlacesService implements OnModuleInit {
   private readonly logger = new Logger(GooglePlacesService.name);
@@ -231,12 +240,103 @@ export class GooglePlacesService implements OnModuleInit {
 
   constructor(private readonly config: ConfigService) {}
 
-  /** Say at startup whether Google Places can be used, instead of failing silently later. */
+  /** Task 19: Run startup diagnostics and log clear report on key status & photos. */
   onModuleInit(): void {
     if (this.apiKey) {
-      this.logger.log('GOOGLE_PLACES_API_KEY is set — live Google places and photos are enabled.');
+      this.logger.log('GOOGLE_PLACES_API_KEY is set — running startup diagnostics...');
+      this.runDiagnostics()
+        .then((diag) => {
+          if (diag.keyValid && diag.photosReturned) {
+            this.logger.log(`[GooglePlaces] Diagnostics PASS: ${diag.details}`);
+          } else {
+            this.logger.warn(`[GooglePlaces] Diagnostics WARNING: ${diag.details}`);
+          }
+        })
+        .catch((err) => {
+          this.logger.warn(`[GooglePlaces] Diagnostics failed: ${(err as Error).message}`);
+        });
     } else {
       this.logger.warn('Home-screen places will use Wikipedia photos only (no Google key).');
+    }
+  }
+
+  /** Task 19: Diagnostics probe for key restrictions, photo availability, and billing errors. */
+  async runDiagnostics(): Promise<PlacesDiagnosticsResult> {
+    const key = this.config.get<string>('GOOGLE_PLACES_API_KEY');
+    if (!key) {
+      return {
+        keyConfigured: false,
+        keyValid: false,
+        keyRestrictionsProblem: false,
+        billingError: false,
+        photosReturned: false,
+        details: 'GOOGLE_PLACES_API_KEY is not configured in environment variables.',
+      };
+    }
+
+    const testPlaceId = 'ChIJ2eUgeAK6j4ARbn5u_wAGqWA';
+    try {
+      const url = `https://places.googleapis.com/v1/places/${testPlaceId}`;
+      const res = await fetchWithTimeout(
+        url,
+        {
+          method: 'GET',
+          headers: {
+            'X-Goog-Api-Key': key,
+            'X-Goog-FieldMask': 'id,displayName,photos.name',
+          },
+        },
+        FETCH_TIMEOUT_MS,
+      );
+
+      if (!res.ok) {
+        const reason = await errorReason(res);
+        const isRestriction = /client application|referer|referrer|IP address.*not allowed|blocked/i.test(reason);
+        const isBilling = /billing/i.test(reason);
+        return {
+          keyConfigured: true,
+          keyValid: false,
+          keyRestrictionsProblem: isRestriction,
+          billingError: isBilling,
+          photosReturned: false,
+          details: `Google API error: HTTP ${res.status} — ${reason}. ${keyProblemHint(reason)}`,
+        };
+      }
+
+      const payload = (await res.json()) as any;
+      const photos = payload?.photos;
+      const hasPhotos = Array.isArray(photos) && photos.length > 0 && !!photos[0]?.name;
+
+      if (!hasPhotos) {
+        return {
+          keyConfigured: true,
+          keyValid: true,
+          keyRestrictionsProblem: false,
+          billingError: false,
+          photosReturned: false,
+          details:
+            'Google Places API key is valid and answered HTTP 200, but no photos were returned for test place. ' +
+            'Ensure Places API (New) is enabled and photo access is allowed.',
+        };
+      }
+
+      return {
+        keyConfigured: true,
+        keyValid: true,
+        keyRestrictionsProblem: false,
+        billingError: false,
+        photosReturned: true,
+        details: 'Google Places API (New) is functioning normally. Photos returned successfully.',
+      };
+    } catch (err) {
+      return {
+        keyConfigured: true,
+        keyValid: false,
+        keyRestrictionsProblem: false,
+        billingError: false,
+        photosReturned: false,
+        details: `Network/connection error contacting Google Places API: ${(err as Error).message}`,
+      };
     }
   }
 

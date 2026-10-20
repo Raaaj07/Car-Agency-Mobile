@@ -6,6 +6,7 @@ import { PromoAdminDto } from '../promos/dto/promo-admin.dto';
 import { PromoEntity } from '../promos/entities/promo.entity';
 import { PromoRedemptionEntity } from '../promos/entities/promo-redemption.entity';
 import { PromosService } from '../promos/promos.service';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { createTestDataSource, integrationEnabled, wipeTestTables } from './db-helpers';
 
@@ -46,7 +47,7 @@ describeIntegration('promos against real Postgres (INTEGRATION=1)', () => {
     promoRepo = ds.getRepository(PromoEntity);
     ridesRepo = ds.getRepository(RideEntity);
     usersRepo = ds.getRepository(UserEntity);
-    service = new PromosService(ridesRepo, promoRepo);
+    service = new PromosService(ridesRepo, promoRepo, ds.getRepository(AdminAuditLogEntity));
   });
 
   afterAll(async () => {

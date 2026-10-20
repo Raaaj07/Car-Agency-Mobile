@@ -51,6 +51,17 @@ export class UserEntity {
   @Column({ type: 'varchar', length: 128, nullable: true })
   refreshTokenHash?: string | null;
 
+  // Safety: who the rider's trip-share / SOS alerts are meant for.
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  emergencyContactName?: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  emergencyContactPhone?: string | null;
+
+  // Opt-out for ride push notifications (Profile toggle).
+  @Column({ type: 'boolean', default: true })
+  pushEnabled!: boolean;
+
   @Column({ type: 'varchar', length: 10, default: 'en' })
   language!: string;
 

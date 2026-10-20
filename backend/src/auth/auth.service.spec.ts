@@ -2,6 +2,7 @@ import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Repository } from 'typeorm';
+import { createHash } from 'crypto';
 import appleSignin from 'apple-signin-auth';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
@@ -9,6 +10,7 @@ import { SavedPlaceEntity } from '../places/entities/saved-place.entity';
 import { StorageService } from '../drivers/storage.service';
 import { AuthService } from './auth.service';
 import { UserEntity } from './entities/user.entity';
+import { RefreshSessionEntity } from './entities/refresh-session.entity';
 import { OtpService } from './otp.service';
 import { SmsProvider } from './providers/sms-provider.interface';
 import { TokensService } from './tokens.service';
@@ -32,6 +34,14 @@ describe('AuthService', () => {
     create: jest.Mock;
     update: jest.Mock;
     manager: { findOne: jest.Mock; transaction: jest.Mock };
+  };
+  // Task 2: session repository mock.
+  let sessions: {
+    findOne: jest.Mock;
+    find: jest.Mock;
+    create: jest.Mock;
+    save: jest.Mock;
+    update: jest.Mock;
   };
   // Pass-4 (task 12): transaction double — `users.manager.transaction(cb)`
   // hands the callback this `tx`, which records every write it performs.
@@ -140,6 +150,14 @@ describe('AuthService', () => {
       async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
     );
     users.manager.findOne.mockResolvedValue(null);
+    // Task 2: sessions mock — by default no session exists.
+    sessions = {
+      findOne: jest.fn().mockResolvedValue(null),
+      find: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockImplementation((row: unknown) => row),
+      save: jest.fn().mockImplementation(async (row: unknown) => row),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
     geo = { removeDriver: jest.fn().mockResolvedValue(undefined) };
     storage = { deleteDocument: jest.fn().mockResolvedValue(undefined) };
     otp = {
@@ -158,6 +176,7 @@ describe('AuthService', () => {
     service = new AuthService(
       users as unknown as Repository<UserEntity>,
       { findOne: jest.fn().mockResolvedValue(null) } as unknown as Repository<DriverEntity>,
+      sessions as unknown as Repository<RefreshSessionEntity>,
       otp as unknown as OtpService,
       { issueTokens } as unknown as TokensService,
       { sendOtp: jest.fn().mockResolvedValue(undefined) } as unknown as SmsProvider,
@@ -169,6 +188,7 @@ describe('AuthService', () => {
   });
 
   afterEach(() => warnSpy.mockRestore());
+
 
   describe('admin promotion at OTP login (SEC-1)', () => {
     it('promotes an ADMIN_PHONES phone when the login used a 6-digit OTP', async () => {
@@ -575,6 +595,102 @@ describe('AuthService', () => {
       storage.deleteDocument.mockRejectedValue(new Error('disk gone'));
 
       await expect(service.deleteMe('u-1')).resolves.toEqual({ ok: true });
+    });
+  });
+
+  /**
+   * Refresh sessions: one row per device, rotation with a 30 s lost-reply
+   * grace window, replay ends ONLY the session the stale token names.
+   */
+  describe('refresh sessions', () => {
+    const sha = (raw: string) => createHash('sha256').update(raw).digest('hex');
+    const future = () => new Date(Date.now() + 86_400_000);
+    let verifyAsync: jest.Mock;
+
+    beforeEach(() => {
+      verifyAsync = jest.fn().mockResolvedValue({ sub: 'u-1', sid: 's-1' });
+      (service as unknown as { jwt: { verifyAsync: jest.Mock } }).jwt = { verifyAsync };
+      users.findOne.mockResolvedValue({ ...makeRider(), refreshTokenHash: null });
+    });
+
+    it('rotates the current token: new pair is bound to the same session, old hash kept as previous', async () => {
+      sessions.findOne.mockResolvedValueOnce({
+        id: 's-1', userId: 'u-1', tokenHash: sha('old'), expiresAt: future(), revokedAt: null,
+      });
+
+      const pair = await service.refresh('old');
+
+      expect(pair.accessToken).toBe('a');
+      expect(issueTokens).toHaveBeenCalledWith(expect.anything(), 's-1');
+      const [where, patch] = sessions.update.mock.calls[0];
+      expect(where).toMatchObject({ id: 's-1', tokenHash: sha('old') });
+      expect(patch).toMatchObject({ tokenHash: sha('r'), previousTokenHash: sha('old') });
+    });
+
+    it('lost-reply retry inside the grace window rotates from the stored token (never returns an unsaved one)', async () => {
+      sessions.findOne
+        .mockResolvedValueOnce(null) // not the current token
+        .mockResolvedValueOnce({
+          id: 's-1', userId: 'u-1', tokenHash: sha('cur'), previousTokenHash: sha('old'),
+          previousTokenAt: new Date(Date.now() - 5_000), expiresAt: future(), revokedAt: null,
+        });
+
+      const pair = await service.refresh('old');
+
+      expect(pair.refreshToken).toBe('r');
+      const [where, patch] = sessions.update.mock.calls[0];
+      expect(where).toMatchObject({ id: 's-1', tokenHash: sha('cur') });
+      // The refresh token we hand back IS the one now stored.
+      expect(patch).toMatchObject({ tokenHash: sha('r'), previousTokenHash: sha('cur') });
+    });
+
+    it('a stale token outside the grace window ends ONLY its own session', async () => {
+      sessions.findOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          id: 's-1', userId: 'u-1', tokenHash: sha('cur'), previousTokenHash: sha('old'),
+          previousTokenAt: new Date(Date.now() - 120_000), expiresAt: future(), revokedAt: null,
+        });
+
+      await expect(service.refresh('old')).rejects.toMatchObject({ status: 401 });
+
+      expect(sessions.update).toHaveBeenCalledTimes(1);
+      expect(sessions.update.mock.calls[0][0]).toEqual({ id: 's-1', userId: 'u-1' });
+      expect(sessions.update.mock.calls[0][1]).toMatchObject({ revokedAt: expect.any(Date) });
+    });
+
+    it('a revoked session refuses to refresh', async () => {
+      sessions.findOne.mockResolvedValueOnce({
+        id: 's-1', userId: 'u-1', tokenHash: sha('old'), expiresAt: future(), revokedAt: new Date(),
+      });
+
+      await expect(service.refresh('old')).rejects.toMatchObject({ status: 401 });
+      expect(sessions.update).not.toHaveBeenCalled();
+    });
+
+    it('adopts a pre-session login once (legacy hash on the user row) instead of signing it out', async () => {
+      verifyAsync.mockResolvedValue({ sub: 'u-1' }); // old tokens carry no sid
+      users.findOne.mockResolvedValue({ ...makeRider(), refreshTokenHash: sha('legacy') });
+      sessions.findOne.mockResolvedValue(null);
+
+      const pair = await service.refresh('legacy');
+
+      expect(pair.accessToken).toBe('a');
+      expect(sessions.save).toHaveBeenCalledWith(expect.objectContaining({ tokenHash: sha('legacy') }));
+      expect(users.update).toHaveBeenCalledWith({ id: 'u-1' }, { refreshTokenHash: null });
+    });
+
+    it('logout with a session id ends only that device', async () => {
+      await service.logout('u-1', undefined, 's-9');
+
+      expect(sessions.update).toHaveBeenCalledTimes(1);
+      expect(sessions.update.mock.calls[0][0]).toEqual({ id: 's-9', userId: 'u-1' });
+    });
+
+    it('logout of a pre-session token (no way to tell the device) ends them all', async () => {
+      await service.logout('u-1');
+
+      expect(sessions.update.mock.calls[0][0]).toEqual({ userId: 'u-1' });
     });
   });
 });

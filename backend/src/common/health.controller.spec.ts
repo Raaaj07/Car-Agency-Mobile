@@ -29,7 +29,7 @@ describe('HealthController (pass-4 task-9)', () => {
     ).check(res as never);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({ status: 'ok' });
+    expect(res.json).toHaveBeenCalledWith({ status: 'ok', postgres: 'up', redis: 'up' });
   });
 
   it('answers 503 { status: "degraded" } when SELECT 1 fails', async () => {
@@ -41,7 +41,7 @@ describe('HealthController (pass-4 task-9)', () => {
     ).check(res as never);
 
     expect(res.status).toHaveBeenCalledWith(503);
-    expect(res.json).toHaveBeenCalledWith({ status: 'degraded' });
+    expect(res.json).toHaveBeenCalledWith({ status: 'degraded', postgres: 'down', redis: 'up' });
   });
 
   it('answers 503 { status: "degraded" } when Redis PING fails', async () => {
@@ -53,10 +53,10 @@ describe('HealthController (pass-4 task-9)', () => {
     ).check(res as never);
 
     expect(res.status).toHaveBeenCalledWith(503);
-    expect(res.json).toHaveBeenCalledWith({ status: 'degraded' });
+    expect(res.json).toHaveBeenCalledWith({ status: 'degraded', postgres: 'up', redis: 'down' });
   });
 
-  it('leaks nothing but the status word', async () => {
+  it('leaks nothing but status words (no host/error/version text)', async () => {
     const res = fakeRes();
 
     await build(

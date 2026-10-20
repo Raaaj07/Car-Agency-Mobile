@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SavedPlaceEntity } from './entities/saved-place.entity';
 import { RideEntity } from '../rides/entities/ride.entity';
+import { UserEntity } from '../auth/entities/user.entity';
 import { PlacesController } from './places.controller';
 import { PlacesPhotoController } from './places-photo.controller';
 import { PlacesService } from './places.service';
@@ -14,7 +15,8 @@ import { PlaceImageService } from './place-image.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([SavedPlaceEntity, RideEntity]),
+    // Task 4: UserEntity added so PlacesPhotoController can check user.isActive.
+    TypeOrmModule.forFeature([SavedPlaceEntity, RideEntity, UserEntity]),
     // Pass-4 (task 10): the photo proxy optionally verifies the access token
     // (REQUIRE_AUTH_FOR_PHOTOS) with the SAME secret the rest of the app uses.
     JwtModule.registerAsync({

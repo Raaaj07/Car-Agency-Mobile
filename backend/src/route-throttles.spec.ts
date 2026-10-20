@@ -18,8 +18,8 @@ describe('route-level @Throttle overrides (SEC-9)', () => {
   const ROUTES: Array<{ name: string; handler: object; limit: number }> = [
     // Rides: booking is the expensive mutation; the rest are state changes.
     { name: 'POST /rides (create)', handler: RidesController.prototype.create, limit: 5 },
-    { name: 'PATCH /rides/:id/cancel', handler: RidesController.prototype.cancel, limit: 10 },
-    { name: 'PATCH /rides/:id/review', handler: RidesController.prototype.review, limit: 10 },
+    { name: 'PATCH /rides/:id/cancel', handler: RidesController.prototype.cancel, limit: 5 },
+    { name: 'PATCH /rides/:id/review', handler: RidesController.prototype.review, limit: 5 },
     {
       name: 'PATCH /rides/:id/verify-pickup-otp',
       handler: RidesController.prototype.verifyPickupOtp,

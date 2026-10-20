@@ -5,6 +5,7 @@ import { AdminController } from './admin/admin.controller';
 import { PlacesController } from './places/places.controller';
 import { AdminPromosController } from './promos/admin-promos.controller';
 import { RidesController } from './rides/rides.controller';
+import { SafetyController } from './rides/safety.controller';
 
 /**
  * SEC-8: every UUID :id route param runs through ParseUUIDPipe — a malformed
@@ -53,6 +54,14 @@ describe('ParseUUIDPipe wiring on :id params (SEC-8)', () => {
     ]);
   });
 
+  it('safety controller: ride ids', () => {
+    expectAll(SafetyController, [
+      ['share', 1],
+      ['unshare', 1],
+      ['sos', 1],
+    ]);
+  });
+
   it('admin controller: application/driver/ride ids (roles-guarded)', () => {
     expectAll(AdminController, [
       ['getOne', 0], // application id
@@ -72,8 +81,9 @@ describe('ParseUUIDPipe wiring on :id params (SEC-8)', () => {
   it('places + promos controllers', () => {
     expectAll(PlacesController, [['deleteSaved', 1]]);
     expectAll(AdminPromosController, [
-      ['update', 0],
-      ['remove', 0],
+      // Task 12 added @CurrentUser() as argument 0 (audit actor), so the id is argument 1.
+      ['update', 1],
+      ['remove', 1],
     ]);
   });
 });

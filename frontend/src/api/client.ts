@@ -93,8 +93,14 @@ api.interceptors.response.use(
     } catch (e) {
       refreshQueue.forEach((fn) => fn(null));
       refreshQueue = [];
-      // Token dead — authStore registered onUnauthorized -> logout.
-      tokenManager.handleUnauthorized();
+      // Only log out when the refresh server explicitly says the token is
+      // invalid (401/403). A network error or timeout means we simply could
+      // not reach the server — the tokens may still be valid, so we keep
+      // them and reject the original request without forcing a sign-out.
+      const refreshStatus = isAxiosError(e) ? e.response?.status : undefined;
+      if (refreshStatus === 401 || refreshStatus === 403) {
+        tokenManager.handleUnauthorized();
+      }
       return Promise.reject(error ?? e);
     } finally {
       isRefreshing = false;

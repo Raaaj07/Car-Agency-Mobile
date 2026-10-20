@@ -12,7 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomUUID } from 'crypto';
-import { FindOptionsWhere, In, Repository } from 'typeorm';
+import { FindOptionsWhere, In, IsNull, Repository } from 'typeorm';
 import { User as FrontendUser } from '../common/frontend-contracts';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
@@ -22,6 +22,7 @@ import { ACTIVE_RIDE_STATUSES, RideEntity } from '../rides/entities/ride.entity'
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { UserEntity } from './entities/user.entity';
+import { RefreshSessionEntity } from './entities/refresh-session.entity';
 import { OtpService } from './otp.service';
 import { SMS_PROVIDER, SmsProvider } from './providers/sms-provider.interface';
 import { TokenPair, TokensService } from './tokens.service';
@@ -47,6 +48,13 @@ type DriverStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'suspended';
 // must run OTP_LENGTH>=6 in production before any new admin gets in.
 const ADMIN_OTP_MIN_LENGTH = 6;
 
+/**
+ * Task 2: Grace window for re-presenting the previous token after a rotation.
+ * A client whose refresh response was lost in transit may retry with the same
+ * token within 30 seconds and receive a fresh pair without being locked out.
+ */
+const ROTATION_GRACE_WINDOW_MS = 30_000;
+
 function mapStatusToDriverStatus(v: string | null | undefined): DriverStatus {
   if (v === 'approved' || v === 'pending' || v === 'rejected' || v === 'suspended') return v;
   return 'none';
@@ -60,6 +68,7 @@ export class AuthService {
   constructor(
     @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
     @InjectRepository(DriverEntity) private readonly drivers: Repository<DriverEntity>,
+    @InjectRepository(RefreshSessionEntity) private readonly sessions: Repository<RefreshSessionEntity>,
     private readonly otp: OtpService,
     private readonly tokens: TokensService,
     @Inject(SMS_PROVIDER) private readonly sms: SmsProvider,
@@ -103,7 +112,7 @@ export class AuthService {
 
   // Single login for everyone: new users are riders with profileComplete=false.
   // Pass-4 (task 4): `ip` feeds the per-IP failed-verify cap in OtpService.
-  async verifyOtp({ phone, otp, name }: VerifyOtpDto, ip?: string): Promise<VerifyOtpResult> {
+  async verifyOtp({ phone, otp, name }: VerifyOtpDto, ip?: string, deviceLabel?: string): Promise<VerifyOtpResult> {
     const result = await this.otp.verify(phone, otp, ip);
     if (!result.ok) {
       throw new BadRequestException(result.reason ?? 'Invalid OTP');
@@ -134,7 +143,7 @@ export class AuthService {
     // submitted otp.length IS the issued code's length here.
     await this.promoteAdminByPhone(user, otp.length);
 
-    const tokenPair = await this.issueAndPersist(user);
+    const tokenPair = await this.issueAndPersistSession(user, deviceLabel);
     const full = await this.toFullUser(user);
     return { ...tokenPair, user: full, isNewUser };
   }
@@ -165,7 +174,7 @@ export class AuthService {
     }
   }
 
-  async googleSignIn(idToken: string): Promise<VerifyOtpResult> {
+  async googleSignIn(idToken: string, deviceLabel?: string): Promise<VerifyOtpResult> {
     const audience = this.config.get<string>('GOOGLE_WEB_CLIENT_ID');
     // SEC-2a: with no audience the library SKIPS the aud check entirely
     // (google-auth-library only verifies aud "if we have one"), so any
@@ -241,12 +250,16 @@ export class AuthService {
     // OTP login — otherwise an owner who signs up after boot never gets in.
     await this.promoteAdminByPhone(user);
 
-    const tokenPair = await this.issueAndPersist(user);
+    const tokenPair = await this.issueAndPersistSession(user, deviceLabel);
     const full = await this.toFullUser(user);
     return { ...tokenPair, user: full, isNewUser };
   }
 
-  async appleSignIn(identityToken: string, fullName: string | undefined): Promise<VerifyOtpResult> {
+  async appleSignIn(
+    identityToken: string,
+    fullName: string | undefined,
+    deviceLabel?: string,
+  ): Promise<VerifyOtpResult> {
     const audience = this.config.get<string>('APPLE_CLIENT_ID');
     // SEC-2a: apple-signin-auth spreads { audience } straight into
     // jsonwebtoken's verify options — undefined means NO aud check, so a
@@ -292,7 +305,7 @@ export class AuthService {
     // A-1: same promotion pass as OTP/Google sign-in.
     await this.promoteAdminByPhone(user);
 
-    const tokenPair = await this.issueAndPersist(user);
+    const tokenPair = await this.issueAndPersistSession(user, deviceLabel);
     const full = await this.toFullUser(user);
     return { ...tokenPair, user: full, isNewUser };
   }
@@ -342,26 +355,124 @@ export class AuthService {
     }
   }
 
-  // Rotating refresh: each use issues a new pair and replaces the stored hash.
+  /**
+   * Task 2: Rotating refresh with multi-device session support and grace window.
+   *
+   * On each refresh:
+   * 1. Verify the JWT signature and decode userId.
+   * 2. Find a live session whose tokenHash OR previousTokenHash matches.
+   * 3. If matched by previousTokenHash and within the grace window → accept,
+   *    issue new tokens but keep the same tokenHash (idempotent retry).
+   * 4. If matched by tokenHash → rotate: move current hash to previousTokenHash,
+   *    write new tokenHash.
+   * 5. If an EXPIRED previousTokenHash is presented (outside grace window),
+   *    the session row won't be found by hash and we check familyId to detect
+   *    the replay: revoke the whole family.
+   */
   async refresh(refreshToken: string): Promise<TokenPair> {
     let sub: string;
+    let sid: string | undefined;
     try {
       const decoded = (await this.jwt.verifyAsync(refreshToken, {
         secret: this.config.get<string>('JWT_REFRESH_SECRET'),
-      })) as { sub: string };
+        algorithms: ['HS256'],
+      })) as { sub: string; sid?: string };
       sub = decoded.sub;
+      sid = decoded.sid;
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }
     const user = await this.users.findOne({ where: { id: sub } });
     if (!user || user.isActive === false) throw new UnauthorizedException('User no longer active');
-    if (!user.refreshTokenHash || user.refreshTokenHash !== hashToken(refreshToken)) {
-      throw new UnauthorizedException('Refresh token revoked');
+
+    const incomingHash = hashToken(refreshToken);
+    const now = new Date();
+
+    // 1. Happy path: the token is the session's CURRENT one.
+    const current = await this.sessions.findOne({ where: { userId: sub, tokenHash: incomingHash } });
+    if (current) {
+      if (current.revokedAt || current.expiresAt <= now) {
+        throw new UnauthorizedException('Refresh token revoked');
+      }
+      return this.rotateSession(current, user, incomingHash, now);
     }
-    return this.issueAndPersist(user);
+
+    // 2. Lost-reply retry: the token is the PREVIOUS one, presented within the
+    //    grace window. Rotate again from the session's current token so the
+    //    pair we hand back is one the server actually stored (the old code
+    //    returned a pair whose refresh token was never saved, so the very next
+    //    refresh was treated as a replay and wiped the user's sessions).
+    const previous = await this.sessions.findOne({ where: { userId: sub, previousTokenHash: incomingHash } });
+    if (
+      previous &&
+      !previous.revokedAt &&
+      previous.expiresAt > now &&
+      previous.previousTokenAt &&
+      now.getTime() - previous.previousTokenAt.getTime() <= ROTATION_GRACE_WINDOW_MS
+    ) {
+      return this.rotateSession(previous, user, previous.tokenHash, now);
+    }
+
+    // 3. A login made before sessions existed: its hash lives only on the user
+    //    row. Adopt it as a session (once - the legacy hash is cleared) so the
+    //    deploy does not sign everyone out.
+    if (user.refreshTokenHash && user.refreshTokenHash === incomingHash) {
+      const sessionId = randomUUID();
+      const legacy = await this.sessions.save(
+        this.sessions.create({
+          id: sessionId,
+          userId: user.id,
+          familyId: sessionId,
+          tokenHash: incomingHash,
+          previousTokenHash: null,
+          previousTokenAt: null,
+          deviceLabel: 'legacy session',
+          expiresAt: this.parseExpiryToDate(this.config.get<string>('JWT_REFRESH_EXPIRES_IN') ?? '30d', now),
+          lastUsedAt: now,
+        }),
+      );
+      await this.users.update({ id: user.id }, { refreshTokenHash: null });
+      return this.rotateSession(legacy, user, incomingHash, now);
+    }
+
+    // 4. Unknown token with a valid signature: it was rotated out long ago (or
+    //    stolen and replayed). End ONLY the session it names - other devices
+    //    keep working. Tokens that name no session (pre-session era) end nothing.
+    if (sid) {
+      await this.sessions.update({ id: sid, userId: sub }, { revokedAt: now });
+      this.logger.warn(`Refresh token replay detected - session ${sid} revoked (user ${sub})`);
+    }
+    throw new UnauthorizedException('Refresh token revoked');
   }
 
-  async logout(userId: string): Promise<{ ok: true }> {
+  /**
+   * Task 2: logout revokes ONLY the current session (identified by token hash).
+   * Other devices remain authenticated.
+   */
+  async logout(userId: string, refreshToken?: string, sessionId?: string): Promise<{ ok: true }> {
+    const now = new Date();
+    if (sessionId) {
+      // New tokens name their session: end exactly this device.
+      await this.sessions.update({ id: sessionId, userId }, { revokedAt: now });
+    } else if (refreshToken) {
+      const hash = hashToken(refreshToken);
+      const byCurrent = await this.sessions.update({ userId, tokenHash: hash }, { revokedAt: now });
+      if (!byCurrent.affected) {
+        await this.sessions.update({ userId, previousTokenHash: hash }, { revokedAt: now });
+      }
+    } else {
+      // A pre-session token that cannot say which device it is: end them all.
+      await this.sessions.update({ userId }, { revokedAt: now });
+      await this.users.update({ id: userId }, { refreshTokenHash: null });
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Task 2: revoke ALL sessions for the user ("log out everywhere").
+   */
+  async logoutEverywhere(userId: string): Promise<{ ok: true }> {
+    await this.sessions.update({ userId }, { revokedAt: new Date() });
     await this.users.update({ id: userId }, { refreshTokenHash: null });
     return { ok: true };
   }
@@ -380,6 +491,7 @@ export class AuthService {
    * - a driver row is additionally suspended + forced offline, its document
    *   columns and UPI VPA cleared, and the stored files purged AFTER the
    *   commit (storage side effects never hold the transaction open).
+   * - Task 2: also revokes all refresh sessions.
    */
   async deleteMe(userId: string): Promise<{ ok: true }> {
     const manager = this.users.manager;
@@ -455,6 +567,9 @@ export class AuthService {
       );
     });
 
+    // Task 2: revoke all sessions after the transaction commits.
+    await this.sessions.update({ userId }, { revokedAt: new Date() }).catch(() => undefined);
+
     if (driver) {
       await this.geo.removeDriver(driver.id, driver.vehicleType).catch(() => undefined);
       for (const docPath of [driver.licenseImagePath, driver.rcImagePath, driver.vehiclePhotoPath]) {
@@ -464,10 +579,101 @@ export class AuthService {
     return { ok: true };
   }
 
-  private async issueAndPersist(user: UserEntity): Promise<TokenPair> {
-    const pair = this.tokens.issueTokens(user);
-    await this.users.update({ id: user.id }, { refreshTokenHash: hashToken(pair.refreshToken) });
+  /**
+   * Task 2: create a brand-new session (first login or re-login on a device).
+   * If an existing session is supplied, update it in place (grace-window retry).
+   */
+  private async issueAndPersistSession(user: UserEntity, deviceLabel?: string): Promise<TokenPair> {
+    const sessionId = randomUUID();
+    const pair = this.tokens.issueTokens(user, sessionId);
+    const now = new Date();
+    const refreshExpiry = this.config.get<string>('JWT_REFRESH_EXPIRES_IN') ?? '30d';
+    await this.sessions.save(
+      this.sessions.create({
+        id: sessionId,
+        userId: user.id,
+        familyId: sessionId,
+        tokenHash: hashToken(pair.refreshToken),
+        previousTokenHash: null,
+        previousTokenAt: null,
+        deviceLabel: deviceLabel ? deviceLabel.slice(0, 128) : null,
+        expiresAt: this.parseExpiryToDate(refreshExpiry, now),
+        lastUsedAt: now,
+      }),
+    );
+    // Housekeeping: dead sessions (revoked or expired) older than a day are
+    // dropped so the table cannot grow without bound. Best-effort.
+    try {
+      void this.sessions
+        .createQueryBuilder()
+        .delete()
+        .where('"userId" = :uid AND ("revokedAt" < :cut OR "expiresAt" < :cut)', {
+          uid: user.id,
+          cut: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+        })
+        .execute()
+        .catch(() => undefined);
+    } catch {
+      // best-effort cleanup only
+    }
     return pair;
+  }
+
+  /**
+   * Task 2: rotate an existing session — promote current hash to previous,
+   * write new hash, return new token pair.
+   */
+  private async rotateSession(
+    session: RefreshSessionEntity,
+    user: UserEntity,
+    oldHash: string,
+    now: Date,
+  ): Promise<TokenPair> {
+    const pair = this.tokens.issueTokens(user, session.id);
+    const newHash = hashToken(pair.refreshToken);
+    const refreshExpiry = this.config.get<string>('JWT_REFRESH_EXPIRES_IN') ?? '30d';
+    const expiresAt = this.parseExpiryToDate(refreshExpiry, now);
+
+    // Conditional on the hash we just validated: two refreshes racing on the
+    // same token cannot both win. The loser re-reads and, if it is inside the
+    // grace window, rotates from the winner's token instead of failing.
+    const res = await this.sessions.update(
+      { id: session.id, tokenHash: oldHash, revokedAt: IsNull() },
+      {
+        tokenHash: newHash,
+        previousTokenHash: oldHash,
+        previousTokenAt: now,
+        lastUsedAt: now,
+        expiresAt,
+      },
+    );
+    if (!res.affected) {
+      const fresh = await this.sessions.findOne({ where: { id: session.id } });
+      if (
+        fresh &&
+        !fresh.revokedAt &&
+        fresh.previousTokenHash === oldHash &&
+        fresh.previousTokenAt &&
+        now.getTime() - fresh.previousTokenAt.getTime() <= ROTATION_GRACE_WINDOW_MS
+      ) {
+        return this.rotateSession(fresh, user, fresh.tokenHash, now);
+      }
+      throw new UnauthorizedException('Refresh token revoked');
+    }
+    return pair;
+  }
+
+  private parseExpiryToDate(expiry: string, from: Date): Date {
+    const match = /^(\d+)([smhd])$/.exec(expiry.trim());
+    if (!match) return new Date(from.getTime() + 30 * 24 * 60 * 60 * 1000); // default 30d
+    const val = parseInt(match[1], 10);
+    const unit = match[2];
+    const ms =
+      unit === 's' ? val * 1000
+      : unit === 'm' ? val * 60_000
+      : unit === 'h' ? val * 3_600_000
+      : val * 86_400_000; // 'd'
+    return new Date(from.getTime() + ms);
   }
 
   private async toFullUser(user: UserEntity): Promise<FrontendUser> {

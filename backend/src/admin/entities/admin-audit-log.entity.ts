@@ -15,11 +15,16 @@ export type AuditAction =
   | 'ride_flag'
   | 'upi_update'
   // Pass-4 (task 12): self-service compliance account deletion.
-  | 'account_delete';
+  | 'account_delete'
+  // Task 12: Admin promo CRUD auditing
+  | 'promo_create'
+  | 'promo_update'
+  | 'promo_delete';
 
 // Pass-4 (task 12): account deletion targets the USER row (targetId = userId);
 // driver-specific effects are recorded in `meta.driverId`.
-export type AuditTargetType = 'driver' | 'ride' | 'user';
+// Task 12: promo target type added for admin promo management audit trail.
+export type AuditTargetType = 'driver' | 'ride' | 'user' | 'promo';
 
 @Entity('admin_audit_logs')
 @Index(['targetType', 'targetId'])

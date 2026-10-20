@@ -4,6 +4,9 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  Alert,
+  Linking,
+  Share,
 } from 'react-native';
 
 import {
@@ -26,20 +29,20 @@ import { useRideSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
 import { getRoute } from '../../api/mapbox';
 import { ridesApi } from '../../api/rides';
+import { safetyApi } from '../../api/safety';
+import { getApiError } from '../../api/client';
 import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
 
 interface Props {
   onCompleteTrip: () => void;
   onCancelRide?: () => void;
   onRideCancelled?: (reason?: string) => void;
-  onEmergencyPress?: () => void;
 }
 
 export const TripProgressScreen: React.FC<Props> = ({
   onCompleteTrip,
   onCancelRide,
   onRideCancelled,
-  onEmergencyPress,
 }) => {
   const [driverPosition, setDriverPosition] = useState<
     { lat: number; lng: number } | undefined
@@ -50,6 +53,7 @@ export const TripProgressScreen: React.FC<Props> = ({
   const [driverHeading, setDriverHeading] = useState<number | undefined>(undefined);
   // Measured bottom-sheet height so the map can pad the fit above it.
   const [sheetHeight, setSheetHeight] = useState(0);
+  const [sharing, setSharing] = useState(false);
 
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
@@ -156,6 +160,58 @@ export const TripProgressScreen: React.FC<Props> = ({
     };
   }, [pickupCoords, dropoffCoords]);
 
+  // Safety: share a read-only live link (expires; revocable server-side).
+  const shareTrip = async () => {
+    const rideId = useRideStore.getState().activeRide?.id;
+    if (!rideId || sharing) return;
+    setSharing(true);
+    try {
+      const link = await safetyApi.shareTrip(rideId);
+      const where = link.url ?? link.path;
+      await Share.share({ message: `Follow my Vazhi trip live: ${where}` });
+    } catch (err) {
+      Alert.alert("Couldn't share trip", getApiError(err));
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  // Safety: SOS flags the ride for the team, then offers the fast actions.
+  const raiseSos = () => {
+    Alert.alert('Send SOS?', 'This alerts the Vazhi team about this trip.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Send SOS',
+        style: 'destructive',
+        onPress: async () => {
+          const rideId = useRideStore.getState().activeRide?.id;
+          if (!rideId) return;
+          try {
+            const res = await safetyApi.sos(rideId, driverPosition);
+            const buttons: { text: string; onPress?: () => void; style?: 'cancel' }[] = [
+              { text: `Call ${res.emergencyNumber}`, onPress: () => void Linking.openURL(`tel:${res.emergencyNumber}`) },
+            ];
+            if (res.emergencyContact?.phone) {
+              const phone = res.emergencyContact.phone;
+              buttons.unshift({
+                text: `Message ${res.emergencyContact.name ?? 'contact'}`,
+                onPress: () => void Linking.openURL(`sms:${phone}`),
+              });
+            }
+            buttons.push({ text: 'Close', style: 'cancel' });
+            Alert.alert('SOS sent', 'The Vazhi team has been alerted.', buttons);
+          } catch (err) {
+            // Never leave the user stranded: the phone call still works offline.
+            Alert.alert('SOS not sent', `${getApiError(err)}\n\nCall emergency services if you are in danger.`, [
+              { text: 'Call 112', onPress: () => void Linking.openURL('tel:112') },
+              { text: 'Close', style: 'cancel' },
+            ]);
+          }
+        },
+      },
+    ]);
+  };
+
   return (
     <View style={styles.container}>
       {/* Live Tracking Map */}
@@ -172,7 +228,9 @@ export const TripProgressScreen: React.FC<Props> = ({
       {/* Safety SOS Quick Button */}
       <TouchableOpacity
         style={[styles.sosFloatingBtn, { top: 16 + insets.top }]}
-        onPress={onEmergencyPress}
+        onPress={raiseSos}
+        accessibilityRole="button"
+        accessibilityLabel="Send SOS"
       >
         <ShieldAlert
           size={22}
@@ -211,6 +269,8 @@ export const TripProgressScreen: React.FC<Props> = ({
         <View style={styles.actionsRow}>
           <TouchableOpacity
             style={styles.actionChip}
+            onPress={shareTrip}
+            disabled={sharing}
           >
             <Share2
               size={16}
@@ -224,6 +284,7 @@ export const TripProgressScreen: React.FC<Props> = ({
 
           <TouchableOpacity
             style={styles.actionChip}
+            onPress={raiseSos}
           >
             <ShieldAlert
               size={16}

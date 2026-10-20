@@ -11,6 +11,7 @@ import { AuthController } from './auth.controller';
 import { UsersController } from './users.controller';
 import { AuthService } from './auth.service';
 import { UserEntity } from './entities/user.entity';
+import { RefreshSessionEntity } from './entities/refresh-session.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { OtpService } from './otp.service';
 import { DevSmsProvider } from './providers/dev-sms.provider';
@@ -21,7 +22,7 @@ import { TokensService } from './tokens.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UserEntity, DriverEntity]),
+    TypeOrmModule.forFeature([UserEntity, DriverEntity, RefreshSessionEntity]),
     // Pass-4 (task 12): account deletion needs GeoService (drop the driver
     // from the Redis geo-sets) — no cycle: DriversModule imports nothing
     // from auth.

@@ -19,6 +19,11 @@ export class SubmitReviewDto {
   compliments?: string[];
 
   @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  comment?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
