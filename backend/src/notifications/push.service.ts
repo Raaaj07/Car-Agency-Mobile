@@ -79,9 +79,15 @@ export class PushService {
   }
 
   async sendToUser(userId: string, msg: PushMessage): Promise<void> {
-    if (!(await this.getEnabled(userId))) return;
+    if (!(await this.getEnabled(userId))) {
+      this.logger.log(`push skipped for ${userId}: notifications turned off in Profile`);
+      return;
+    }
     const rows = await this.tokens.find({ where: { userId } });
-    if (!rows.length) return;
+    if (!rows.length) {
+      this.logger.log(`push skipped for ${userId}: no registered device token`);
+      return;
+    }
     const accessToken = this.config.get<string>('EXPO_ACCESS_TOKEN');
     const res = await axios.post(
       EXPO_PUSH_URL,
@@ -92,7 +98,16 @@ export class PushService {
       },
     );
     // Tickets come back in request order — drop tokens Expo says are dead.
-    const tickets: Array<{ status: string; details?: { error?: string } }> = res.data?.data ?? [];
+    const tickets: Array<{ status: string; message?: string; details?: { error?: string } }> = res.data?.data ?? [];
+    // Expo answers HTTP 200 even when it rejects a message — the reason is in
+    // the ticket. Log it, otherwise failures are invisible.
+    tickets.forEach((t, i) => {
+      if (t.status === 'error') {
+        this.logger.warn(`Expo rejected push for ${userId}: ${t.details?.error ?? 'error'} - ${t.message ?? ''}`);
+      } else {
+        this.logger.log(`push "${msg.title}" accepted by Expo for ${userId} (token ${i + 1}/${rows.length})`);
+      }
+    });
     const dead = rows.filter((_, i) => tickets[i]?.status === 'error' && tickets[i]?.details?.error === 'DeviceNotRegistered');
     if (dead.length) await this.tokens.delete(dead.map((d) => d.id));
   }

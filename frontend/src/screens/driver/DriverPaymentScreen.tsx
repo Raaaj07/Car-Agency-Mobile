@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, Alert, useWindowDimensions } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -46,6 +46,10 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const driverName = useAuthStore((state) => state.user?.name);
   const insets = useSafeAreaInsets();
+  // Size the QR to the screen (scroll padding 20*2 + card padding 18*2 + QR frame 12*2 + border)
+  // so it is centred and never clipped on narrow phones, and not tiny on wide ones.
+  const { width: screenWidth } = useWindowDimensions();
+  const qrSize = Math.max(160, Math.min(240, Math.floor(screenWidth - 40 - 36 - 26)));
 
   const fareTotal = Number(activeRide?.fareBreakdown?.total ?? 0);
   const tip = Number(activeRide?.tipAmount ?? 0);
@@ -167,7 +171,7 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingTop: 20 + insets.top, paddingBottom: 110 + insets.bottom },
+          { paddingTop: 20 + insets.top, paddingBottom: 130 + insets.bottom },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -196,10 +200,10 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
 
           {qrValue ? (
             <View style={styles.qrWrap}>
-              <QRCode value={qrValue} size={210} backgroundColor="#FFFFFF" color="#000000" />
+              <QRCode value={qrValue} size={qrSize} backgroundColor="#FFFFFF" color="#000000" />
             </View>
           ) : (
-            <View style={styles.qrPlaceholder}>
+            <View style={[styles.qrPlaceholder, { width: qrSize + 26, height: qrSize + 26 }]}>
               <Text style={styles.qrPlaceholderText}>
                 {!hasPayee
                   ? `Add your UPI ID below to generate the payment QR for ₹${amount.toFixed(2)}`
@@ -351,15 +355,17 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.75)',
   },
   qrCard: {
+    alignSelf: 'stretch',
     padding: 18,
     alignItems: 'center',
-    gap: 12,
+    gap: 14,
   },
   qrTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 8,
-    alignSelf: 'flex-start',
+    alignSelf: 'stretch',
   },
   cardTitle: {
     ...typography.metaBold,
@@ -375,8 +381,8 @@ const styles = StyleSheet.create({
     borderColor: colors.borderLight,
   },
   qrPlaceholder: {
-    width: 210,
-    height: 210,
+    width: 236,
+    height: 236,
     borderRadius: radii.card,
     borderWidth: 1,
     borderStyle: 'dashed',
@@ -397,6 +403,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textMuted,
     textAlign: 'center',
+    alignSelf: 'stretch',
+    paddingHorizontal: 8,
   },
   vpaRow: {
     flexDirection: 'row',
@@ -418,7 +426,7 @@ const styles = StyleSheet.create({
   payeeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignSelf: 'stretch',
     gap: 8,
   },
@@ -426,19 +434,22 @@ const styles = StyleSheet.create({
     ...typography.meta,
     fontSize: 12,
     color: colors.success,
-    flex: 1,
+    flexShrink: 1,
+    textAlign: 'center',
   },
   payeeHint: {
     ...typography.meta,
     fontSize: 12,
     color: colors.textMuted,
-    alignSelf: 'flex-start',
+    alignSelf: 'stretch',
+    textAlign: 'center',
   },
   payeeError: {
     ...typography.meta,
     fontSize: 12,
     color: colors.warning,
-    alignSelf: 'flex-start',
+    alignSelf: 'stretch',
+    textAlign: 'center',
   },
   confirmBox: {
     gap: 10,

@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
-import Mapbox, { Camera, MapView, MarkerView, PointAnnotation, ShapeSource, LineLayer } from '@rnmapbox/maps';
+import Mapbox, { Camera, MapView, MarkerView, ShapeSource, LineLayer } from '@rnmapbox/maps';
 import { colors } from '../../theme/theme';
-import { CarBubble, TeardropPin, UserPuck } from './MapMarkers';
+import { TeardropPin, UserPuck } from './MapMarkers';
 import { DriverCarMarker } from './DriverCarMarker';
+import { NearbyDriversLayer } from './NearbyDriversLayer';
 
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '';
 if (MAPBOX_TOKEN) {
@@ -55,6 +56,11 @@ interface Props {
    * frame — used by the rider's "driver is coming" screen.
    */
   followDriver?: boolean;
+  /**
+   * No fresh `driver:location` for a while — dim the car marker so the rider
+   * can tell the position is stale (the screen shows the "reconnecting" pill).
+   */
+  driverStale?: boolean;
 }
 
 export const RealMapView: React.FC<Props> = ({
@@ -78,6 +84,7 @@ export const RealMapView: React.FC<Props> = ({
   showUserLocation = false,
   recenterTo,
   followDriver = true,
+  driverStale = false,
 }) => {
   const cameraRef = useRef<Camera>(null);
   const isMountedRef = useRef(true);
@@ -164,6 +171,10 @@ export const RealMapView: React.FC<Props> = ({
   // so without this latch user pans would never count as interaction and
   // the pickup would never follow the map.
   const userGestureRef = useRef(false);
+  // Latched when the rider pans/zooms a tracking map: the fit-bounds effect
+  // stops fighting them until "Locate driver" bumps recenterTo (which clears
+  // it). Picker mode ignores this so its existing behaviour is unchanged.
+  const fitSuppressedRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -195,20 +206,30 @@ export const RealMapView: React.FC<Props> = ({
     }
   }, [driverPosition, mode, followDriver]);
 
-  // Fit bounds when both pickup & dropoff exist (booking + tracking before
-  // live driver position). Includes the full route geometry so curved roads
-  // stay on screen. Re-runs when the map becomes ready, when the route
-  // arrives, or when the sheet size changes.
+  // Fit bounds around whatever the current screen needs to show: pickup,
+  // drop-off, the route geometry and (in free-look mode) the driver. Works
+  // with only some of them — the rider's "driver is coming" map frames the
+  // driver + pickup and has no drop-off pin.
   const fitKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!mapReady || !cameraRef.current || !isMountedRef.current) return;
-    if (!pickup || !dropoff) return;
     // In live tracking modes the camera follows the driver once a live
     // position exists; only fit endpoints while there is none.
     if ((mode === 'tracking' || mode === 'navigation') && followDriver && driverPosition) return;
+    // The rider panned: keep the camera where they left it until they tap
+    // "Locate driver" (the recenter effect below clears the latch).
+    if (mode !== 'picker' && fitSuppressedRef.current) return;
 
-    const lats: number[] = [pickup.lat, dropoff.lat];
-    const lngs: number[] = [pickup.lng, dropoff.lng];
+    const lats: number[] = [];
+    const lngs: number[] = [];
+    if (pickup) {
+      lats.push(pickup.lat);
+      lngs.push(pickup.lng);
+    }
+    if (dropoff) {
+      lats.push(dropoff.lat);
+      lngs.push(dropoff.lng);
+    }
     if (route && route.length > 0) {
       for (const pt of route) {
         const lng = pt[0];
@@ -223,6 +244,8 @@ export const RealMapView: React.FC<Props> = ({
       lngs.push(driverPosition.lng);
       lats.push(driverPosition.lat);
     }
+    // Nothing meaningful to frame yet (e.g. pickup only, driver not found).
+    if (lats.length < 2) return;
 
     const minLat = Math.min(...lats);
     const maxLat = Math.max(...lats);
@@ -241,12 +264,14 @@ export const RealMapView: React.FC<Props> = ({
     fitKeyRef.current = key;
 
     try {
-      // Degenerate case: pickup and dropoff (nearly) identical — fitBounds
-      // would zoom to max level, so centre on the point instead.
+      // Degenerate case: the points are (nearly) identical — fitBounds would
+      // zoom to max level, so centre on one of them instead.
       const span = Math.max(Math.abs(maxLat - minLat), Math.abs(maxLng - minLng));
       if (span < 0.0005) {
+        const anchor = pickup ?? dropoff ?? driverPosition;
+        if (!anchor) return;
         cameraRef.current.setCamera({
-          centerCoordinate: [pickup.lng, pickup.lat],
+          centerCoordinate: [anchor.lng, anchor.lat],
           zoomLevel: 15,
           animationDuration: 700,
         });
@@ -290,11 +315,14 @@ export const RealMapView: React.FC<Props> = ({
     }
   }, [mode, mapReady, flyTo, pickup, dropoff]);
 
-  // Imperative camera recenter when recenterTo.nonce changes
+  // Imperative camera recenter when recenterTo.nonce changes ("Locate driver").
+  // This is also the way back from free look: clear the pan latch so the map
+  // may auto-fit again afterwards (e.g. when Follow is switched off).
   useEffect(() => {
     if (!recenterTo || !cameraRef.current || !isMountedRef.current) return;
     if (prevRecenterNonceRef.current === recenterTo.nonce) return;
     prevRecenterNonceRef.current = recenterTo.nonce;
+    fitSuppressedRef.current = false;
     try {
       cameraRef.current.setCamera({
         centerCoordinate: [recenterTo.lng, recenterTo.lat],
@@ -308,10 +336,6 @@ export const RealMapView: React.FC<Props> = ({
   }, [recenterTo]);
 
   const tokenMissing = !MAPBOX_TOKEN;
-
-  // Nearby drivers (capped) — rendered as car-icon bubbles. Memoised so the
-  // puck/camera re-renders don't rebuild the list every time.
-  const cappedDrivers = useMemo(() => (nearbyDrivers ?? []).slice(0, 15), [nearbyDrivers]);
 
   return (
     <View style={styles.container}>
@@ -350,9 +374,14 @@ export const RealMapView: React.FC<Props> = ({
           // Fires continuously while the camera moves with an accurate
           // gesture flag — latch it for onMapIdle above. Ref-only, no
           // re-render per frame.
-          if (state?.gestures?.isGestureActive === true && !userGestureRef.current) {
-            userGestureRef.current = true;
-            onCenterGestureStart?.();
+          if (state?.gestures?.isGestureActive === true) {
+            // A user pan/zoom on a tracking map disables auto-fit until the
+            // rider asks to recenter ("Locate driver").
+            if (mode !== 'picker') fitSuppressedRef.current = true;
+            if (!userGestureRef.current) {
+              userGestureRef.current = true;
+              onCenterGestureStart?.();
+            }
           }
         }}
         onPress={(e) => {
@@ -397,16 +426,9 @@ export const RealMapView: React.FC<Props> = ({
           </ShapeSource>
         )}
 
-        {/* Nearby drivers as little car bubbles (static children — cheap) */}
-        {cappedDrivers.map((d, index) => (
-          <PointAnnotation
-            key={`nearby-driver-${index}`}
-            id={`nearby-driver-${index}`}
-            coordinate={[d.lng, d.lat]}
-          >
-            <CarBubble />
-          </PointAnnotation>
-        ))}
+        {/* Nearby drivers as little car bubbles — smoothly interpolated in
+            their own layer so a 5 s poll doesn't make them jump. */}
+        <NearbyDriversLayer drivers={nearbyDrivers} />
 
         {pickup && !pickerPin && (
           <MarkerView
@@ -429,7 +451,11 @@ export const RealMapView: React.FC<Props> = ({
           </MarkerView>
         )}
         {(mode === 'tracking' || mode === 'navigation') && driverPosition && (
-          <DriverCarMarker position={driverPosition} heading={driverHeading} />
+          <DriverCarMarker
+            position={driverPosition}
+            heading={driverHeading}
+            dimmed={driverStale}
+          />
         )}
       </MapView>
     </View>

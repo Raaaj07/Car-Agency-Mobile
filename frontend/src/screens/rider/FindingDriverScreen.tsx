@@ -20,6 +20,9 @@ interface Props {
   onRideCancelled: () => void; // the ride is already cancelled — go straight to the outcome screen
 }
 
+/** Nearby-driver snapshot cadence while the search is live. */
+const NEARBY_REFRESH_MS = 5000;
+
 export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPress, onRideCancelled }) => {
   const [progress, setProgress] = useState<number>(30);
   const [nearbyDrivers, setNearbyDrivers] = useState<LatLng[]>([]);
@@ -127,9 +130,11 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
 
   // Nearby online/available drivers around the pickup point — shown as dots
   // on the map. Polled separately so a failure here never interrupts the
-  // ride-status polling above.
+  // ride-status polling above. Coordinates only (the API is redacted), and
+  // polling stops as soon as the ride leaves `requested` (driver found /
+  // cancelled) or the screen unmounts.
   useEffect(() => {
-    if (!pickupCoords) return;
+    if (!pickupCoords || activeRide?.status !== 'requested') return;
     let isMounted = true;
 
     const loadNearby = async () => {
@@ -146,12 +151,12 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
     };
 
     void loadNearby();
-    const timer = setInterval(loadNearby, 6000);
+    const timer = setInterval(loadNearby, NEARBY_REFRESH_MS);
     return () => {
       isMounted = false;
       clearInterval(timer);
     };
-  }, [pickupCoords, activeRide?.vehicleType]);
+  }, [pickupCoords, activeRide?.vehicleType, activeRide?.status]);
 
   // Road route preview between pickup and dropoff.
   useEffect(() => {

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "550234396540",
+    "project_id": "caragency-1dff2",
+    "storage_bucket": "caragency-1dff2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:550234396540:android:629e5f22db341f6eb736f9",
+        "android_client_info": {
+          "package_name": "com.vijayrajvj.CarAgencyMobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCSI6gj9E4EaGK-M0odRWc0Z4kgnTjAdIQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

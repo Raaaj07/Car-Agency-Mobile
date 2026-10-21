@@ -38,6 +38,8 @@ interface Props {
   position: Point;
   /** Degrees, 0 = north, clockwise. Omit to derive from movement. */
   heading?: number | null;
+  /** No fresh fix for a while — dim the car so it reads as stale. */
+  dimmed?: boolean;
 }
 
 const MIN_TWEEN_MS = 800;
@@ -69,7 +71,7 @@ function bearingBetween(a: Point, b: Point): number {
   return norm360((Math.atan2(y, x) * 180) / Math.PI);
 }
 
-export const DriverCarMarker: React.FC<Props> = ({ position, heading }) => {
+export const DriverCarMarker: React.FC<Props> = ({ position, heading, dimmed = false }) => {
   const [pose, setPose] = useState<Pose>(() => ({
     lat: position.lat,
     lng: position.lng,
@@ -163,7 +165,7 @@ export const DriverCarMarker: React.FC<Props> = ({ position, heading }) => {
     <MarkerView coordinate={[pose.lng, pose.lat]} anchor={{ x: 0.5, y: 0.5 }} allowOverlap>
       {/* Square box big enough for the car at any rotation, so Android never
           clips the corners of the rotated view. */}
-      <View style={styles.box} pointerEvents="none">
+      <View style={[styles.box, dimmed && styles.boxDimmed]} pointerEvents="none">
         <View style={{ transform: [{ rotate: `${pose.heading}deg` }] }}>
           <CarTopDown />
         </View>
@@ -178,5 +180,8 @@ const styles = StyleSheet.create({
     height: 68,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  boxDimmed: {
+    opacity: 0.5,
   },
 });

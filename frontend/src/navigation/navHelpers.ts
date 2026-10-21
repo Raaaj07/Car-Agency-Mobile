@@ -110,10 +110,22 @@ export function enterRiderHome<S extends keyof RiderHomeStackParamList>(
  * the Home stack at HomeDashboard, so the cancelled ride's booking/live screens
  * can never linger below RideCancelled, and no second Main is stacked (D4).
  */
+// One cancellation is reported by SEVERAL sources at nearly the same moment:
+// the cancel modal's own API response AND the live-ride screen underneath
+// (socket "cancelled" status / 3 s poll). Each used to run its own root reset,
+// so RideCancelled was replaced and re-animated a second time (the "page
+// appears twice" bug). A rider can only have one active ride, so a second
+// request inside this window is always the same cancellation — drop it.
+const RIDE_CANCELLED_DEDUPE_MS = 4000;
+let lastRideCancelledAt = 0;
+
 export function goToRideCancelled(
   nav: RootStackNav,
   params?: RootStackParamList['RideCancelled'],
 ): void {
+  const now = Date.now();
+  if (now - lastRideCancelledAt < RIDE_CANCELLED_DEDUPE_MS) return;
+  lastRideCancelledAt = now;
   nav.dispatch(
     CommonActions.reset({
       index: 1,

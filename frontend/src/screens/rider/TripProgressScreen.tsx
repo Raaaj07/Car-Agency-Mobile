@@ -13,6 +13,8 @@ import {
   ShieldAlert,
   Share2,
   MapPin,
+  Clock,
+  WifiOff,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -25,13 +27,20 @@ import {
 
 import { Button } from '../../components/primitives/Button';
 import { RealMapView } from '../../components/primitives/RealMapView';
+import { MapRecenterButtons } from '../../components/primitives/MapRecenterButtons';
 import { useRideSocket } from '../../hooks/useSocket';
+import { useDriverRoute } from '../../hooks/useDriverRoute';
 import { useRideStore } from '../../store/rideStore';
-import { getRoute } from '../../api/mapbox';
 import { ridesApi } from '../../api/rides';
 import { safetyApi } from '../../api/safety';
 import { getApiError } from '../../api/client';
+import { formatDistance } from '../../utils/distance';
 import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
+
+/** No `driver:location` for this long ⇒ the car position is stale. */
+const DRIVER_STALE_MS = 20_000;
+/** How often staleness is re-checked while waiting for a fix. */
+const STALE_CHECK_MS = 5_000;
 
 interface Props {
   onCompleteTrip: () => void;
@@ -44,37 +53,71 @@ export const TripProgressScreen: React.FC<Props> = ({
   onCancelRide,
   onRideCancelled,
 }) => {
+  const activeRide = useRideStore((state) => state.activeRide);
+  const setActiveRide = useRideStore((state) => state.setActiveRide);
+  const dropoffCoords = useRideStore((state) => state.dropoffCoords);
+  const storeDropoffAddress = useRideStore((state) => state.dropoffAddress);
+  const dropoffAddress = activeRide?.dropoff?.address || storeDropoffAddress || 'Drop-off';
+
+  // Seeded from the ride payload so the car is on the map before the first
+  // live fix (the socket tick is up to 4 s behind).
   const [driverPosition, setDriverPosition] = useState<
     { lat: number; lng: number } | undefined
-  >();
-  const [route, setRoute] = useState<[number, number][] | undefined>(undefined);
+  >(() =>
+    activeRide?.driver?.location
+      ? { lat: activeRide.driver.location.lat, lng: activeRide.driver.location.lng }
+      : undefined,
+  );
   // Driver's live heading relayed over the socket (undefined → the car marker
   // derives it from the direction of movement).
   const [driverHeading, setDriverHeading] = useState<number | undefined>(undefined);
-  // Measured bottom-sheet height so the map can pad the fit above it.
+  // Measured bottom-sheet height so floating controls clear it.
   const [sheetHeight, setSheetHeight] = useState(0);
   const [sharing, setSharing] = useState(false);
+  // In-trip the camera follows the car by default (existing behaviour); a pan
+  // drops to free look until Locate/Follow is tapped.
+  const [followDriver, setFollowDriver] = useState(true);
+  const [recenterNonce, setRecenterNonce] = useState(0);
+  // True when no `driver:location` has arrived for DRIVER_STALE_MS.
+  const [driverStale, setDriverStale] = useState(false);
+  // Local receive time of the last fix (0 = none yet), started on mount.
+  const lastFixAtRef = useRef<number>(0);
 
-  const activeRide = useRideStore((state) => state.activeRide);
-  const setActiveRide = useRideStore((state) => state.setActiveRide);
+  const dropoff = dropoffCoords ??
+    (activeRide?.dropoff
+      ? { lat: activeRide.dropoff.lat, lng: activeRide.dropoff.lng }
+      : undefined);
+
+  // Live road route: driver → drop-off, throttled to one Directions call per
+  // 20 s inside the hook (never on every GPS fix). The last good route and
+  // ETA stay on screen if a call fails.
+  const { route, etaSeconds, distanceMeters } = useDriverRoute({
+    driverPosition,
+    target: dropoff,
+    enabled: activeRide?.status !== 'completed' && activeRide?.status !== 'cancelled',
+  });
+
+  const distanceLabel = formatDistance(
+    distanceMeters != null ? distanceMeters / 1000 : null,
+  );
+  const etaLabel =
+    etaSeconds == null
+      ? null
+      : etaSeconds < 60
+        ? 'Reaching drop now'
+        : `Reaching drop in ${Math.max(1, Math.round(etaSeconds / 60))} min${
+            distanceLabel ? ` · ${distanceLabel}` : ''
+          }`;
+  // Staleness wins over the ETA so the rider knows the number is frozen.
+  const etaText =
+    driverStale && driverPosition ? 'Reconnecting to driver…' : etaLabel;
+
   // D2: an in-progress trip must never reveal the booking form — swallow back
   // (cancel/emergency are the explicit ways out of this screen).
   usePreventBack(() => {});
   // D4: if the ride vanished under this screen, go home — never a dead map.
   useRequireActiveRide();
   const insets = useSafeAreaInsets();
-
-  const pickupCoords = useRideStore(
-    (state) => state.pickupCoords
-  );
-
-  const dropoffCoords = useRideStore(
-    (state) => state.dropoffCoords
-  );
-
-  const storeDropoffAddress = useRideStore((state) => state.dropoffAddress);
-
-  const dropoffAddress = activeRide?.dropoff?.address || storeDropoffAddress || 'Drop-off';
 
   // Terminal transition (completed/cancelled) must fire exactly once, no
   // matter how many sources (socket + 3s poll) detect it.
@@ -110,19 +153,23 @@ export const TripProgressScreen: React.FC<Props> = ({
   }, [setActiveRide]);
 
   useRideSocket(activeRide?.id, {
-  onDriverLocation: (event) => {
-    setDriverPosition({
-      lat: event.lat,
-      lng: event.lng,
-    });
-    setDriverHeading(event.heading);
-  },
-  onStatus: (event) => {
-    if (event.status === 'completed' || event.status === 'cancelled') {
-      void checkTerminalStatus();
-    }
-  },
-});
+    onDriverLocation: (event) => {
+      setDriverPosition({
+        lat: event.lat,
+        lng: event.lng,
+      });
+      setDriverHeading(event.heading);
+      // Local receive time: authoritative for staleness even if the server's
+      // `at` is a little off our clock.
+      lastFixAtRef.current = Date.now();
+      setDriverStale(false);
+    },
+    onStatus: (event) => {
+      if (event.status === 'completed' || event.status === 'cancelled') {
+        void checkTerminalStatus();
+      }
+    },
+  });
 
   // 3s polling fallback for terminal states (socket may be reconnecting).
   // Stops itself after the first terminal state.
@@ -139,26 +186,40 @@ export const TripProgressScreen: React.FC<Props> = ({
     return () => clearInterval(timer);
   }, [activeRide?.id, checkTerminalStatus]);
 
-  // Fetch the road-following route once so the map fits pickup, drop and
-  // the road line. Failures leave the map to fit just the endpoints.
+  // Stale fix watchdog: if the socket goes quiet (tunnel, network drop) dim
+  // the car and say we're reconnecting; the next fix clears it.
   useEffect(() => {
-    let mounted = true;
-    if (!pickupCoords || !dropoffCoords) {
-      // Async boundary — sync setState directly in the effect trips
-      // react-hooks/set-state-in-effect; a microtask is invisible next to
-      // the route fetch it guards.
-      Promise.resolve().then(() => setRoute(undefined));
+    // Start the clock at mount: a position that came with the ride payload is
+    // only trusted until the first live fix (or 20 s, whichever is sooner).
+    lastFixAtRef.current = Date.now();
+    const timer = setInterval(() => {
+      const last = lastFixAtRef.current;
+      if (last === 0) return;
+      if (Date.now() - last >= DRIVER_STALE_MS) setDriverStale(true);
+    }, STALE_CHECK_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // "Locate driver": recenter on the car (zoom 15.5, via recenterTo) and
+  // re-enable follow so it stays centred.
+  const locateDriver = useCallback(() => {
+    if (!driverPosition) return;
+    setFollowDriver(true);
+    setRecenterNonce((n) => n + 1);
+  }, [driverPosition]);
+
+  const toggleFollow = useCallback(() => {
+    if (followDriver) {
+      setFollowDriver(false);
       return;
     }
-    getRoute(pickupCoords, dropoffCoords)
-      .then((result) => {
-        if (mounted && result) setRoute(result.coordinates);
-      })
-      .catch(() => {});
-    return () => {
-      mounted = false;
-    };
-  }, [pickupCoords, dropoffCoords]);
+    // Turning follow on also recenters immediately (next fix is up to 4 s out).
+    setFollowDriver(true);
+    setRecenterNonce((n) => n + 1);
+  }, [followDriver]);
+
+  // A pan/zoom means free look: stop following until Locate/Follow is tapped.
+  const handleCenterGestureStart = useCallback(() => setFollowDriver(false), []);
 
   // Safety: share a read-only live link (expires; revocable server-side).
   const shareTrip = async () => {
@@ -217,13 +278,38 @@ export const TripProgressScreen: React.FC<Props> = ({
       {/* Live Tracking Map */}
       <RealMapView
         mode="tracking"
-        pickup={pickupCoords}
-        dropoff={dropoffCoords}
+        dropoff={dropoff}
         driverPosition={driverPosition}
         driverHeading={driverHeading}
         route={route}
         bottomPadding={sheetHeight}
+        followDriver={followDriver}
+        driverStale={driverStale}
+        recenterTo={
+          driverPosition
+            ? { lat: driverPosition.lat, lng: driverPosition.lng, nonce: recenterNonce }
+            : undefined
+        }
+        onCenterGestureStart={handleCenterGestureStart}
       />
+
+      {/* Live ETA chip — hidden until the first route result (no fake numbers) */}
+      {etaText && (
+        <View
+          style={[
+            styles.etaPill,
+            driverStale && styles.etaPillStale,
+            { top: 16 + insets.top },
+          ]}
+        >
+          {driverStale ? (
+            <WifiOff size={14} color="#FFFFFF" />
+          ) : (
+            <Clock size={14} color="#FFFFFF" />
+          )}
+          <Text style={styles.etaPillText} numberOfLines={1}>{etaText}</Text>
+        </View>
+      )}
 
       {/* Safety SOS Quick Button */}
       <TouchableOpacity
@@ -241,6 +327,16 @@ export const TripProgressScreen: React.FC<Props> = ({
           SOS
         </Text>
       </TouchableOpacity>
+
+      {/* Locate driver + Follow, floating above the bottom sheet */}
+      {driverPosition && (
+        <MapRecenterButtons
+          onLocate={locateDriver}
+          followOn={followDriver}
+          onToggleFollow={toggleFollow}
+          bottomOffset={sheetHeight}
+        />
+      )}
 
       {/* Bottom Sheet Navigation Card */}
       <View
@@ -367,6 +463,32 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 13,
+  },
+
+  etaPill: {
+    position: 'absolute',
+    top: 20,
+    left: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: radii.pill,
+    gap: 6,
+    maxWidth: '62%',
+    ...shadows.card,
+  },
+
+  etaPillStale: {
+    backgroundColor: colors.warning,
+  },
+
+  etaPillText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 12,
+    flexShrink: 1,
   },
 
   sosFloatingBtn: {

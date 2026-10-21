@@ -1,16 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Phone, MessageSquare, Clock, MapPin, KeyRound } from 'lucide-react-native';
+import { Phone, MessageSquare, Clock, MapPin, KeyRound, WifiOff } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Avatar } from '../../components/primitives/Avatar';
 import { RealMapView } from '../../components/primitives/RealMapView';
+import { MapRecenterButtons } from '../../components/primitives/MapRecenterButtons';
 import { useRideStore } from '../../store/rideStore';
 import { useRideSocket } from '../../hooks/useSocket';
+import { useDriverRoute } from '../../hooks/useDriverRoute';
 import { ridesApi } from '../../api/rides';
-import { getRoute } from '../../api/mapbox';
+import { formatDistance } from '../../utils/distance';
 import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
+
+/** No `driver:location` for this long ⇒ the car position is stale. */
+const DRIVER_STALE_MS = 20_000;
+/** How often staleness is re-checked while waiting for a fix. */
+const STALE_CHECK_MS = 5_000;
 
 interface Props {
   onStartTrip: () => void;
@@ -36,7 +43,6 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const pickupCoords = useRideStore((state) => state.pickupCoords);
-  const dropoffCoords = useRideStore((state) => state.dropoffCoords);
   // D2: back must never reveal the booking form while the driver is en
   // route — swallow it ("Cancel" below is the way out).
   usePreventBack(() => {});
@@ -53,7 +59,6 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
     [vehicleLabel, driverInfo?.vehicleModel, driverInfo?.plateNumber]
       .filter((part): part is string => !!part && String(part).trim().length > 0)
       .join(' • ') || 'Vehicle details will be shared on arrival';
-  const [route, setRoute] = useState<[number, number][] | undefined>(undefined);
   const [driverPosition, setDriverPosition] = useState<
     { lat: number; lng: number } | undefined
   >(() => (driverInfo?.location ? { lat: driverInfo.location.lat, lng: driverInfo.location.lng } : undefined));
@@ -62,6 +67,46 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
   // Driver's live heading relayed over the socket (undefined → the car marker
   // derives it from the direction of movement).
   const [driverHeading, setDriverHeading] = useState<number | undefined>(undefined);
+  // Camera mode: off = whole picture (driver + pickup + route) and free look,
+  // on = locked onto the driver.
+  const [followDriver, setFollowDriver] = useState(false);
+  const [recenterNonce, setRecenterNonce] = useState(0);
+  // True when no `driver:location` has arrived for DRIVER_STALE_MS.
+  const [driverStale, setDriverStale] = useState(false);
+  // Local receive time of the last fix (0 = none yet). Seeded on mount (see
+  // the effect below) so a dead socket right after mount still dims the car.
+  const lastFixAtRef = useRef<number>(0);
+
+  const pickup = pickupCoords ??
+    (activeRide?.pickup
+      ? { lat: activeRide.pickup.lat, lng: activeRide.pickup.lng }
+      : undefined);
+
+  // Live road route: driver → pickup, throttled to one Directions call per
+  // 20 s inside the hook (never on every GPS fix). The last good route and
+  // ETA stay on screen if a call fails.
+  const { route, etaSeconds, distanceMeters } = useDriverRoute({
+    driverPosition,
+    target: pickup,
+    enabled: activeRide?.status !== 'cancelled' && activeRide?.status !== 'completed',
+  });
+
+  const distanceLabel = formatDistance(
+    distanceMeters != null ? distanceMeters / 1000 : null,
+  );
+  const etaLabel =
+    etaSeconds == null
+      ? null
+      : etaSeconds < 60
+        ? 'Arriving now'
+        : `Arriving in ${Math.max(1, Math.round(etaSeconds / 60))} min${
+            distanceLabel ? ` · ${distanceLabel}` : ''
+          }`;
+  // Staleness wins over the ETA so the rider knows the number is frozen.
+  const statusText =
+    driverStale && driverPosition
+      ? 'Reconnecting to driver…'
+      : etaLabel ?? 'Driver is on the way to your pickup';
 
   // Guard: ensure onStartTrip is called exactly once (socket + poll may both fire).
   const startedRef = useRef(false);
@@ -111,6 +156,10 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
     onDriverLocation: (event) => {
       setDriverPosition({ lat: event.lat, lng: event.lng });
       setDriverHeading(event.heading);
+      // Local receive time: authoritative for staleness even if the server's
+      // `at` is a little off our clock.
+      lastFixAtRef.current = Date.now();
+      setDriverStale(false);
     },
     onStatus: (event) => {
       if (
@@ -139,45 +188,68 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
     return () => clearInterval(timer);
   }, [activeRide?.id, checkRideStatus]);
 
-  // Road-following route for the fit-bounds map. Failures fall back to
-  // fitting just the endpoints.
+  // Stale fix watchdog: if the socket goes quiet (driver tunnel, network drop)
+  // dim the car and tell the rider we're reconnecting; any new fix clears it.
   useEffect(() => {
-    let mounted = true;
-    const pickup = pickupCoords ?? (activeRide?.pickup ? { lat: activeRide.pickup.lat, lng: activeRide.pickup.lng } : undefined);
-    const dropoff = dropoffCoords ?? (activeRide?.dropoff ? { lat: activeRide.dropoff.lat, lng: activeRide.dropoff.lng } : undefined);
-    if (!pickup || !dropoff) {
-      // Async boundary — sync setState directly in the effect trips
-      // react-hooks/set-state-in-effect; a microtask is invisible next to
-      // the route fetch it guards.
-      Promise.resolve().then(() => setRoute(undefined));
+    // Start the clock at mount: a position that came with the ride payload is
+    // only trusted until the first live fix (or 20 s, whichever is sooner).
+    lastFixAtRef.current = Date.now();
+    const timer = setInterval(() => {
+      const last = lastFixAtRef.current;
+      if (last === 0) return;
+      if (Date.now() - last >= DRIVER_STALE_MS) setDriverStale(true);
+    }, STALE_CHECK_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // "Locate driver": recenter on the car (zoom 15.5, via recenterTo) and
+  // re-enable follow so it stays centred.
+  const locateDriver = useCallback(() => {
+    if (!driverPosition) return;
+    setFollowDriver(true);
+    setRecenterNonce((n) => n + 1);
+  }, [driverPosition]);
+
+  const toggleFollow = useCallback(() => {
+    if (followDriver) {
+      setFollowDriver(false);
       return;
     }
-    getRoute(pickup, dropoff)
-      .then((result) => {
-        if (mounted && result) setRoute(result.coordinates);
-      })
-      .catch(() => {});
-    return () => {
-      mounted = false;
-    };
-  }, [pickupCoords, dropoffCoords, activeRide?.pickup, activeRide?.dropoff]);
+    // Turning follow on also recenters immediately (next fix is up to 4 s out).
+    setFollowDriver(true);
+    setRecenterNonce((n) => n + 1);
+  }, [followDriver]);
+
+  // A pan/zoom means free look: stop following until Locate/Follow is tapped.
+  const handleCenterGestureStart = useCallback(() => setFollowDriver(false), []);
 
   return (
     <View style={styles.container}>
       <RealMapView
         mode="tracking"
-        pickup={pickupCoords ?? (activeRide?.pickup ? { lat: activeRide.pickup.lat, lng: activeRide.pickup.lng } : undefined)}
-        dropoff={dropoffCoords ?? (activeRide?.dropoff ? { lat: activeRide.dropoff.lat, lng: activeRide.dropoff.lng } : undefined)}
+        pickup={pickup}
         driverPosition={driverPosition}
         driverHeading={driverHeading}
         route={route}
         bottomPadding={sheetHeight}
+        followDriver={followDriver}
+        driverStale={driverStale}
+        recenterTo={
+          driverPosition
+            ? { lat: driverPosition.lat, lng: driverPosition.lng, nonce: recenterNonce }
+            : undefined
+        }
+        onCenterGestureStart={handleCenterGestureStart}
       />
 
-      {/* Floating Status Pill Header */}
-      <View style={[styles.statusPill, { top: 20 + insets.top }]}>
-        <Clock size={16} color="#FFFFFF" />
-        <Text style={styles.statusPillText}>Driver is on the way to your pickup</Text>
+      {/* Floating Status Pill Header — ETA once the route exists */}
+      <View style={[styles.statusPill, driverStale && styles.statusPillStale, { top: 20 + insets.top }]}>
+        {driverStale ? (
+          <WifiOff size={16} color="#FFFFFF" />
+        ) : (
+          <Clock size={16} color="#FFFFFF" />
+        )}
+        <Text style={styles.statusPillText} numberOfLines={1}>{statusText}</Text>
       </View>
 
       {/* Drop-off line under the map header (real address, no invented ETA) */}
@@ -185,6 +257,16 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
         <MapPin size={14} color={colors.primary} />
         <Text style={styles.dropPillText} numberOfLines={1}>{dropText}</Text>
       </View>
+
+      {/* Locate driver + Follow, floating above the bottom sheet */}
+      {driverPosition && (
+        <MapRecenterButtons
+          onLocate={locateDriver}
+          followOn={followDriver}
+          onToggleFollow={toggleFollow}
+          bottomOffset={sheetHeight}
+        />
+      )}
 
       {/* Bottom Sheet Card */}
       <View
@@ -284,7 +366,11 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: radii.pill,
     gap: 8,
+    maxWidth: '92%',
     ...shadows.card,
+  },
+  statusPillStale: {
+    backgroundColor: colors.warning,
   },
   statusPillText: {
     color: '#FFFFFF',

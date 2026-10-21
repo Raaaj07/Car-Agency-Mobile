@@ -114,14 +114,6 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
           </View>
         </Card>
 
-        {/* Next Offer Card */}
-        <Card style={styles.offerCard}>
-          <View style={styles.offerBadge}>
-            <Text style={styles.offerBadgeText}>NEXT RIDE</Text>
-          </View>
-          <Text style={styles.offerTitle}>Get ₹50 Off Your Return Trip</Text>
-          <Text style={styles.offerSub}>Valid for the next 24 hours in Salem city</Text>
-        </Card>
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: 20 + insets.bottom, gap: 10 }]}>
