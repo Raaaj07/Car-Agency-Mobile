@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Phone, MessageSquare, Clock, MapPin, KeyRound, WifiOff } from 'lucide-react-native';
+import { Clock, MapPin, KeyRound, WifiOff } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Avatar } from '../../components/primitives/Avatar';
@@ -299,15 +299,6 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
             <Text style={styles.driverName}>{driverName}</Text>
             <Text style={styles.vehicleInfo}>{vehicleText}</Text>
           </View>
-
-          <View style={styles.contactGroup}>
-            <TouchableOpacity style={[styles.circleBtn, { backgroundColor: colors.successLight }]}>
-              <Phone size={18} color={colors.success} />
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.circleBtn, { backgroundColor: '#EEF2FF' }]}>
-              <MessageSquare size={18} color={colors.primary} />
-            </TouchableOpacity>
-          </View>
         </View>
 
         <View style={styles.pickupCard}>
@@ -376,6 +367,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 13,
+    flexShrink: 1,
   },
   dropPill: {
     position: 'absolute',
@@ -432,17 +424,6 @@ const styles = StyleSheet.create({
   vehicleInfo: {
     ...typography.meta,
     fontSize: 12,
-  },
-  contactGroup: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  circleBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   pickupCard: {
     flexDirection: 'row',

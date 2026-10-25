@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Phone, MessageSquare, ArrowRight, KeyRound } from 'lucide-react-native';
+import { ArrowRight, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
@@ -239,15 +239,6 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
                 </View>
               ) : null}
             </View>
-
-            <View style={styles.actionsCol}>
-              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.successLight }]}>
-                <Phone size={18} color={colors.success} />
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#EEF2FF' }]}>
-                <MessageSquare size={18} color={colors.primary} />
-              </TouchableOpacity>
-            </View>
           </View>
         </Card>
 
@@ -393,16 +384,5 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textPrimary,
     letterSpacing: 0.5,
-  },
-  actionsCol: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  actionBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 });

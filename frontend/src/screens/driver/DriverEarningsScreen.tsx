@@ -136,7 +136,7 @@ export const DriverEarningsScreen: React.FC = () => {
       ) : (
         completed.map((ride) => (
           <Card key={ride.id} style={styles.tripRow}>
-            <View>
+            <View style={styles.tripInfo}>
               <Text style={styles.tripDate}>{formatDate(ride.completedAt ?? ride.createdAt)}</Text>
               <Text style={styles.tripRoute} numberOfLines={1}>
                 {ride.pickup?.address} → {ride.dropoff?.address}
@@ -179,6 +179,7 @@ const styles = StyleSheet.create({
   errorText: { ...typography.meta, color: colors.danger },
   tripRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
   tripDate: { ...typography.meta, fontSize: 11, marginBottom: 2 },
-  tripRoute: { ...typography.bodyBold, fontSize: 13, maxWidth: 220 },
+  tripInfo: { flex: 1 },
+  tripRoute: { ...typography.bodyBold, fontSize: 13 },
   tripAmount: { ...typography.cardTitle, fontSize: 15, color: colors.primary },
 });

@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Share } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CheckCircle, Clock, Download } from 'lucide-react-native';
+import { CheckCircle, Clock, Receipt } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
@@ -38,6 +38,29 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
   const vehicleName = selectedVehicle?.name ?? activeRide?.vehicleType ?? 'your ride';
   const insets = useSafeAreaInsets();
 
+  // Receipt through the system share sheet, built only from this ride's own
+  // numbers (replaces the old "Download Invoice PDF" button that did nothing).
+  const shareReceipt = async () => {
+    const lines = [
+      'Vazhi ride receipt',
+      activeRide?.id ? `Ride: ${activeRide.id}` : null,
+      activeRide?.pickup?.address ? `From: ${activeRide.pickup.address}` : null,
+      activeRide?.dropoff?.address ? `To: ${activeRide.dropoff.address}` : null,
+      `Base fare: ₹${Number(breakdown?.baseFare ?? 0).toFixed(2)}`,
+      `Distance: ₹${Number(breakdown?.distanceFare ?? 0).toFixed(2)}`,
+      `Time: ₹${Number(breakdown?.timeCharge ?? 0).toFixed(2)}`,
+      `Taxes: ₹${Number(breakdown?.taxes ?? 0).toFixed(2)}`,
+      Number(breakdown?.discount ?? 0) > 0 ? `Discount: -₹${Number(breakdown?.discount).toFixed(2)}` : null,
+      tip > 0 ? `Tip: ₹${tip.toFixed(2)}` : null,
+      `Total: ₹${amount.toFixed(2)} (${isPaid ? 'paid' : 'unpaid'})`,
+    ].filter((l): l is string => !!l);
+    try {
+      await Share.share({ message: lines.join('\n') });
+    } catch {
+      // Share sheet dismissed/unavailable — nothing to recover.
+    }
+  };
+
   // The rider pays the UPI QR shown on the driver's phone; the driver then
   // taps "Amount Received". Poll until that flag flips so this screen shows
   // the real state instead of an assumed "successful".
@@ -60,7 +83,11 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
       {onBack && <Header title="Fare Breakdown" onBack={onBack} />}
 
       <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          // Without a Header (no onBack) nothing adds the status-bar inset.
+          { paddingTop: onBack ? 20 : 20 + insets.top, paddingBottom: (onDone ? 110 : 40) + insets.bottom },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {/* Total Amount Header Card */}
@@ -152,10 +179,10 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
           </View>
         </Card>
 
-        {/* Download Receipt Button */}
-        <TouchableOpacity style={styles.downloadBtn}>
-          <Download size={18} color={colors.primary} />
-          <Text style={styles.downloadText}>Download Invoice PDF</Text>
+        {/* Share Receipt Button */}
+        <TouchableOpacity style={styles.downloadBtn} onPress={shareReceipt} activeOpacity={0.8}>
+          <Receipt size={18} color={colors.primary} />
+          <Text style={styles.downloadText}>Share receipt</Text>
         </TouchableOpacity>
       </ScrollView>
 
@@ -234,11 +261,14 @@ const styles = StyleSheet.create({
   lineRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
     marginBottom: 10,
   },
   lineLabel: {
     ...typography.body,
     fontSize: 13,
+    flex: 1,
   },
   lineValue: {
     ...typography.bodyBold,

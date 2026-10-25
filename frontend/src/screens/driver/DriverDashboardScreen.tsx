@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Switch, Alert, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, Switch, Alert, ScrollView, TouchableOpacity, AppState, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bell, Phone, Clock, ChevronRight } from 'lucide-react-native';
 import { FocusedStatusBar } from '../../components/primitives/FocusedStatusBar';
@@ -20,6 +20,7 @@ import { useRideStore } from '../../store/rideStore';
 import { NotificationBar } from '../../components/primitives/NotificationBar';
 import { useAuthStore } from '../../store/authStore';
 import {
+  hasBackgroundLocationPermission,
   promptBackgroundLocationOnce,
   startDriverBackgroundLocation,
   stopDriverBackgroundLocation,
@@ -96,6 +97,10 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   // Value is never read (only the setters below trigger re-renders).
   const [, setDriverCoords] = useState<LatLng | undefined>();
   const [showWelcome, setShowWelcome] = useState(false);
+  // "Allow all the time" location granted? null = unknown / unsupported (Expo Go).
+  const [bgPermission, setBgPermission] = useState<boolean | null>(null);
+  // Latest switch value for the AppState handler (it must not re-subscribe on every toggle).
+  const isOnlineRef = useRef(false);
   // Driver's in-flight trip as reported by the server (survives app restarts).
   const [activeTrip, setActiveTrip] = useState<Ride | null>(null);
   // Auto-enter a live trip only once per mount, otherwise pressing Back from
@@ -298,6 +303,84 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
       checkPendingOffer();
     }
   }, [socket, checkPendingOffer]);
+
+  // ── Background permission check ───────────────────────────────────────────
+  // Without "allow all the time" the OS stops our location the moment the app
+  // is backgrounded; the backend then drops the driver after 90 s and riders
+  // see "no drivers around". Tell the driver instead of failing silently.
+  const refreshBgPermission = useCallback(async () => {
+    setBgPermission(await hasBackgroundLocationPermission());
+  }, []);
+
+  useEffect(() => {
+    isOnlineRef.current = isOnline;
+    Promise.resolve().then(refreshBgPermission);
+  }, [isOnline, refreshBgPermission]);
+
+  const enableBackgroundLocation = async () => {
+    try {
+      const res = await Location.requestBackgroundPermissionsAsync();
+      if (res.status === 'granted') {
+        await startDriverBackgroundLocation();
+      } else {
+        Alert.alert(
+          'Allow location all the time',
+          'Open Settings → Permissions → Location and choose "Allow all the time" for Vazhi.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open settings', onPress: () => void Linking.openSettings() },
+          ],
+        );
+      }
+    } catch {
+      void Linking.openSettings();
+    }
+    await refreshBgPermission();
+  };
+
+  // ── Coming back from background ───────────────────────────────────────────
+  // While the app was in the background the socket may have dropped and (if
+  // location stopped) the server may have taken this driver offline even though
+  // the switch still shows ONLINE. Reconcile with the server, put the driver
+  // back online when it is safe to, and pick up any waiting offer.
+  const resumeFromBackground = useCallback(async () => {
+    try {
+      const p = await driversApi.getMyProfile();
+      if (!p) return;
+      setProfile(p);
+      if (isOnlineRef.current && !p.isOnline) {
+        try {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          latestCoords.current = coords;
+          latestCoordsAt.current = Date.now();
+          await driversApi.updateLocation(coords.lat, coords.lng);
+          await driversApi.setStatus(true);
+        } catch {
+          setIsOnline(false);
+          Alert.alert(
+            'You were taken offline',
+            'Location updates stopped while the app was in the background, so riders could no longer see you. Turn the switch on to go online again.',
+          );
+        }
+      } else if (!isOnlineRef.current && p.isOnline) {
+        setIsOnline(true);
+      }
+    } catch {
+      // Offline right now — the next foreground / heartbeat retries.
+    }
+    void checkPendingOffer();
+    void loadActiveTrip();
+    void refreshBgPermission();
+    if (isOnlineRef.current) void startDriverBackgroundLocation();
+  }, [checkPendingOffer, loadActiveTrip, refreshBgPermission]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void resumeFromBackground();
+    });
+    return () => sub.remove();
+  }, [resumeFromBackground]);
 
   // ── Listen for incoming ride requests ─────────────────────────────────────
   useEffect(() => {
@@ -515,6 +598,26 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
               <Text style={styles.upiNudgeTitle}>Add your UPI ID</Text>
               <Text style={styles.upiNudgeBody}>
                 Riders pay by scanning a QR made from it after each trip. Set it once in Profile.
+              </Text>
+            </View>
+            <ChevronRight size={18} color={colors.warning} />
+          </TouchableOpacity>
+        ) : null}
+
+        {/* Online but the OS will cut our location in the background */}
+        {isOnline && bgPermission === false ? (
+          <TouchableOpacity
+            style={styles.upiNudge}
+            activeOpacity={0.85}
+            onPress={enableBackgroundLocation}
+            accessibilityRole="button"
+            accessibilityLabel="Allow location all the time"
+          >
+            <View style={styles.upiNudgeText}>
+              <Text style={styles.upiNudgeTitle}>Riders can&apos;t see you in the background</Text>
+              <Text style={styles.upiNudgeBody}>
+                Allow location &quot;all the time&quot; so you stay on the map and keep getting trips when the screen is
+                off. Tap to fix.
               </Text>
             </View>
             <ChevronRight size={18} color={colors.warning} />

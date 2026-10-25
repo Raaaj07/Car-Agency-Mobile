@@ -14,7 +14,7 @@ import { ProfileScreen } from '../screens/rider/ProfileScreen';
 import { BottomTabBar } from '../components/primitives/BottomTabBar';
 import { useAuthStore } from '../store/authStore';
 import { authApi } from '../api/auth';
-import { subscribeSocket } from '../lib/socket';
+import { refreshSocketAuth, subscribeSocket } from '../lib/socket';
 import { restoreActiveRide, clearRestoredRiderRide } from '../hooks/useActiveRide';
 
 const RiderTab = createBottomTabNavigator<MainTabParamList>();
@@ -88,6 +88,9 @@ export const MainTabNavigator: React.FC = () => {
 
     const sub = AppState.addEventListener('change', (s) => {
       if (s !== 'active') return;
+      // Android may have killed the websocket while backgrounded; the library's
+      // backoff timer can be frozen too, so reconnect right away.
+      refreshSocketAuth();
       authApi
         .me()
         .then((me) => {

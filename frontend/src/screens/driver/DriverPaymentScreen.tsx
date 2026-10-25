@@ -1,5 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Alert, useWindowDimensions } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TextInput,
+  Alert,
+  TouchableOpacity,
+  useWindowDimensions,
+} from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -49,7 +58,7 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
   // Size the QR to the screen (scroll padding 20*2 + card padding 18*2 + QR frame 12*2 + border)
   // so it is centred and never clipped on narrow phones, and not tiny on wide ones.
   const { width: screenWidth } = useWindowDimensions();
-  const qrSize = Math.max(160, Math.min(240, Math.floor(screenWidth - 40 - 36 - 26)));
+  const qrSize = Math.max(150, Math.min(200, Math.floor(screenWidth - 40 - 36 - 26)));
 
   const fareTotal = Number(activeRide?.fareBreakdown?.total ?? 0);
   const tip = Number(activeRide?.tipAmount ?? 0);
@@ -171,7 +180,7 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingTop: 20 + insets.top, paddingBottom: 130 + insets.bottom },
+          { paddingTop: 16 + insets.top, paddingBottom: 190 + insets.bottom },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -181,10 +190,12 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
             <IndianRupee size={26} color={colors.accent} />
             <Text style={styles.amount}>{amount.toFixed(2)}</Text>
           </View>
-          <Pill
-            label={isPaid ? 'AMOUNT RECEIVED' : isDisputed ? 'DISPUTED' : 'AWAITING PAYMENT'}
-            variant={isPaid ? 'success' : isDisputed ? 'danger' : 'warning'}
-          />
+          <View style={styles.pillWrap}>
+            <Pill
+              label={isPaid ? 'AMOUNT RECEIVED' : isDisputed ? 'DISPUTED' : 'AWAITING PAYMENT'}
+              variant={isPaid ? 'success' : isDisputed ? 'danger' : 'warning'}
+            />
+          </View>
           <Text style={styles.amountSub}>
             Trip fare ₹{fareTotal.toFixed(2)}
             {tip > 0 ? ` • Tip ₹${tip.toFixed(2)}` : ''}
@@ -237,10 +248,10 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
                   onSubmitEditing={saveVpa}
                 />
                 <Button
-                  title="Save"
+                  title="Save UPI ID"
                   onPress={saveVpa}
-                  variant="outline"
-                  size="small"
+                  variant="primary"
+                  size="medium"
                   loading={saving}
                   disabled={saving || !inputValid}
                 />
@@ -263,10 +274,20 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
             </>
           ) : (
             <View style={styles.payeeRow}>
-              <Text style={styles.payeeText} numberOfLines={1}>
-                Paying to: {savedVpa}
-              </Text>
-              <Button title="Change" variant="ghost" size="small" onPress={() => setEditing(true)} />
+              <View style={styles.payeeInfo}>
+                <Text style={styles.payeeLabel}>PAYING TO</Text>
+                <Text style={styles.payeeText} numberOfLines={1} ellipsizeMode="middle">
+                  {savedVpa}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setEditing(true)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                accessibilityRole="button"
+                accessibilityLabel="Change UPI ID"
+              >
+                <Text style={styles.changeLink}>Change</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -282,7 +303,7 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
           ) : null}
         </Card>
 
-        {/* Amount received confirmation */}
+        {/* Settled states stay in the page; the action lives in the footer */}
         {isPaid ? (
           <View style={styles.receivedBox}>
             <CheckCircle2 size={22} color={colors.success} />
@@ -296,11 +317,15 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
               This payment is disputed — an admin must resolve it. Nothing to collect in the app.
             </Text>
           </View>
+        ) : null}
+      </ScrollView>
+
+      <View style={[styles.footer, { paddingBottom: 16 + insets.bottom }]}>
+        {isPaid || isDisputed ? (
+          <Button title="Continue" onPress={onDone} variant="primary" size="large" />
         ) : (
-          <View style={styles.confirmBox}>
-            <Text style={styles.confirmText}>
-              After the rider pays, tap below so the payment is recorded for admin.
-            </Text>
+          <>
+            <Text style={styles.confirmText}>After the rider pays, tap below to record it for admin.</Text>
             <Button
               title="Amount Received"
               onPress={markReceived}
@@ -310,12 +335,16 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
               disabled={submitting || !activeRide}
               leftIcon={<CheckCircle2 size={20} color="#FFFFFF" />}
             />
-          </View>
+            <TouchableOpacity
+              onPress={onDone}
+              style={styles.skipBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Continue without confirming"
+            >
+              <Text style={styles.skipText}>Continue without confirming</Text>
+            </TouchableOpacity>
+          </>
         )}
-      </ScrollView>
-
-      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
-        <Button title="Continue" onPress={onDone} variant="primary" size="large" />
       </View>
     </View>
   );
@@ -335,9 +364,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.primary,
     borderRadius: radii.card,
-    padding: 22,
+    paddingVertical: 18,
+    paddingHorizontal: 20,
     gap: 8,
     ...shadows.card,
+  },
+  pillWrap: {
+    alignSelf: 'center',
+    alignItems: 'center',
   },
   amountRow: {
     flexDirection: 'row',
@@ -356,9 +390,9 @@ const styles = StyleSheet.create({
   },
   qrCard: {
     alignSelf: 'stretch',
-    padding: 18,
+    padding: 16,
     alignItems: 'center',
-    gap: 14,
+    gap: 12,
   },
   qrTitleRow: {
     flexDirection: 'row',
@@ -406,14 +440,15 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     paddingHorizontal: 8,
   },
+  // Stacked (input, then Save): Button is full-width by default, so a row
+  // layout squeezed the text field to nothing.
   vpaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    gap: 10,
     alignSelf: 'stretch',
   },
   vpaInput: {
-    flex: 1,
+    alignSelf: 'stretch',
+    minHeight: 48,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radii.button,
@@ -426,16 +461,42 @@ const styles = StyleSheet.create({
   payeeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     alignSelf: 'stretch',
-    gap: 8,
+    gap: 12,
+    backgroundColor: colors.successLight,
+    borderRadius: radii.button,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  payeeInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  payeeLabel: {
+    ...typography.metaBold,
+    fontSize: 10,
+    letterSpacing: 1,
+    color: colors.textMuted,
   },
   payeeText: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    color: colors.textPrimary,
+  },
+  changeLink: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    color: colors.primary,
+  },
+  skipBtn: {
+    alignSelf: 'center',
+    paddingVertical: 6,
+  },
+  skipText: {
     ...typography.meta,
-    fontSize: 12,
-    color: colors.success,
-    flexShrink: 1,
-    textAlign: 'center',
+    fontSize: 13,
+    color: colors.textMuted,
+    textDecorationLine: 'underline',
   },
   payeeHint: {
     ...typography.meta,
@@ -451,12 +512,9 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     textAlign: 'center',
   },
-  confirmBox: {
-    gap: 10,
-  },
   confirmText: {
     ...typography.body,
-    fontSize: 13,
+    fontSize: 12,
     color: colors.textMuted,
     textAlign: 'center',
   },
@@ -496,7 +554,9 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     backgroundColor: '#FFFFFF',
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    gap: 8,
     borderTopWidth: 1,
     borderTopColor: colors.borderLight,
     ...shadows.card,

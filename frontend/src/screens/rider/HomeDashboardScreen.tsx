@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
+  AppState,
   Keyboard,
   Platform,
   ScrollView,
@@ -270,9 +271,15 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
 
       void poll();
       const interval = setInterval(poll, 15_000);
+      // JS timers are frozen while backgrounded: refresh the instant we return
+      // so the map never shows stale / empty driver dots.
+      const appStateSub = AppState.addEventListener('change', (s) => {
+        if (s === 'active') void poll();
+      });
       return () => {
         active = false;
         clearInterval(interval);
+        appStateSub.remove();
       };
     }, [pickupCoords, currentSnap]),
   );

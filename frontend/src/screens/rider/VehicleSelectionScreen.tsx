@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Clock, Users, ArrowRight, CreditCard, ChevronDown, MapPin, Navigation } from 'lucide-react-native';
+import { Clock, Users, ArrowRight, CreditCard, MapPin, Navigation } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
@@ -191,11 +191,11 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
 
         {/* Footer Bar with Payment Choice & Action */}
         <View style={[styles.footerPanel, { paddingBottom: 16 + insets.bottom }]}>
-          <TouchableOpacity style={styles.paymentSelector}>
+          {/* Static label: payment is a UPI QR / cash settled with the driver after the trip. */}
+          <View style={styles.paymentSelector}>
             <CreditCard size={18} color={colors.primary} />
-            <Text style={styles.paymentText}>Cash / UPI</Text>
-            <ChevronDown size={16} color={colors.textSecondary} />
-          </TouchableOpacity>
+            <Text style={styles.paymentText}>Pay the driver: UPI QR / Cash</Text>
+          </View>
 
           <Button
             title={`Book ${selectedVehicle.name}`}

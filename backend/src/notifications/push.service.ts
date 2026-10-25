@@ -78,6 +78,28 @@ export class PushService {
     }
   }
 
+  /**
+   * Wake a driver whose app is backgrounded: the socket offer only reaches a
+   * foreground app, so also send a high-priority push. Deduped per ride+driver,
+   * never throws.
+   */
+  async notifyDriverOffer(driverUserId: string, rideId: string, fare: number, pickupAddress?: string): Promise<void> {
+    try {
+      const first = await this.redis
+        .set(`push:offer:${rideId}:${driverUserId}`, '1', 'EX', 120, 'NX')
+        .catch(() => 'OK');
+      if (first !== 'OK') return;
+      const fareText = fare > 0 ? ` · ₹${Math.round(fare)}` : '';
+      await this.sendToUser(driverUserId, {
+        title: 'New ride request',
+        body: `${pickupAddress ? `Pickup: ${pickupAddress}` : 'Tap to view the request'}${fareText}`,
+        data: { type: 'ride_offer', rideId },
+      });
+    } catch (err) {
+      this.logger.warn(`notifyDriverOffer failed: ${(err as Error).message}`);
+    }
+  }
+
   async sendToUser(userId: string, msg: PushMessage): Promise<void> {
     if (!(await this.getEnabled(userId))) {
       this.logger.log(`push skipped for ${userId}: notifications turned off in Profile`);

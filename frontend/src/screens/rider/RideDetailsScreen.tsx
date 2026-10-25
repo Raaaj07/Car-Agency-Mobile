@@ -1,7 +1,7 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CreditCard, Tag, ShieldCheck, ChevronRight, Check } from 'lucide-react-native';
+import { CreditCard, Tag, ShieldCheck, Check } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
@@ -70,7 +70,7 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
         {/* Payment Method Selector */}
         <Card style={styles.cardSection}>
           <Text style={styles.sectionTitle}>PAYMENT METHOD</Text>
-          <TouchableOpacity style={styles.paymentRow}>
+          <View style={styles.paymentRow}>
             <View style={styles.paymentIcon}>
               <CreditCard size={20} color={colors.primary} />
             </View>
@@ -78,8 +78,7 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
               <Text style={styles.paymentName}>UPI / Cash on Delivery</Text>
               <Text style={styles.paymentSub}>Pay driver directly after ride</Text>
             </View>
-            <ChevronRight size={20} color={colors.textMuted} />
-          </TouchableOpacity>
+          </View>
         </Card>
 
         {/* Promo Code Card */}

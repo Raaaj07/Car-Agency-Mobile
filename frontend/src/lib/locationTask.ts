@@ -28,6 +28,10 @@ import { ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY } from './tokenManager';
  */
 export const DRIVER_LOCATION_TASK = 'driver-location-heartbeat';
 
+// The task is (re)registered once per app process so an updated interval
+// takes effect even if the OS kept an older registration alive.
+let registeredThisProcess = false;
+
 interface HeartbeatCoords {
   lat: number;
   lng: number;
@@ -106,13 +110,23 @@ export async function startDriverBackgroundLocation(): Promise<boolean> {
     if (!(await TaskManager.isAvailableAsync())) return false;
     const background = await Location.getBackgroundPermissionsAsync();
     if (background.status !== 'granted') return false;
-    if (await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK)) return true;
+    if (await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK)) {
+      if (registeredThisProcess) return true;
+      // Re-apply the current options (an older build registered this task with
+      // a 25 m distance filter that silenced parked drivers).
+      await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK);
+    }
     await Location.startLocationUpdatesAsync(DRIVER_LOCATION_TASK, {
       accuracy: Location.Accuracy.Balanced,
-      // Backend freshness window is 90s (geo.service sweep); 10s keeps the
-      // driver solidly fresh without draining the battery in the foreground.
+      // Backend freshness window is 90s (geo.service sweep); a fix every 10s
+      // keeps the driver solidly fresh without draining the battery.
       timeInterval: 10_000,
-      distanceInterval: 25,
+      // MUST be 0: with a distance filter (it used to be 25 m) a driver who is
+      // parked and waiting for a ride moves less than that, the OS sends no
+      // fix, and after 90s the backend drops him off the map — riders then see
+      // "no drivers around" while the driver's app is still open in background.
+      distanceInterval: 0,
+      pausesUpdatesAutomatically: false,
       activityType: Location.ActivityType.AutomotiveNavigation,
       showsBackgroundLocationIndicator: true,
       foregroundService: {
@@ -121,6 +135,7 @@ export async function startDriverBackgroundLocation(): Promise<boolean> {
         killServiceOnDestroy: true,
       },
     });
+    registeredThisProcess = true;
     return true;
   } catch {
     return false;
@@ -130,12 +145,27 @@ export async function startDriverBackgroundLocation(): Promise<boolean> {
 /** Stop background updates if they are running (safe to call when not). */
 export async function stopDriverBackgroundLocation(): Promise<void> {
   try {
+    registeredThisProcess = false;
     if (!(await TaskManager.isAvailableAsync())) return;
     if (await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK)) {
       await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK);
     }
   } catch {
     // Nothing to stop.
+  }
+}
+
+/**
+ * Is "allow all the time" location granted? `null` when background tracking is
+ * unsupported here (Expo Go) so callers show no warning in that case.
+ */
+export async function hasBackgroundLocationPermission(): Promise<boolean | null> {
+  try {
+    if (!(await TaskManager.isAvailableAsync())) return null;
+    const current = await Location.getBackgroundPermissionsAsync();
+    return current.status === 'granted';
+  } catch {
+    return null;
   }
 }
 

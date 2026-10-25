@@ -922,6 +922,15 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       offerExpiresAt: expiresAt.toISOString(),
     });
 
+    // The socket event only reaches a foregrounded app; a push wakes a
+    // backgrounded driver app so the offer isn't silently missed.
+    void this.push?.notifyDriverOffer(
+      driver.userId,
+      ride.id,
+      Number((ride.fareBreakdown as { total?: number } | null)?.total ?? 0),
+      ride.pickup?.address,
+    );
+
     await this.scheduleOfferTimeout(ride.id, this.requestTimeoutSeconds * 1000);
 
     return { status: 'offered', candidates: candidates.length };
