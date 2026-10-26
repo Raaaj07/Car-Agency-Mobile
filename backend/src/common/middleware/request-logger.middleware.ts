@@ -3,6 +3,9 @@ import { randomUUID } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 
 declare global {
+  // Express's typings are augmented through this namespace; module
+  // augmentation has no ES2015-syntax equivalent.
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       requestId?: string;
