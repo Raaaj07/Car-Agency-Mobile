@@ -1,13 +1,16 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Throttle } from '@nestjs/throttler';
 import { RolesGuard, Roles } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { PromosService } from './promos.service';
 import { ValidatePromoDto } from './dto/validate-promo.dto';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('rider')
+// Authentication is global (SEC-1 default-deny); only the role check stays.
+// Unified accounts: driver/admin-role users also book rides in rider mode, so
+// they must be able to see and validate promos too.
+@UseGuards(RolesGuard)
+@Roles('rider', 'driver', 'admin')
 @Controller('promos')
 export class PromosController {
   constructor(private readonly service: PromosService) {}
@@ -17,6 +20,9 @@ export class PromosController {
     return this.service.getActivePromos(user.userId);
   }
 
+  // Route throttle: 10/min — codes are short and valuable, so guessing one
+  // must not be a volume game (the global 300/min is far too generous here).
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('validate')
   validate(@CurrentUser() user: AuthenticatedUser, @Body() dto: ValidatePromoDto) {
     return this.service.validate(dto.code, user.userId);

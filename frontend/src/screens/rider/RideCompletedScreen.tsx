@@ -1,17 +1,23 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
-import { CheckCircle2, Clock, Navigation, Home } from 'lucide-react-native';
+import { View, Text, StyleSheet, ScrollView, Share } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { CheckCircle2, Clock, Navigation, Home, Receipt } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { useRideStore } from '../../store/rideStore';
+import { usePreventBack } from '../../navigation/navHelpers';
 
 interface Props {
   onGoHome: () => void;
 }
 
 export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
+  // D3: back from the completed-ride screen goes Home — never into the
+  // payment/review chain that is still mounted underneath it.
+  usePreventBack(onGoHome);
+  const insets = useSafeAreaInsets();
   // Real trip data from the completed ride (no demo numbers).
   const activeRide = useRideStore((state) => state.activeRide);
   const driver = activeRide?.driver ?? null;
@@ -28,11 +34,38 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
       ? Math.max(1, Math.round((ended - started) / 60000))
       : null;
   })();
+  // Receipt: plain-text summary through the system share sheet (save, WhatsApp,
+  // email…). Built only from this ride's own data; nothing is invented.
+  const shareReceipt = async () => {
+    if (!activeRide) return;
+    const when = activeRide.completedAt ?? activeRide.createdAt;
+    const lines = [
+      'Vazhi ride receipt',
+      `Ride: ${activeRide.id}`,
+      when ? `Date: ${new Date(when).toLocaleString()}` : null,
+      `From: ${activeRide.pickup?.address ?? '-'}`,
+      `To: ${activeRide.dropoff?.address ?? '-'}`,
+      distanceKm > 0 ? `Distance: ${distanceKm.toFixed(1)} km` : null,
+      `Fare: ₹${Number(activeRide.fareBreakdown?.total ?? 0).toFixed(2)}`,
+      Number(activeRide.tipAmount ?? 0) > 0 ? `Tip: ₹${Number(activeRide.tipAmount).toFixed(2)}` : null,
+      `Total: ₹${totalPaid.toFixed(2)}`,
+      driver?.name ? `Driver: ${driver.name}${vehicleInfo ? ` · ${vehicleInfo}` : ''}` : null,
+    ].filter((l): l is string => !!l);
+    try {
+      await Share.share({ message: lines.join('\n') });
+    } catch {
+      // Share sheet dismissed/unavailable — nothing to recover.
+    }
+  };
+
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 190 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Celebration Banner */}
-        <View style={styles.celebrationBox}>
+        <View style={[styles.celebrationBox, { marginTop: 20 + insets.top }]}>
           <View style={styles.iconCircleOuter}>
             <View style={styles.iconCircleInner}>
               <CheckCircle2 size={44} color="#FFFFFF" />
@@ -81,17 +114,16 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
           </View>
         </Card>
 
-        {/* Next Offer Card */}
-        <Card style={styles.offerCard}>
-          <View style={styles.offerBadge}>
-            <Text style={styles.offerBadgeText}>NEXT RIDE</Text>
-          </View>
-          <Text style={styles.offerTitle}>Get ₹50 Off Your Return Trip</Text>
-          <Text style={styles.offerSub}>Valid for the next 24 hours in Salem city</Text>
-        </Card>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom, gap: 10 }]}>
+        <Button
+          title="Share receipt"
+          onPress={shareReceipt}
+          variant="outline"
+          size="large"
+          leftIcon={<Receipt size={20} color={colors.primary} />}
+        />
         <Button
           title="Back to Home Dashboard"
           onPress={onGoHome}

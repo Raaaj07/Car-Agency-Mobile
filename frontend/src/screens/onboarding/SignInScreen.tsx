@@ -1,13 +1,34 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Phone, ShieldCheck } from 'lucide-react-native';
+import { FocusedStatusBar } from '../../components/primitives/FocusedStatusBar';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
-import * as Google from 'expo-auth-session/providers/google';
+import {
+  GoogleSignin,
+  isErrorWithCode,
+  isSuccessResponse,
+  statusCodes,
+} from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
-import * as WebBrowser from 'expo-web-browser';
 
-WebBrowser.maybeCompleteAuthSession();
+// Native Google sign-in. The ID token it returns is issued for the WEB client
+// id (webClientId), which is exactly the audience the backend verifies
+// (GOOGLE_WEB_CLIENT_ID). The Android OAuth client in Google Cloud (package +
+// SHA-1) is what authorises this app to ask; it is never sent to the backend.
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+
+GoogleSignin.configure({
+  webClientId: GOOGLE_WEB_CLIENT_ID,
+  scopes: ['profile', 'email'],
+});
+
+// A client ID is a public identifier (not a secret). Showing its first part in
+// the error tells us, without a debugger, which value this build baked in.
+const webClientHint = GOOGLE_WEB_CLIENT_ID
+  ? `${GOOGLE_WEB_CLIENT_ID.slice(0, 22)}…`
+  : 'NOT SET';
 
 interface Props {
   onMobileSignIn: () => void;
@@ -24,36 +45,48 @@ export const SignInScreen: React.FC<Props> = ({
   isAuthenticating,
   authError,
 }) => {
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    clientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-    responseType: 'id_token',
-    scopes: ['openid', 'profile', 'email'],
-  });
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const insets = useSafeAreaInsets();
+  // Release builds have no visible console, so a Google failure used to look
+  // like "nothing happened". Show a short, non-sensitive reason on screen
+  // (status code only — never tokens or the raw error object).
+  const [googleError, setGoogleError] = useState<string | undefined>();
 
-  // Always-fresh callback for the response effect (exhaustive-deps): adding
-  // onGoogleToken to the deps would re-submit the same token on every parent
-  // re-render, so the effect reads a ref instead.
-  const onGoogleTokenRef = useRef(onGoogleToken);
-  useEffect(() => {
-    onGoogleTokenRef.current = onGoogleToken;
-  });
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      // Depending on how the response is shaped, the token can land in
-      // either place — check both so we're not silently missing it.
-      const idToken = response.authentication?.idToken ?? (response.params as any)?.id_token;
-      if (idToken) {
-        onGoogleTokenRef.current(idToken);
-      } else {
-        console.log('Google auth succeeded but no idToken found. Full response:', JSON.stringify(response));
+  const handleGoogle = async () => {
+    if (googleBusy) return;
+    setGoogleBusy(true);
+    setGoogleError(undefined);
+    try {
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      const response = await GoogleSignin.signIn();
+      if (!isSuccessResponse(response)) {
+        // User dismissed the account picker — not an error.
+        return;
       }
-    } else if (response?.type === 'error') {
-      console.log('Google auth error:', response.error);
-    } else if (response) {
-      console.log('Google auth response type:', response.type);
+      if (response.data.idToken) {
+        onGoogleToken(response.data.idToken);
+      } else {
+        // No idToken almost always means webClientId was undefined in this
+        // build (EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID missing at bundle time).
+        setGoogleError(
+          'Google did not return a sign-in token. This build is missing the Google web client ID — rebuild the app.',
+        );
+      }
+    } catch (err) {
+      if (isErrorWithCode(err)) {
+        if (err.code === statusCodes.SIGN_IN_CANCELLED || err.code === statusCodes.IN_PROGRESS) return;
+        // DEVELOPER_ERROR ("10") = package name / SHA-1 not registered on the
+        // Android OAuth client, or webClientId missing from this build.
+        setGoogleError(
+          `Google sign-in failed (code ${String(err.code)}). Web client in this build: ${webClientHint}`,
+        );
+      } else {
+        setGoogleError('Google sign-in failed. Please try again.');
+      }
+    } finally {
+      setGoogleBusy(false);
     }
-  }, [response]);
+  };
 
   const handleApple = async () => {
     try {
@@ -70,14 +103,23 @@ export const SignInScreen: React.FC<Props> = ({
         onAppleToken(credential.identityToken, fullName);
       }
     } catch (err: any) {
-      if (err.code !== 'ERR_REQUEST_CANCELED') console.warn('Apple sign-in failed', err);
+      // SEC-10: dev-only, and only the error code/message — never the whole
+      // error object (it can carry native stack frames).
+      if (__DEV__ && err.code !== 'ERR_REQUEST_CANCELED') {
+        console.warn('[auth] Apple sign-in failed', err.code ?? err.message ?? 'unknown');
+      }
     }
   };
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.heroBox}>
+      {/* Navy hero: the app-wide dark status bar would be invisible here. */}
+      <FocusedStatusBar style="light" />
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 60 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={[styles.heroBox, { paddingTop: 30 + insets.top }]}>
           <View style={styles.heroCircleOuter}>
             <View style={styles.heroCircleInner}>
               <Text style={styles.logoText}>V</Text>
@@ -91,7 +133,9 @@ export const SignInScreen: React.FC<Props> = ({
           <Text style={styles.welcomeText}>Welcome Back!</Text>
           <Text style={styles.subText}>Sign in or create an account to start booking rides</Text>
 
-          {authError ? <Text style={styles.authErrorText}>{authError}</Text> : null}
+          {authError || googleError ? (
+            <Text style={styles.authErrorText}>{authError ?? googleError}</Text>
+          ) : null}
 
           <Button
             title="Continue with Mobile Number"
@@ -111,8 +155,8 @@ export const SignInScreen: React.FC<Props> = ({
           <View style={styles.socialButtons}>
             <TouchableOpacity
               style={styles.socialBtn}
-              disabled={!request || isAuthenticating}
-              onPress={() => promptAsync()}
+              disabled={googleBusy || isAuthenticating}
+              onPress={handleGoogle}
             >
               <Text style={styles.socialIconText}>G</Text>
               <Text style={styles.socialBtnText}>Google</Text>
@@ -128,7 +172,7 @@ export const SignInScreen: React.FC<Props> = ({
         </View>
       </ScrollView>
 
-      <View style={styles.termsFooter}>
+      <View style={[styles.termsFooter, { bottom: 16 + insets.bottom }]}>
         <ShieldCheck size={16} color={colors.textMuted} />
         <Text style={styles.termsText}>
           By continuing, you agree to Vazhi&apos;s <Text style={styles.linkText}>Terms</Text> & <Text style={styles.linkText}>Privacy Policy</Text>

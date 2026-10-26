@@ -17,14 +17,20 @@ const Stack = createNativeStackNavigator<OnboardingStackParamList>();
 // never by navigating inside this stack (that screen unmounted instantly).
 export const OnboardingNavigator: React.FC = () => {
   const setLanguage = useAuthStore((state) => state.setLanguage);
+  const language = useAuthStore((state) => state.language);
   const setPhone = useAuthStore((state) => state.setPhone);
   const login = useAuthStore((state) => state.login);
   const developmentOtp = useAuthStore((s) => s.developmentOtp);
+  const otpLength = useAuthStore((s) => s.otpLength);
   const [socialAuthError, setSocialAuthError] = useState<string | undefined>();
 
   return (
     <Stack.Navigator
-      initialRouteName="LanguageSelection"
+      // First run (no language chosen yet) opens the language picker; once
+      // chosen it persists across logout, so logging out — or a logged-out
+      // relaunch — starts at the login screen instead of bouncing back
+      // through language settings.
+      initialRouteName={language ? 'SignIn' : 'LanguageSelection'}
       screenOptions={{ headerShown: false, animation: 'slide_from_right' }}
     >
       <Stack.Screen name="LanguageSelection">
@@ -32,7 +38,9 @@ export const OnboardingNavigator: React.FC = () => {
           <LanguageSelectionScreen
             onNext={() => {
               setLanguage('en');
-              navigation.navigate('SignIn');
+              // D11: replace, not navigate — back from SignIn must not reveal
+              // the language picker again after the choice was already made.
+              navigation.replace('SignIn');
             }}
           />
         )}
@@ -73,6 +81,8 @@ export const OnboardingNavigator: React.FC = () => {
               try {
                 const response = await authApi.sendOtp(phone);
                 useAuthStore.getState().setDevelopmentOtp(response.devOtp ?? null);
+                // SEC-1: absent on old servers → keep the 4-box default.
+                useAuthStore.getState().setOtpLength(response.otpLength ?? 4);
               } catch (error) {
                 throw new Error(getApiError(error));
               }
@@ -89,10 +99,16 @@ export const OnboardingNavigator: React.FC = () => {
             onBack={() => navigation.goBack()}
             phone={useAuthStore.getState().phone}
             developmentOtp={developmentOtp}
+            length={otpLength}
+            // Returns the (possibly updated) width so the screen can resize
+            // its boxes right after a resend, not one render later.
             onResend={async () => {
               try {
                 const response = await authApi.sendOtp(useAuthStore.getState().phone);
                 useAuthStore.getState().setDevelopmentOtp(response.devOtp ?? null);
+                const nextLength = response.otpLength ?? 4;
+                useAuthStore.getState().setOtpLength(nextLength);
+                return nextLength;
               } catch (error) {
                 throw new Error(getApiError(error));
               }

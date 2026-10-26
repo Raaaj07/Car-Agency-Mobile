@@ -9,6 +9,8 @@
  * the SAME FakeRedis are "two backend instances".
  */
 
+import { OTP_VERIFY_SCRIPT } from '../auth/otp.service';
+
 type ScoreBound = number | '-inf' | '+inf';
 
 export interface FakePipeline {
@@ -30,6 +32,39 @@ export class FakeRedis {
   // remove geo members exactly as the production sweep expects.
   private readonly geoCoords = new Map<string, Map<string, { lng: number; lat: number }>>();
   private readonly ttls = new Map<string, number>();
+  // Plain string keys (OTP codes etc). No TTL modelling: tests set and read
+  // values directly.
+  private readonly strings = new Map<string, string>();
+
+  /** GET key — string value or null. */
+  async get(key: string): Promise<string | null> {
+    return this.strings.get(key) ?? null;
+  }
+
+  /** SET key value [EX seconds] — EX accepted and ignored (no string TTLs). */
+  async set(key: string, value: string, ..._rest: unknown[]): Promise<'OK'> {
+    this.strings.set(key, value);
+    return 'OK';
+  }
+
+  /**
+   * EVAL of the OTP verify script (atomic get+compare+consume, 1/0/-1) —
+   * the only script the backend runs today. Anything else is unsupported on
+   * purpose: a permissive fake would hide a new EVAL call from tests.
+   */
+  async eval(script: string, _numKeys: number, ...args: Array<string | number>): Promise<number> {
+    if (script !== OTP_VERIFY_SCRIPT) {
+      throw new Error('FakeRedis: unsupported EVAL script');
+    }
+    const [key, code] = args.map(String);
+    const stored = this.strings.get(key);
+    if (stored === undefined) return -1;
+    if (stored === code) {
+      this.strings.delete(key);
+      return 1;
+    }
+    return 0;
+  }
 
   /** ZADD key score member — creates or updates (returns 0 when updated). */
   async zadd(key: string, score: number, member: string): Promise<number> {
@@ -117,13 +152,42 @@ export class FakeRedis {
     return this.ttls.get(key) ?? -1;
   }
 
-  /** DEL key [key …] — removes zsets/hashes/geo coords (and their TTLs). */
+  /** INCR key — parses the stored string (missing = 0), returns the new value. */
+  async incr(key: string): Promise<number> {
+    const next = Number(this.strings.get(key) ?? '0') + 1;
+    this.strings.set(key, String(next));
+    return next;
+  }
+
+  /** PEXPIRE key ms — stores the TTL (seconds, rounded up, like real Redis). */
+  async pexpire(key: string, ms: number): Promise<number> {
+    if (!this.exists(key)) return 0;
+    this.ttls.set(key, Math.ceil(ms / 1000));
+    return 1;
+  }
+
+  /** PTTL key — milliseconds, -1 when the key has no TTL, -2 when missing. */
+  async pttl(key: string): Promise<number> {
+    if (!this.exists(key)) return -2;
+    const seconds = this.ttls.get(key);
+    return seconds === undefined ? -1 : seconds * 1000;
+  }
+
+  /** PSETEX key ms value — set the string value with a millisecond TTL. */
+  async psetex(key: string, ms: number, value: string): Promise<'OK'> {
+    this.strings.set(key, value);
+    this.ttls.set(key, Math.ceil(ms / 1000));
+    return 'OK';
+  }
+
+  /** DEL key [key …] — removes zsets/hashes/geo coords/strings (and their TTLs). */
   async del(...keys: string[]): Promise<number> {
     let removed = 0;
     for (const key of keys) {
       if (this.zsets.delete(key)) removed += 1;
       if (this.hashes.delete(key)) removed += 1;
       if (this.geoCoords.delete(key)) removed += 1;
+      if (this.strings.delete(key)) removed += 1;
       this.ttls.delete(key);
     }
     return removed;
@@ -151,6 +215,11 @@ export class FakeRedis {
   }
 
   private exists(key: string): boolean {
-    return this.zsets.has(key) || this.hashes.has(key) || this.geoCoords.has(key);
+    return (
+      this.zsets.has(key) ||
+      this.hashes.has(key) ||
+      this.geoCoords.has(key) ||
+      this.strings.has(key)
+    );
   }
 }

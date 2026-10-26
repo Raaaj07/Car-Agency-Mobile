@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Star, Sparkles } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -10,7 +11,7 @@ import { useRideStore } from '../../store/rideStore';
 
 interface Props {
   onBack: () => void;
-  onSubmitReview: (rating: number, compliments: string[], tipAmount: number) => Promise<void> | void;
+  onSubmitReview: (rating: number, compliments: string[], tipAmount: number, comment?: string) => Promise<void> | void;
 }
 
 const compliments = [
@@ -25,6 +26,7 @@ const tipOptions = ['₹10', '₹20', '₹50', '₹100'];
 
 export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) => {
   const [rating, setRating] = useState<number>(5);
+  const insets = useSafeAreaInsets();
   // Nothing is pre-selected: a pre-ticked "Safe Driver" recorded feedback the
   // rider never gave (same class of bug as the pre-selected tip).
   const [selectedCompliments, setSelectedCompliments] = useState<string[]>([]);
@@ -35,6 +37,7 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
   // Locks the button while the request is in flight: a double tap used to send
   // two reviews, and the 2nd (409 "already reviewed") showed a false error.
   const [submitting, setSubmitting] = useState(false);
+  const [comment, setComment] = useState('');
   // Real driver from the completed ride (photo + name + vehicle).
   const driver = useRideStore((state) => state.activeRide?.driver ?? null);
   const driverName = driver?.name?.trim() || 'Your driver';
@@ -58,6 +61,7 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
         rating,
         selectedCompliments,
         selectedTip ? Number(selectedTip.replace('₹', '')) : 0,
+        comment.trim() || undefined,
       );
     } finally {
       // On success the navigator leaves this screen; on failure the rider must
@@ -70,7 +74,10 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
     <View style={styles.container}>
       <Header title="Rate Your Ride" onBack={onBack} />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.driverSection}>
           <Avatar name={driverName} uri={driver?.avatar ?? undefined} size={72} />
           <Text style={styles.driverName}>{driverName}</Text>
@@ -112,6 +119,19 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
           </View>
         </Card>
 
+        <Card style={styles.sectionCard}>
+          <Text style={styles.cardHeaderTitle}>Comments (Optional)</Text>
+          <TextInput
+            style={styles.commentInput}
+            value={comment}
+            onChangeText={setComment}
+            placeholder="Tell us more about your ride"
+            placeholderTextColor={colors.textMuted}
+            multiline
+            maxLength={300}
+          />
+        </Card>
+
         {/* Driver Tip Row */}
         <Card style={styles.sectionCard}>
           <View style={styles.tipTitleRow}>
@@ -135,7 +155,7 @@ export const ReviewRideScreen: React.FC<Props> = ({ onBack, onSubmitReview }) =>
         </Card>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Submit Rating & Feedback"
           onPress={handleSubmit}
@@ -211,6 +231,15 @@ const styles = StyleSheet.create({
   },
   tagTextActive: {
     color: colors.accent,
+  },
+  commentInput: {
+    minHeight: 72,
+    textAlignVertical: 'top',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    padding: 10,
+    color: colors.textPrimary,
   },
   tipTitleRow: {
     flexDirection: 'row',

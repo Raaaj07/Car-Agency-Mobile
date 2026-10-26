@@ -9,8 +9,18 @@ import { ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, tokenManager } from '../lib/tokenM
 const fallbackBaseUrl =
   Platform.OS === 'android' ? 'http://10.0.2.2:3000/api/v1' : 'http://localhost:3000/api/v1';
 
-const rawUrl = process.env.EXPO_PUBLIC_API_URL || fallbackBaseUrl;
-if (!process.env.EXPO_PUBLIC_API_URL && __DEV__) {
+const configuredUrl = process.env.EXPO_PUBLIC_API_URL;
+
+// Phase-3.1: a release build must never silently talk to a dev/cleartext host
+// (Android ships with usesCleartextTraffic:false, so the app would just fail
+// with a confusing network error). Missing or non-https config is a build
+// mistake — fail loudly at module load instead.
+if (!__DEV__ && (!configuredUrl || !configuredUrl.startsWith('https://'))) {
+  throw new Error('EXPO_PUBLIC_API_URL must be an https URL in release builds');
+}
+
+const rawUrl = configuredUrl || fallbackBaseUrl;
+if (!configuredUrl && __DEV__) {
   console.warn(`[api] EXPO_PUBLIC_API_URL not set, using fallback ${fallbackBaseUrl}`);
 }
 
@@ -93,8 +103,14 @@ api.interceptors.response.use(
     } catch (e) {
       refreshQueue.forEach((fn) => fn(null));
       refreshQueue = [];
-      // Token dead — authStore registered onUnauthorized -> logout.
-      tokenManager.handleUnauthorized();
+      // Only log out when the refresh server explicitly says the token is
+      // invalid (401/403). A network error or timeout means we simply could
+      // not reach the server — the tokens may still be valid, so we keep
+      // them and reject the original request without forcing a sign-out.
+      const refreshStatus = isAxiosError(e) ? e.response?.status : undefined;
+      if (refreshStatus === 401 || refreshStatus === 403) {
+        tokenManager.handleUnauthorized();
+      }
       return Promise.reject(error ?? e);
     } finally {
       isRefreshing = false;
@@ -122,4 +138,14 @@ export function getApiError(error: unknown): string {
     return error.message;
   }
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.';
+}
+
+/**
+ * HTTP status of a failed API call when the server actually responded
+ * (undefined for network/timeout failures). SEC-3: lets callers tell a
+ * refused state transition (409) apart from a generic failure without
+ * string-matching localized messages.
+ */
+export function getApiStatus(error: unknown): number | undefined {
+  return isAxiosError(error) ? error.response?.status : undefined;
 }

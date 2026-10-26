@@ -1,9 +1,10 @@
 import React, { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Home, Briefcase, MapPin } from 'lucide-react-native';
-import { colors, radii, shadows } from '../../theme/theme';
+import { colors, radii } from '../../theme/theme';
 import { PlaceImage } from './PlaceImage';
 import { PlaceItem } from '../../api/places';
+import { formatDistance } from '../../utils/distance';
 
 interface QuickPickTileProps {
   type: 'place' | 'home' | 'work' | 'search_more';
@@ -70,12 +71,17 @@ export const QuickPickTile: React.FC<QuickPickTileProps> = memo(
         <PlaceImage
           uri={place?.imageUrl}
           width="100%"
-          height={64}
-          borderRadius={12}
+          height={66}
+          borderRadius={10}
         />
         <Text style={styles.tileLabel} numberOfLines={2}>
           {place?.title || label}
         </Text>
+        {!!formatDistance(place?.distanceKm) && (
+          <Text style={styles.tileMeta} numberOfLines={1}>
+            {formatDistance(place?.distanceKm)}
+          </Text>
+        )}
       </TouchableOpacity>
     );
   },
@@ -88,19 +94,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: '#E5E9F0',
     overflow: 'hidden',
     alignItems: 'center',
+    padding: 4,
     paddingBottom: 8,
-    ...shadows.card,
   },
   iconBox: {
     width: '100%',
-    height: 64,
+    height: 66,
     alignItems: 'center',
     justifyContent: 'center',
-    borderTopLeftRadius: 11,
-    borderTopRightRadius: 11,
+    borderRadius: 10,
   },
   searchBox: {
     backgroundColor: '#EEF2FF',
@@ -113,5 +118,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.textPrimary,
     lineHeight: 16,
+  },
+  tileMeta: {
+    paddingTop: 2,
+    fontSize: 11,
+    color: '#6B7280',
   },
 });

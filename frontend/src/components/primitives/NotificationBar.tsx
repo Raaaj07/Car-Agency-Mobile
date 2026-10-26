@@ -6,6 +6,7 @@ import {
   PanGestureHandlerStateChangeEvent,
   State,
 } from 'react-native-gesture-handler';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -38,6 +39,7 @@ export const NotificationBar: React.FC<Props> = ({
   onDismiss,
 }) => {
   const [shouldRender, setShouldRender] = useState(visible);
+  const insets = useSafeAreaInsets();
   // Lazy useState instead of useRef(...).current: reading a fresh ref's
   // .current during render trips react-hooks/refs, and these Animated.Value
   // instances are created exactly once either way.
@@ -133,7 +135,11 @@ export const NotificationBar: React.FC<Props> = ({
     >
       <Animated.View
         pointerEvents="box-none"
-        style={[styles.container, { opacity, transform: [{ translateY }, { translateX }] }]}
+        style={[
+          styles.container,
+          // Sit just below the status bar / camera cutout (was a fixed 54).
+          { paddingTop: insets.top + 8, opacity, transform: [{ translateY }, { translateX }] },
+        ]}
       >
         <View style={styles.card}>
           {icon && <View style={styles.iconWrap}>{icon}</View>}

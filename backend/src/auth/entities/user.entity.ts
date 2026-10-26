@@ -22,6 +22,12 @@ export class UserEntity {
   @Column({ type: 'varchar', length: 255, nullable: true })
   email?: string | null;
 
+  // SEC-2b: server-side proof that `email` was actually confirmed (Google's
+  // email_verified claim). Self-asserted addresses from PATCH /auth/me are
+  // always false — Google sign-in links an account by email ONLY when true.
+  @Column({ type: 'boolean', default: false })
+  emailVerified!: boolean;
+
   @Column({ type: 'varchar', length: 255, nullable: true })
   googleId?: string | null;
 
@@ -44,6 +50,17 @@ export class UserEntity {
   // Never holds the raw token.
   @Column({ type: 'varchar', length: 128, nullable: true })
   refreshTokenHash?: string | null;
+
+  // Safety: who the rider's trip-share / SOS alerts are meant for.
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  emergencyContactName?: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  emergencyContactPhone?: string | null;
+
+  // Opt-out for ride push notifications (Profile toggle).
+  @Column({ type: 'boolean', default: true })
+  pushEnabled!: boolean;
 
   @Column({ type: 'varchar', length: 10, default: 'en' })
   language!: string;

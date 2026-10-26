@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
-import { CornerUpRight, Phone, Gauge, MapPin, CheckCircle, Navigation, ExternalLink } from 'lucide-react-native';
+import { CornerUpRight, Gauge, MapPin, CheckCircle, Navigation, ExternalLink } from 'lucide-react-native';
 import * as Location from 'expo-location';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FocusedStatusBar } from '../../components/primitives/FocusedStatusBar';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
@@ -21,9 +23,15 @@ interface Props {
 
 export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAction, isSubmitting, onRideCancelled }) => {
   const isToPickup = phase === 'to_pickup';
+  const insets = useSafeAreaInsets();
   const activeRide = useRideStore((state) => state.activeRide);
   const socket = useSocket();
   const [driverPosition, setDriverPosition] = useState<LatLng | undefined>();
+  const [driverHeading, setDriverHeading] = useState<number | undefined>(undefined);
+  // Real GPS speed in km/h (null until the device reports one).
+  const [speedKmh, setSpeedKmh] = useState<number | null>(null);
+  // Measured bottom-sheet height so the map keeps the car above the sheet.
+  const [sheetHeight, setSheetHeight] = useState(0);
   const watchSubscription = useRef<Location.LocationSubscription | null>(null);
 
   const destinationAddress =
@@ -45,12 +53,30 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
         (loc) => {
           if (!mounted) return;
           const next = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          // GPS course is -1/null while stationary — send nothing in that case
+          // and the rider's car marker keeps/derives its heading from movement.
+          const rawHeading = loc.coords.heading;
+          const heading =
+            typeof rawHeading === 'number' && Number.isFinite(rawHeading) && rawHeading >= 0
+              ? rawHeading
+              : undefined;
           setDriverPosition(next);
+          setDriverHeading(heading);
+          const rawSpeed = loc.coords.speed;
+          setSpeedKmh(
+            typeof rawSpeed === 'number' && Number.isFinite(rawSpeed) && rawSpeed >= 0
+              ? Math.round(rawSpeed * 3.6)
+              : null,
+          );
 
           driversApi.updateLocation(next.lat, next.lng).catch(() => {});
 
           if (activeRide?.id && socket) {
-            socket.emit('driver:location', { rideId: activeRide.id, ...next });
+            socket.emit('driver:location', {
+              rideId: activeRide.id,
+              ...next,
+              ...(heading !== undefined ? { heading } : {}),
+            });
           }
         },
       );
@@ -122,16 +148,20 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
 
   return (
     <View style={styles.container}>
+      {/* Dark map: light status-bar icons so the clock/battery stay visible. */}
+      <FocusedStatusBar style="light" />
       <RealMapView
         mode="navigation"
         darkTheme
         pickup={activeRide?.pickup}
         dropoff={activeRide?.dropoff}
         driverPosition={driverPosition}
+        driverHeading={driverHeading}
+        bottomPadding={sheetHeight}
       />
 
       {/* Top Direction Instruction Header */}
-      <View style={styles.navHeader}>
+      <View style={[styles.navHeader, { top: 20 + insets.top }]}>
         <View style={styles.arrowIconWrap}>
           <CornerUpRight size={28} color="#FFFFFF" />
         </View>
@@ -146,13 +176,13 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
 
         <View style={styles.speedBadge}>
           <Gauge size={14} color={colors.accent} />
-          <Text style={styles.speedVal}>45 km/h</Text>
+          <Text style={styles.speedVal}>{speedKmh != null ? speedKmh : '--'} km/h</Text>
         </View>
       </View>
 
       {/* Floating "Open in Google Maps" Button on the Map */}
       <TouchableOpacity
-        style={styles.floatingGmapsBtn}
+        style={[styles.floatingGmapsBtn, { top: 108 + insets.top }]}
         onPress={handleOpenGoogleMaps}
         activeOpacity={0.85}
       >
@@ -169,7 +199,10 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
       </TouchableOpacity>
 
       {/* Bottom Navigation Control Sheet */}
-      <View style={styles.bottomSheet}>
+      <View
+        style={[styles.bottomSheet, { paddingBottom: 20 + insets.bottom }]}
+        onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
+      >
         <View style={styles.summaryRow}>
           <View>
             <Text style={styles.etaTitle}>
@@ -179,10 +212,6 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
               {isToPickup ? 'Rider is waiting at pickup location' : 'Heading towards destination'}
             </Text>
           </View>
-
-          <TouchableOpacity style={styles.callBtn}>
-            <Phone size={18} color={colors.primary} />
-          </TouchableOpacity>
         </View>
 
         <View style={styles.destBox}>
@@ -235,7 +264,7 @@ const styles = StyleSheet.create({
   navTextWrap: { flex: 1 },
   distText: { ...typography.metaBold, fontSize: 11, color: colors.accent, letterSpacing: 1 },
   turnInstruction: { ...typography.cardTitle, fontSize: 15, color: '#FFFFFF' },
-  speedBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, 0.15)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: radii.pill, gap: 4 },
+  speedBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, 0.15)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: radii.pill, gap: 4, minWidth: 72, justifyContent: 'center' },
   speedVal: { color: '#FFFFFF', fontWeight: '700', fontSize: 11 },
 
   // Floating Google Maps Button on Map
@@ -285,7 +314,6 @@ const styles = StyleSheet.create({
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   etaTitle: { ...typography.heading, fontSize: 20, color: colors.primary },
   etaSub: { ...typography.meta, fontSize: 12 },
-  callBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#EEF2FF', alignItems: 'center', justifyContent: 'center' },
 
   destBox: {
     flexDirection: 'row',

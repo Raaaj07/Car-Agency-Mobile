@@ -4,12 +4,14 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { DriversModule } from '../drivers/drivers.module';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { StorageService } from '../drivers/storage.service';
 import { AuthController } from './auth.controller';
 import { UsersController } from './users.controller';
 import { AuthService } from './auth.service';
 import { UserEntity } from './entities/user.entity';
+import { RefreshSessionEntity } from './entities/refresh-session.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { OtpService } from './otp.service';
 import { DevSmsProvider } from './providers/dev-sms.provider';
@@ -20,7 +22,11 @@ import { TokensService } from './tokens.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UserEntity, DriverEntity]),
+    TypeOrmModule.forFeature([UserEntity, DriverEntity, RefreshSessionEntity]),
+    // Pass-4 (task 12): account deletion needs GeoService (drop the driver
+    // from the Redis geo-sets) — no cycle: DriversModule imports nothing
+    // from auth.
+    DriversModule,
     PassportModule,
     HttpModule,
     JwtModule.registerAsync({
@@ -49,6 +55,16 @@ import { TokensService } from './tokens.service';
     DevSmsProvider,
     Msg91SmsProvider,
   ],
-  exports: [AuthService, TokensService, JwtStrategy, JwtAuthGuard, TypeOrmModule],
+  exports: [
+    // SEC-5: UserKeyedThrottlerGuard (global, in AppModule) verifies the
+    // access token to key rate limits per user — JwtService must be
+    // resolvable from there.
+    JwtModule,
+    AuthService,
+    TokensService,
+    JwtStrategy,
+    JwtAuthGuard,
+    TypeOrmModule,
+  ],
 })
 export class AuthModule {}

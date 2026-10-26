@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 // Matches ReviewRideScreen: star rating, optional compliment tags, optional tip.
 export class SubmitReviewDto {
@@ -12,8 +12,16 @@ export class SubmitReviewDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(10)
+  // SEC-2: compliment tags are stored with the review — each tag is a short
+  // preset label, so 50 chars/tag is already generous.
   @IsString({ each: true })
+  @MaxLength(50, { each: true })
   compliments?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  comment?: string;
 
   @IsOptional()
   @Type(() => Number)

@@ -1,10 +1,18 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { TouchableOpacity, Text, StyleSheet, ViewStyle, TextStyle, ActivityIndicator } from 'react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 
+// A genuine second press is never this fast; a double-tap always is.
+const PRESS_COOLDOWN_MS = 500;
+
 interface ButtonProps {
   title: string;
-  onPress: () => void;
+  /**
+   * May return a Promise. When it does, the button locks itself (spinner, no
+   * further taps) until that promise settles, so a double/triple tap on any
+   * async action (book, cancel, pay, submit...) can never run it twice.
+   */
+  onPress: () => void | Promise<unknown>;
   variant?: 'primary' | 'accent' | 'outline' | 'danger' | 'ghost' | 'success';
   size?: 'small' | 'medium' | 'large';
   fullWidth?: boolean;
@@ -29,6 +37,38 @@ export const Button: React.FC<ButtonProps> = ({
   style,
   textStyle,
 }) => {
+  // Anti double-tap. The ref blocks a second tap in the SAME frame (state
+  // updates are async, so `busy` alone would let a fast second tap through).
+  const pressLock = useRef(false);
+  // Also swallows a second tap of ANY button within a short window: stops the
+  // classic double navigation push (two screens opened by one fast double tap)
+  // even for handlers that return nothing.
+  const lastPressAt = useRef(0);
+  const mounted = useRef(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const handlePress = () => {
+    if (pressLock.current) return;
+    const now = Date.now();
+    if (now - lastPressAt.current < PRESS_COOLDOWN_MS) return;
+    lastPressAt.current = now;
+    const result = onPress();
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      pressLock.current = true;
+      setBusy(true);
+      const release = () => {
+        pressLock.current = false;
+        if (mounted.current) setBusy(false);
+      };
+      (result as Promise<unknown>).then(release, release);
+    }
+  };
+
   const getVariantStyle = (): ViewStyle => {
     switch (variant) {
       case 'accent':
@@ -78,8 +118,8 @@ export const Button: React.FC<ButtonProps> = ({
   return (
     <TouchableOpacity
       activeOpacity={0.85}
-      onPress={onPress}
-      disabled={disabled || loading}
+      onPress={handlePress}
+      disabled={disabled || loading || busy}
       style={[
         styles.base,
         getVariantStyle(),
@@ -93,7 +133,7 @@ export const Button: React.FC<ButtonProps> = ({
         style,
       ]}
     >
-      {loading ? (
+      {loading || busy ? (
         <ActivityIndicator color={variant === 'outline' || variant === 'ghost' ? colors.primary : '#FFF'} />
       ) : (
         <>

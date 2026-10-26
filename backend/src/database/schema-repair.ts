@@ -29,6 +29,42 @@ export const SCHEMA_REPAIR_STATEMENTS: string[] = [
   `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "appleId" varchar(255)`,
   `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "profileComplete" boolean NOT NULL DEFAULT false`,
   `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "refreshTokenHash" varchar(128)`,
+  // SEC-2b: provenance flag for users.email (Google link-by-email gate).
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "emailVerified" boolean NOT NULL DEFAULT false`,
+
+  // Safety + push (migrations 1791800000000 / 1791800002000).
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "emergencyContactName" varchar(120)`,
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "emergencyContactPhone" varchar(20)`,
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pushEnabled" boolean NOT NULL DEFAULT true`,
+
+  // Per-device refresh sessions (migration 1791700000000).
+  `CREATE TABLE IF NOT EXISTS refresh_sessions (
+     id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+     "userId" UUID NOT NULL,
+     "familyId" UUID NOT NULL,
+     "tokenHash" VARCHAR(64) NOT NULL,
+     "previousTokenHash" VARCHAR(64),
+     "previousTokenAt" TIMESTAMPTZ,
+     "deviceLabel" VARCHAR(128),
+     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+     "lastUsedAt" TIMESTAMPTZ,
+     "expiresAt" TIMESTAMPTZ NOT NULL,
+     "revokedAt" TIMESTAMPTZ
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_refresh_sessions_user_id ON refresh_sessions ("userId")`,
+  `CREATE INDEX IF NOT EXISTS idx_refresh_sessions_family_id ON refresh_sessions ("familyId")`,
+
+  `CREATE TABLE IF NOT EXISTS device_tokens (
+     id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+     "userId" UUID NOT NULL,
+     "sessionId" UUID,
+     token VARCHAR(200) NOT NULL,
+     platform VARCHAR(10) NOT NULL DEFAULT 'android',
+     "createdAt" TIMESTAMP NOT NULL DEFAULT now(),
+     "updatedAt" TIMESTAMP NOT NULL DEFAULT now()
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "IDX_device_tokens_token" ON device_tokens (token)`,
+  `CREATE INDEX IF NOT EXISTS "IDX_device_tokens_userId" ON device_tokens ("userId")`,
 
   // ── drivers ─────────────────────────────────────────────────────────────
   `ALTER TABLE "drivers" ADD COLUMN IF NOT EXISTS "profilePhotoUrl" text`,
@@ -58,8 +94,46 @@ export const SCHEMA_REPAIR_STATEMENTS: string[] = [
   `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "otpAttempts" int NOT NULL DEFAULT 0`,
   `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "otpLockedUntil" timestamptz`,
   `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "paymentMarkedBy" varchar(16)`,
+  // Safety (share link / SOS) + rating comment.
+  `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "shareTokenHash" varchar(64)`,
+  `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "shareExpiresAt" timestamptz`,
+  `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "sosAt" timestamptz`,
+  `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "sosLocation" jsonb`,
+  `ALTER TABLE "rides" ADD COLUMN IF NOT EXISTS "ratingComment" varchar(300)`,
+  `CREATE INDEX IF NOT EXISTS "IDX_rides_shareTokenHash" ON "rides" ("shareTokenHash") WHERE "shareTokenHash" IS NOT NULL`,
   // 'rider_claimed' is 13 chars; the original varchar(10) rejected it.
   `ALTER TABLE "rides" ALTER COLUMN "paymentStatus" TYPE varchar(16)`,
+  // SEC-4: one active ride per rider — resolve legacy duplicates first (keep
+  // the furthest-progressed ride; an in_progress trip is never the one
+  // cancelled), then the partial unique index create()'s 23505 mapping and
+  // the entity both rely on. Both statements are idempotent (no duplicates /
+  // existing index => no-ops).
+  `WITH dup AS (
+     SELECT "id",
+            ROW_NUMBER() OVER (
+              PARTITION BY "riderId"
+              ORDER BY CASE "status"
+                         WHEN 'in_progress' THEN 4
+                         WHEN 'driver_en_route' THEN 3
+                         WHEN 'matched' THEN 2
+                         ELSE 1
+                       END DESC,
+                       "updatedAt" DESC NULLS LAST,
+                       "createdAt" DESC,
+                       "id"
+            ) AS rn
+     FROM "rides"
+     WHERE "status" IN ('requested', 'matched', 'driver_en_route', 'in_progress')
+   )
+   UPDATE "rides" r
+   SET "status" = 'cancelled',
+       "cancellationReason" = 'duplicate_active_ride',
+       "cancelledBy" = 'system',
+       "cancelledAt" = NOW()
+   FROM dup
+   WHERE r."id" = dup."id" AND dup.rn > 1`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "UQ_rides_active_per_rider" ON "rides" ("riderId")
+   WHERE "status" IN ('requested', 'matched', 'driver_en_route', 'in_progress')`,
 
   // ── payments ────────────────────────────────────────────────────────────
   `ALTER TABLE "payments" ALTER COLUMN "status" TYPE varchar(16)`,

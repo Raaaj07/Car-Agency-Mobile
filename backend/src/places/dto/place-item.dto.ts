@@ -9,14 +9,15 @@ export class PlaceItemDto {
   savedId?: string | null;
   /**
    * Straight-line distance from the rider's current location, in km (1 decimal).
-   * Only present on location-aware lists (/places/nearby, /places/popular
-   * called with lat/lng).
+   * Only present on the location-aware list (/places/nearby).
    */
   distanceKm?: number | null;
   /** Google star rating (0-5). Present on live Google places only. */
   rating?: number | null;
   /** Number of Google ratings behind `rating`. */
   ratingCount?: number | null;
+  /** How many trips this rider has taken to the place (/places/frequent only). */
+  visitCount?: number;
 }
 
 export class SavedPlaceDto {

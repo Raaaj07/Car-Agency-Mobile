@@ -11,8 +11,10 @@ import { PaymentStatus, RideEntity, RideStatus } from '../rides/entities/ride.en
 import { PaymentEntity } from '../payments/entities/payment.entity';
 import { RidesService } from '../rides/rides.service';
 import { appTimezone, zonedStartOfDay, zonedStartOfDayAgo } from '../common/timezone';
+import { maskPhone, last4 } from '../common/log-hygiene';
 import { RouteDistanceService } from '../rides/route-distance.service';
 import { AdminAuditService } from './admin-audit.service';
+import { AdminAuditLogEntity } from './entities/admin-audit-log.entity';
 import { toCsv } from './csv';
 
 type AppStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
@@ -73,13 +75,7 @@ const RIDE_CSV_HEADERS = [
   'cancellationReason',
 ];
 
-/** Ride list/detail never expose raw phone numbers — only this masked form. */
-function maskPhone(phone?: string | null): string {
-  const digits = (phone ?? '').replace(/\D/g, '');
-  if (!digits) return '';
-  if (digits.length < 5) return '•'.repeat(digits.length);
-  return `${digits.slice(0, 3)}•••••${digits.slice(-2)}`;
-}
+/** Ride list/detail never expose raw phone numbers — only the shared masked form. */
 
 @Injectable()
 export class AdminService implements OnApplicationBootstrap {
@@ -113,7 +109,7 @@ export class AdminService implements OnApplicationBootstrap {
         .catch(() => null);
       if (user && (user.role as string) !== 'admin') {
         await this.users.update({ id: user.id }, { role: 'admin' as any }).catch(() => {});
-        this.logger.log(`Promoted ${user.phone} to admin via ADMIN_PHONES`);
+        this.logger.log(`Promoted •••••${last4(user.phone)} to admin via ADMIN_PHONES`);
       }
     }
   }
@@ -823,6 +819,9 @@ export class AdminService implements OnApplicationBootstrap {
         r.status === 'completed' &&
         routedKm > 0 &&
         Number(r.distanceKm ?? 0) > routedKm * 1.5,
+      // Pass-4 (task 6): soft trip-fraud flags (`ride_flag` audit rows) for
+      // this ride and its driver — additive field, never shown in the app.
+      flags: await this.rideFraudFlags(r.id, r.driverId),
       payments: paymentRows.map((p) => ({
         id: p.id,
         method: p.method,
@@ -833,6 +832,24 @@ export class AdminService implements OnApplicationBootstrap {
         createdAt: p.createdAt,
       })),
     };
+  }
+
+  // Pass-4 (task 6): distinct `ride_flag` reasons recorded against the ride
+  // itself or its driver (arrival order preserved). Best-effort: a failed
+  // read renders as no flags rather than breaking the detail view.
+  private async rideFraudFlags(rideId: string, driverId: string | null | undefined): Promise<string[]> {
+    try {
+      const rows = await this.rides.manager.find(AdminAuditLogEntity, {
+        where: {
+          action: 'ride_flag',
+          targetId: In(driverId ? [rideId, driverId] : [rideId]),
+        },
+        order: { createdAt: 'ASC' },
+      });
+      return [...new Set(rows.map((row) => row.reason).filter((r): r is string => Boolean(r)))];
+    } catch {
+      return [];
+    }
   }
 
   /**

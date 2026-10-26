@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Car, BadgeCheck } from 'lucide-react-native';
 import { colors, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -32,6 +33,7 @@ function fileFromUri(uri: string, fallback: string) {
 }
 
 export const BecomeDriverScreen: React.FC<Props> = ({ onBack, onDone }) => {
+  const insets = useSafeAreaInsets();
   const [vehicleType, setVehicleType] = useState<VehicleType>('sedan');
   const [carModel, setCarModel] = useState('');
   const [plateNumber, setPlateNumber] = useState('');
@@ -86,7 +88,11 @@ export const BecomeDriverScreen: React.FC<Props> = ({ onBack, onDone }) => {
   return (
     <View style={styles.container}>
       <Header title="Become a driver" onBack={onBack} />
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: 120 + insets.bottom }]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.infoBox}>
           <BadgeCheck size={20} color={colors.success} />
           <Text style={styles.infoText}>Applications are reviewed by our team. Only approved drivers can go online.</Text>
@@ -119,7 +125,7 @@ export const BecomeDriverScreen: React.FC<Props> = ({ onBack, onDone }) => {
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <Text style={styles.note}>Max file size: {Math.round(MAX_BYTES / 1024 / 1024)} MB per document.</Text>
       </ScrollView>
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 16 + insets.bottom }]}>
         <Button title="Submit application" onPress={handleSubmit} loading={isSaving} disabled={!isValid || isSaving} />
       </View>
     </View>

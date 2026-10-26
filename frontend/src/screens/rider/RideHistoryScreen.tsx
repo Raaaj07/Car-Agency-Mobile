@@ -1,7 +1,11 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { CompositeNavigationProp, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MapPin, Star } from 'lucide-react-native';
+import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import { colors, typography } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
 import { Pill } from '../../components/primitives/Pill';
@@ -9,6 +13,15 @@ import { Button } from '../../components/primitives/Button';
 import { ridesApi, Ride } from '../../api/rides';
 import { getApiError } from '../../api/client';
 import { applyRideToStore, isActiveStatus, restoreActiveRide, screenForStatus } from '../../hooks/useActiveRide';
+import { MainTabParamList, RootStackParamList } from '../../navigation/types';
+import { enterRiderHome } from '../../navigation/navHelpers';
+
+// A Trips-tab screen: reaches its own tab routes plus the root modals
+// (CancelRideConfirmation) without `as any` casts.
+type NavProp = CompositeNavigationProp<
+  BottomTabNavigationProp<MainTabParamList>,
+  NativeStackNavigationProp<RootStackParamList>
+>;
 
 const STATUS_VARIANT: Record<string, 'success' | 'danger' | 'warning' | 'primary' | 'muted'> = {
   completed: 'success',
@@ -30,7 +43,9 @@ function formatDate(iso?: string): string {
 const TAB = 'rider' as const;
 
 export const RideHistoryScreen: React.FC = () => {
-  const navigation = useNavigation<any>();
+  const navigation = useNavigation<NavProp>();
+  const insets = useSafeAreaInsets();
+  const tabBarSpace = useTabBarSpace();
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -61,12 +76,14 @@ export const RideHistoryScreen: React.FC = () => {
 
   const handleResume = (ride: Ride) => {
     applyRideToStore(ride);
-    navigation.navigate('HomeTab', { screen: screenForStatus(ride.status) });
+    // D8: resume into a clean [HomeDashboard, <live screen>] stack — never on
+    // top of a half-finished booking left over in the Home tab.
+    enterRiderHome(navigation, screenForStatus(ride.status));
   };
 
   const handleCancel = (ride: Ride) => {
     applyRideToStore(ride);
-    navigation.getParent()?.navigate('CancelRideConfirmation' as never);
+    navigation.getParent<NativeStackNavigationProp<RootStackParamList>>()?.navigate('CancelRideConfirmation');
   };
 
   const activeRides = rides.filter((r) => isActiveStatus(r.status));
@@ -84,11 +101,11 @@ export const RideHistoryScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>My Trips</Text>
+      <Text style={[styles.header, { paddingTop: insets.top + 16 }]}>My Trips</Text>
       <FlatList
         data={pastRides}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { paddingBottom: tabBarSpace + 16 }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

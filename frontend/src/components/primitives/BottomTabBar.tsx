@@ -130,7 +130,9 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
 };
 
 const styles = StyleSheet.create({
-  container: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'transparent', paddingHorizontal: 16 },
+  // zIndex keeps the floating bar painted above full-screen overlays such as
+  // the home bottom sheet (which is itself zIndex 20).
+  container: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'transparent', paddingHorizontal: 16, zIndex: 100 },
   bar: { flexDirection: 'row', height: 64, backgroundColor: '#FFFFFF', borderRadius: 32, borderWidth: 1, borderColor: '#EEECF2', alignItems: 'center', justifyContent: 'space-around', ...shadows.cardHover },
   tab: { alignItems: 'center', justifyContent: 'center', flex: 1, height: '100%' },
   iconWrap: { width: 30, height: 26, alignItems: 'center', justifyContent: 'center' },

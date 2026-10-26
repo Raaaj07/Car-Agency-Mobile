@@ -18,6 +18,19 @@ class EnvironmentVariables {
   @IsString()
   CORS_ORIGIN?: string;
 
+  /**
+   * SEC-5: "false" (default) | "true". Rate limiting keys on req.ip; behind a
+   * reverse proxy that would be the proxy's IP, collapsing every user into one
+   * rate-limit budget (and breaking the 10-sends/10-min OTP backstop in
+   * production). Set "true" ONLY when a proxy (nginx/Render router) fronts the
+   * app and the app port is not directly reachable — with a direct connection
+   * Express would instead trust client-supplied X-Forwarded-For headers and
+   * attackers could rotate fake IPs to bypass the limits.
+   */
+  @IsOptional()
+  @IsBooleanString()
+  TRUST_PROXY?: string;
+
   @IsString()
   DB_HOST!: string;
 
@@ -87,9 +100,28 @@ class EnvironmentVariables {
   @IsBooleanString()
   OTP_DEV_MODE?: string;
 
+  /**
+   * Task 9: Explicit opt-in flag required to run 4-digit OTPs in production.
+   * Without this flag, OTP_LENGTH defaults to 6 in production and any value < 6
+   * is refused with a boot error.
+   */
+  @IsOptional()
+  @IsBooleanString()
+  ALLOW_4_DIGIT_OTP?: string;
+
   @IsOptional()
   @IsBooleanString()
   PAYMENTS_DEV_MODE?: string;
+
+  /**
+   * Pass-4 (task 5): Razorpay webhook signing secret. Optional in
+   * development (the webhook endpoint fails closed with 401 when unset);
+   * required in production when PAYMENTS_DEV_MODE is not "true" — see the
+   * production block below.
+   */
+  @IsOptional()
+  @IsString()
+  RAZORPAY_WEBHOOK_SECRET?: string;
 
   @IsOptional()
   @IsString()
@@ -116,6 +148,17 @@ class EnvironmentVariables {
   @IsIn(['cloudinary', 'local'])
   STORAGE_DRIVER?: string;
 
+  // Pass-4 (task 10): when "true", the billable photo proxy
+  // (GET /places/photo/*) requires a verifiable access token instead of
+  // serving anonymous traffic. Default off so existing APKs (whose <Image>
+  // never sends a header) keep rendering; the owner flips it after rollout.
+  // Strictly "true" | "false": the photo controller only treats the exact string
+  // "true" as ON, so a typo such as "True" or "1" must fail at boot instead of
+  // silently leaving the billable photo proxy public.
+  @IsOptional()
+  @IsIn(['true', 'false'], { message: 'REQUIRE_AUTH_FOR_PHOTOS must be exactly "true" or "false"' })
+  REQUIRE_AUTH_FOR_PHOTOS?: string;
+
   @IsOptional()
   @IsString()
   CLOUDINARY_CLOUD_NAME?: string;
@@ -139,6 +182,21 @@ class EnvironmentVariables {
   @IsOptional()
   @IsBooleanString()
   DB_SSL_REJECT_UNAUTHORIZED?: string;
+
+  /**
+   * Pass-4 script guard: scripts that WRITE to the database refuse any
+   * non-local DB host unless they were started with
+   * `--i-understand-this-is-a-remote-database` AND this is "true".
+   * Never set it in production.
+   */
+  @IsOptional()
+  @IsBooleanString()
+  ALLOW_REMOTE_DB_WRITES?: string;
+
+  /** Pass-4: integration suite may target a remote test DB when "1". */
+  @IsOptional()
+  @IsString()
+  TEST_DB_ALLOW_REMOTE?: string;
 
   /** Mapbox Directions token for routed fare distances (R-7); optional —
    * without it estimates fall back to straight-line x1.3. */
@@ -189,6 +247,18 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   APP_TIMEZONE?: string;
+
+  // Pass-4 (task 6): hard trip-fraud limits. MAX_TRIP_KM caps the routed
+  // distance a booking may request (default 150); SERVICE_AREA_BBOX
+  // ("minLat,minLng,maxLat,maxLng") restricts both trip points to a region
+  // when set.
+  @IsOptional()
+  @IsNumberString()
+  MAX_TRIP_KM?: string;
+
+  @IsOptional()
+  @IsString()
+  SERVICE_AREA_BBOX?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {
@@ -215,6 +285,20 @@ export function validateEnv(config: Record<string, unknown>) {
     }
   }
 
+  // Pass-4 (task 6): a malformed SERVICE_AREA_BBOX would silently disable
+  // the service-area check, so fail at boot instead of at trip time.
+  const bbox = (validated as unknown as Record<string, unknown>).SERVICE_AREA_BBOX;
+  if (bbox !== undefined && bbox !== null && bbox !== '') {
+    const parts = String(bbox)
+      .split(',')
+      .map((s) => Number(s.trim()));
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+      throw new Error(
+        'Invalid environment configuration:\nSERVICE_AREA_BBOX must be "minLat,minLng,maxLat,maxLng" (four comma-separated numbers)',
+      );
+    }
+  }
+
   // Dev-mode providers & CORS rules must be enforced in production
   if ((validated as unknown as Record<string, unknown>).NODE_ENV === 'production') {
     for (const key of ['OTP_DEV_MODE', 'PAYMENTS_DEV_MODE'] as const) {
@@ -224,6 +308,16 @@ export function validateEnv(config: Record<string, unknown>) {
     }
     if ((validated as unknown as Record<string, unknown>).DB_SYNCHRONIZE === 'true') {
       throw new Error('Invalid environment configuration:\nDB_SYNCHRONIZE must never be "true" in production');
+    }
+
+    // Task 9: OTP_LENGTH defaults to 6 in production. Refuse < 6 unless ALLOW_4_DIGIT_OTP=true.
+    const otpLen = (validated as unknown as Record<string, unknown>).OTP_LENGTH;
+    const allow4Digit = (validated as unknown as Record<string, unknown>).ALLOW_4_DIGIT_OTP === 'true';
+    if (otpLen !== undefined && Number(otpLen) < 6 && !allow4Digit) {
+      throw new Error(
+        'Invalid environment configuration:\nOTP_LENGTH must be >= 6 in production. ' +
+        'To support legacy 4-digit client apps temporarily, set ALLOW_4_DIGIT_OTP=true explicitly.',
+      );
     }
     const cors = (validated as unknown as Record<string, unknown>).CORS_ORIGIN;
     if (cors === '*' || !cors) {
@@ -237,9 +331,44 @@ export function validateEnv(config: Record<string, unknown>) {
         }
       }
     }
+    // Pass-4 (task 5): without the webhook secret every delivery would be
+    // rejected (401), so a gateway-settled payment could never reach the
+    // server — required in production unless dev-mode payments are on.
+    if (env.PAYMENTS_DEV_MODE !== 'true' && !env.RAZORPAY_WEBHOOK_SECRET) {
+      throw new Error(
+        'Invalid environment configuration:\nRAZORPAY_WEBHOOK_SECRET is required in production when PAYMENTS_DEV_MODE is false',
+      );
+    }
+    // OTP login is the primary sign-in path. OTP_DEV_MODE is already refused
+    // in production above, so the real SMS provider is the only one in use —
+    // without these keys Msg91SmsProvider silently returns { sent: false } and
+    // every login code is lost. Fail at boot instead of at the first login.
+    const rawEnv = config as Record<string, unknown>;
+    for (const key of ['MSG91_AUTH_KEY', 'MSG91_OTP_TEMPLATE_ID'] as const) {
+      const v = rawEnv[key];
+      if (typeof v !== 'string' || v.trim() === '') {
+        throw new Error(
+          `Invalid environment configuration:\n${key} is required in production (OTP SMS delivery)`,
+        );
+      }
+    }
     const publicUrl = (validated as unknown as Record<string, unknown>).PUBLIC_API_URL;
     if (!publicUrl || typeof publicUrl !== 'string' || !publicUrl.startsWith('https://')) {
       throw new Error('Invalid environment configuration:\nPUBLIC_API_URL must be a valid https:// URL in production');
+    }
+    // SEC-2a: both sign-in libraries SKIP the audience check entirely when the
+    // audience is undefined (google-auth-library only verifies aud "if we have
+    // one"; apple-signin-auth spreads it straight into jsonwebtoken options),
+    // so without these a token minted for ANY other app would be accepted —
+    // a classic account takeover. Required in production, and the service
+    // itself fails closed with 503 when unset (AuthService).
+    const socialEnv = validated as unknown as Record<string, unknown>;
+    for (const key of ['GOOGLE_WEB_CLIENT_ID', 'APPLE_CLIENT_ID'] as const) {
+      if (!socialEnv[key]) {
+        throw new Error(
+          `Invalid environment configuration:\n${key} is required in production (social sign-in audience)`,
+        );
+      }
     }
   }
 

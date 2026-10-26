@@ -11,6 +11,7 @@ import 'dotenv/config';
 import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary } from 'cloudinary';
 import { StorageService } from '../../drivers/storage.service';
+import { assertSafeForScript } from '../../config/db-guard';
 
 // Minimal valid 1x1 JPEG.
 const JPEG = Buffer.from(
@@ -21,6 +22,9 @@ const JPEG = Buffer.from(
 const TEST_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 async function main() {
+  // Guarded like every other script (read-only, but refuses a prod/remote
+  // target so the test asset can never land in the wrong Cloudinary folder).
+  assertSafeForScript({ destructive: false });
   const config = new ConfigService({ ...process.env });
   const storage = new StorageService(config); // throws if creds are missing
 

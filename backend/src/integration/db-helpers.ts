@@ -1,5 +1,6 @@
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { dataSourceOptions } from '../config/typeorm.datasource';
+import { LOCAL_DB_HOSTS } from '../config/db-guard';
 
 /**
  * Shared plumbing for the opt-in integration suite (Task 11).
@@ -9,6 +10,9 @@ import { dataSourceOptions } from '../config/typeorm.datasource';
  *    and can be overridden wholesale with `TEST_DB_*`;
  *  - the database name NEVER falls back to the dev one: `TEST_DB_DATABASE`
  *    defaults to `vazhi_test`, so a misconfigured run cannot touch dev data;
+ *  - pass 4: the resolved target must (a) look like a test database name,
+ *    (b) differ from the dev DB_DATABASE and (c) be local unless
+ *    TEST_DB_ALLOW_REMOTE=1 — checked in testDbOptions BEFORE connecting;
  *  - `TEST_DB_SSL=true` reuses the dev TLS setting, otherwise tests connect
  *    plain (local/docker Postgres has no TLS).
  */
@@ -18,15 +22,52 @@ export const integrationEnabled = process.env.INTEGRATION === '1';
 
 type PostgresOptions = Extract<DataSourceOptions, { type: 'postgres' }>;
 
+export interface TestDbTarget {
+  /** The database the suite would connect to. */
+  database: string;
+  /** The configured dev database (must never be selected). */
+  baseDatabase: string;
+  /** The resolved host. */
+  host: string;
+  /** TEST_DB_ALLOW_REMOTE === '1'. */
+  allowRemote: boolean;
+}
+
+/**
+ * Pure safety rule for the integration target (unit-tested in
+ * db-helpers.spec.ts — no database involved). Returns the refusal message
+ * or null when the target is acceptable.
+ */
+export function testDbTargetProblem(t: TestDbTarget): string | null {
+  if (!/test/i.test(t.database)) {
+    return `Unsafe TEST_DB_DATABASE "${t.database}" — the name must contain "test".`;
+  }
+  if (t.database === t.baseDatabase) {
+    return 'TEST_DB_DATABASE equals DB_DATABASE — refusing to point the integration suite at the dev database.';
+  }
+  if (!t.allowRemote && !LOCAL_DB_HOSTS.has(t.host)) {
+    return `TEST_DB_HOST "${t.host}" is not local — set TEST_DB_ALLOW_REMOTE=1 to allow a remote test database.`;
+  }
+  return null;
+}
+
 export function testDbOptions(): PostgresOptions {
   const base = dataSourceOptions as PostgresOptions;
   const database = process.env.TEST_DB_DATABASE ?? 'vazhi_test';
   if (!/^[A-Za-z0-9_]+$/.test(database)) {
     throw new Error(`Unsafe TEST_DB_DATABASE name: ${JSON.stringify(database)}`);
   }
+  const host = process.env.TEST_DB_HOST ?? base.host ?? 'localhost';
+  const problem = testDbTargetProblem({
+    database,
+    baseDatabase: base.database ?? '',
+    host,
+    allowRemote: process.env.TEST_DB_ALLOW_REMOTE === '1',
+  });
+  if (problem) throw new Error(problem);
   return {
     ...base,
-    host: process.env.TEST_DB_HOST ?? base.host,
+    host,
     port: Number(process.env.TEST_DB_PORT ?? base.port),
     username: process.env.TEST_DB_USERNAME ?? base.username,
     password: process.env.TEST_DB_PASSWORD ?? base.password,

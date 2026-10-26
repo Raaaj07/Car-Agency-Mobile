@@ -18,6 +18,8 @@ export interface DriverLocationEvent {
   rideId: string;
   lat: number;
   lng: number;
+  /** Driver's direction of travel in degrees (0 = north, clockwise). Optional — older servers/drivers omit it. */
+  heading?: number;
   at: string;
 }
 

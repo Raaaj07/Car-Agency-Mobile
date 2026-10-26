@@ -1,10 +1,12 @@
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { FakeRedis } from '../test/fake-redis';
 import { RIDE_TIMERS_KEY, RidesService } from './rides.service';
 import { RideEntity } from './entities/ride.entity';
+import { PaymentEntity } from '../payments/entities/payment.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { DriversService } from '../drivers/drivers.service';
 import { GeoService } from '../drivers/geo.service';
 import { RidesGateway } from './gateway/rides.gateway';
@@ -32,7 +34,7 @@ type QueryRunnerStub = {
   commitTransaction: jest.Mock;
   rollbackTransaction: jest.Mock;
   release: jest.Mock;
-  manager: { findOne: jest.Mock; save: jest.Mock };
+  manager: { findOne: jest.Mock; save: jest.Mock; update: jest.Mock };
 };
 
 describe('RidesService phase-1 fixes', () => {
@@ -45,29 +47,31 @@ describe('RidesService phase-1 fixes', () => {
     update: jest.Mock;
     create: jest.Mock;
     count: jest.Mock;
-    manager: { connection: { createQueryRunner: jest.Mock }; update: jest.Mock };
+    manager: {
+      connection: { createQueryRunner: jest.Mock };
+      update: jest.Mock;
+      findOne: jest.Mock;
+      save: jest.Mock;
+    };
   };
   let drivers: Record<string, jest.Mock>;
   let gateway: Record<string, jest.Mock>;
   let queryRunner: QueryRunnerStub;
+  let promos: Record<string, jest.Mock>;
   // Shared "Redis server" — extra service instances in a test join the same
   // FakeRedis to model multiple backend processes (R-5).
   let fake: FakeRedis;
 
-  const buildService = (): RidesService =>
+  const buildService = (configValues: Record<string, unknown> = {}, routedKm = 5): RidesService =>
     new RidesService(
       rides as unknown as Repository<RideEntity>,
       drivers as unknown as DriversService,
       { removeDriver: jest.fn().mockResolvedValue(undefined), upsertDriverLocation: jest.fn().mockResolvedValue(undefined) } as unknown as GeoService,
       gateway as unknown as RidesGateway,
-      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
-      {
-        discountFor: jest.fn().mockResolvedValue(0),
-        resolveDiscount: jest.fn().mockResolvedValue(0),
-        recordRedemption: jest.fn().mockResolvedValue(undefined),
-      } as unknown as PromosService,
+      { get: jest.fn((key: string) => configValues[key]) } as unknown as ConfigService,
+      promos as unknown as PromosService,
       // R-7: routed distance — tests use a fixed estimate (no HTTP).
-      { routedKm: jest.fn().mockResolvedValue(5) } as unknown as RouteDistanceService,
+      { routedKm: jest.fn().mockResolvedValue(routedKm) } as unknown as RouteDistanceService,
       fake as unknown as Redis,
     );
 
@@ -92,6 +96,18 @@ describe('RidesService phase-1 fixes', () => {
     ...overrides,
   });
 
+  /**
+   * Makes the lock-manager UPDATE behave like a real one: applies the patch
+   * to the ride object, so the post-commit reload and a second locked call
+   * see the new state (pass-4 task-2 tests).
+   */
+  const applyLockUpdates = (ride: Record<string, unknown>) => {
+    queryRunner.manager.update.mockImplementation(async (_entity, _where, patch) => {
+      Object.assign(ride, patch);
+      return { affected: 1 };
+    });
+  };
+
   beforeEach(() => {
     rides = {
       findOne: jest.fn(),
@@ -106,6 +122,9 @@ describe('RidesService phase-1 fixes', () => {
         },
         // markPaymentReceived settles the PaymentEntity rows through this.
         update: jest.fn().mockResolvedValue({ affected: 1 }),
+        // pass-4 task-6: fraud-flag audit rows (dedup lookup + write).
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn().mockResolvedValue({}),
       },
     };
     drivers = {
@@ -130,9 +149,20 @@ describe('RidesService phase-1 fixes', () => {
       manager: {
         findOne: jest.fn(),
         save: jest.fn(async (r) => r),
+        // lock-manager UPDATE: resolves affected without touching any object;
+        // tests that model the locked row call applyLockUpdates(ride).
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       },
     };
     (rides.manager.connection.createQueryRunner as jest.Mock).mockReturnValue(queryRunner);
+
+    promos = {
+      discountFor: jest.fn().mockResolvedValue(0),
+      resolveDiscount: jest.fn().mockResolvedValue(0),
+      recordRedemption: jest.fn().mockResolvedValue(undefined),
+      // SEC-9: the locked booking gate — tests assert through this handle.
+      assertBookable: jest.fn().mockResolvedValue(0),
+    };
 
     fake = new FakeRedis();
     service = buildService();
@@ -157,6 +187,9 @@ describe('RidesService phase-1 fixes', () => {
       expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).not.toBeNull();
 
       // Window elapsed → the 5 s sweep claims the due member and fires it.
+      // Pass-4: the search timeout now runs under the ride row lock.
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      applyLockUpdates(ride);
       expect(await internals.sweepDueTimers(Date.now() + 90_001)).toBe(1);
 
       expect(ride.status).toBe('cancelled');
@@ -179,11 +212,13 @@ describe('RidesService phase-1 fixes', () => {
       await internals.matchNearestDriver(ride as unknown as RideEntity);
       // A driver appeared before the window elapsed (offer made elsewhere).
       ride.driverId = 'drv-1';
+      queryRunner.manager.findOne.mockResolvedValue(ride); // locked read sees the offer
 
       await internals.sweepDueTimers(Date.now() + 90_001);
 
       expect(ride.status).toBe('requested');
       expect(rides.update).not.toHaveBeenCalled();
+      expect(queryRunner.manager.update).not.toHaveBeenCalled(); // locked write refused too
       expect(gateway.emitRideStatus).not.toHaveBeenCalled();
       expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).toBeNull(); // claimed, no-op
     });
@@ -202,7 +237,9 @@ describe('RidesService phase-1 fixes', () => {
 
       expect(cancelled).toBe(1);
       expect(rides.update).toHaveBeenCalledWith(
-        { id: 'r2', status: 'requested' },
+        // Pass-4: the condition now pins the driver too, so a re-offer to a
+        // different driver between find() and update() is never cancelled.
+        { id: 'r2', status: 'requested', driverId: IsNull() },
         expect.objectContaining({
           status: 'cancelled',
           cancelledBy: 'system',
@@ -267,6 +304,383 @@ describe('RidesService phase-1 fixes', () => {
       expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
       expect(queryRunner.manager.save).not.toHaveBeenCalled();
     });
+
+    it('double-tap: cancelling a ride the same rider ALREADY cancelled succeeds (no 400, no second write)', async () => {
+      const ride = requestedRide({ riderId: 'owner', status: 'cancelled', cancelledBy: 'rider' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      rides.findOne.mockResolvedValue(ride);
+
+      const result = await service.cancel('r1', 'owner', 'rider', { reason: 'second tap' });
+
+      expect(result.status).toBe('cancelled');
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+      expect(drivers.setAvailability).not.toHaveBeenCalled(); // nothing freed twice
+    });
+
+    it('a ride the SYSTEM cancelled still answers 400 to a rider cancel', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(
+        requestedRide({ riderId: 'owner', status: 'cancelled', cancelledBy: 'system' }),
+      );
+
+      await expect(
+        service.cancel('r1', 'owner', 'rider', { reason: 'too late to cancel' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('SEC-11: a failed COMMIT keeps the timers armed (Redis cannot roll back)', async () => {
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      await fake.zadd(RIDE_TIMERS_KEY, Date.now() + 90_000, 'search:r1');
+      queryRunner.manager.findOne.mockResolvedValue(requestedRide({ riderId: 'owner' }));
+      queryRunner.commitTransaction.mockRejectedValueOnce(new Error('db down'));
+
+      await expect(
+        service.cancel('r1', 'owner', 'rider', { reason: 'rider changed mind' }),
+      ).rejects.toThrow('db down');
+
+      // The Postgres write rolled back, so the ride is still active — its
+      // timers must survive too (they used to be cleared inside the
+      // transaction, which Redis cannot roll back with it).
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).not.toBeNull();
+      expect(drivers.setAvailability).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('SEC-3: no free rides by cancelling mid-trip', () => {
+    const inProgressRide = (overrides: Record<string, unknown> = {}) =>
+      requestedRide({
+        driverId: 'drv-1',
+        status: 'in_progress',
+        ...overrides,
+      });
+
+    it('a rider cannot cancel a trip that is already in progress (409)', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(inProgressRide({ riderId: 'owner' }));
+      // The ride has a driver: cancel() asks whether the caller ALSO owns it.
+      drivers.findByUserId.mockResolvedValue(null);
+
+      await expect(
+        service.cancel('r1', 'owner', 'rider', { reason: 'arrived, not paying' }),
+      ).rejects.toThrow(ConflictException);
+
+      // Nothing committed: the ride stays in_progress and the driver's
+      // complete() keeps working — the free-ride path is gone.
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+    });
+
+    it('a driver may end an in-progress trip only with a stated reason', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(inProgressRide({ riderId: 'owner' }));
+      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'driver-u' });
+
+      await expect(
+        service.cancel('r1', 'driver-u', 'driver', { reason: '   ' }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+    });
+
+    it('a driver in-progress cancel commits TOGETHER with its review flag', async () => {
+      const ride = inProgressRide({ riderId: 'owner' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'driver-u' });
+      rides.findOne.mockResolvedValue(ride); // response reload
+
+      const result = await service.cancel('r1', 'driver-u', 'driver', {
+        reason: 'engine trouble mid-trip',
+      });
+
+      // The audit row is saved through the SAME transaction as the cancel:
+      // no flag, no commit.
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        AdminAuditLogEntity,
+        expect.objectContaining({
+          action: 'ride_cancel',
+          targetType: 'ride',
+          targetId: 'r1',
+          actorUserId: 'driver-u',
+          reason: 'engine trouble mid-trip',
+          meta: expect.objectContaining({
+            flaggedForReview: true,
+            fromStatus: 'in_progress',
+            cancelledBy: 'driver',
+          }),
+        }),
+      );
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'cancelled', cancelledBy: 'driver' }),
+      );
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      expect(result.status).toBe('cancelled');
+    });
+
+    it('a rider cancel of a NOT-yet-started trip is still allowed', async () => {
+      const ride = inProgressRide({ riderId: 'owner', status: 'driver_en_route' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      rides.findOne.mockResolvedValue(ride); // response reload sees the saved state
+      drivers.findByUserId.mockResolvedValue(null); // caller is not the driver
+
+      const result = await service.cancel('r1', 'owner', 'rider', { reason: 'changed plans' });
+
+      expect(result.status).toBe('cancelled');
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      expect(queryRunner.manager.save).not.toHaveBeenCalledWith(
+        AdminAuditLogEntity,
+        expect.anything(),
+      );
+    });
+  });
+
+  // SEC-4: booking/matching races — the count() pre-check cannot serialize
+  // two concurrent POST /rides (the partial unique index can), and a
+  // lock-free rematch could persist a STALE row over a concurrent cancel.
+  describe('SEC-4: booking/matching races', () => {
+    const bookingDto = {
+      vehicleType: 'auto' as const,
+      pickup: { address: 'Point A', lat: 12.9, lng: 77.6 },
+      dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
+    };
+
+    it('create() losing the race maps the unique violation to a 409 conflict', async () => {
+      rides.count.mockResolvedValue(0); // the pre-check saw zero — then lost
+      drivers.findByUserId.mockResolvedValue(null);
+      rides.save.mockRejectedValueOnce(
+        Object.assign(
+          new Error('duplicate key value violates unique constraint "UQ_rides_active_per_rider"'),
+          { code: '23505', constraint: 'UQ_rides_active_per_rider' },
+        ),
+      );
+
+      const err = await service.create('u1', bookingDto).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException); // 409, not 400
+      expect((err as Error).message).toContain('You already have an active ride');
+      // The loser never reaches the driver search — no second offer storm.
+      expect(drivers.findNearby).not.toHaveBeenCalled();
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+    });
+
+    it('double-tap: the loser of the race gets the SAME ride back, not a 409', async () => {
+      rides.count.mockResolvedValue(0);
+      drivers.findByUserId.mockResolvedValue(null);
+      rides.save.mockRejectedValueOnce(Object.assign(new Error('dup'), { code: '23505' }));
+      // The first tap's ride: same trip, created moments ago.
+      rides.findOne.mockResolvedValue(requestedRide({ createdAt: new Date() }));
+
+      const out = await service.create('u1', bookingDto);
+
+      expect(out).toMatchObject({ id: 'r1', status: 'requested' });
+      expect(out.match).toEqual({ status: 'no_drivers', candidates: 0 });
+      expect(drivers.findNearby).not.toHaveBeenCalled(); // no second offer storm
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+    });
+
+    it('double-tap arriving AFTER the first ride exists also replays it', async () => {
+      rides.count.mockResolvedValue(1);
+      drivers.findByUserId.mockResolvedValue(null);
+      rides.findOne.mockResolvedValue(requestedRide({ createdAt: new Date() }));
+
+      const out = await service.create('u1', bookingDto);
+
+      expect(out).toMatchObject({ id: 'r1' });
+      expect(rides.save).not.toHaveBeenCalled();
+      expect(drivers.findNearby).not.toHaveBeenCalled();
+    });
+
+    it('a DIFFERENT trip while one is active is still a 409', async () => {
+      rides.count.mockResolvedValue(1);
+      drivers.findByUserId.mockResolvedValue(null);
+      rides.findOne.mockResolvedValue(
+        requestedRide({ createdAt: new Date(), dropoff: { address: 'Elsewhere', lat: 14.5, lng: 78.5 } }),
+      );
+
+      await expect(service.create('u1', bookingDto)).rejects.toThrow(ConflictException);
+      expect(rides.save).not.toHaveBeenCalled();
+    });
+
+    it('rematch() re-checks ownership under the row lock', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(requestedRide({ riderId: 'someone-else' }));
+
+      await expect(service.rematch('r1', 'u1')).rejects.toThrow(ForbiddenException);
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+      expect(drivers.findNearby).not.toHaveBeenCalled();
+    });
+
+    it('rematch() refuses a ride a concurrent cancel already killed', async () => {
+      queryRunner.manager.findOne.mockResolvedValue(
+        requestedRide({ status: 'cancelled', cancellationReason: 'rider_changed_mind' }),
+      );
+
+      await expect(service.rematch('r1', 'u1')).rejects.toThrow('cannot be re-matched');
+      // No offer is written for a dead ride and nothing commits.
+      expect(drivers.findNearby).not.toHaveBeenCalled();
+      expect(queryRunner.manager.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+    });
+
+    it('rematch() writes the offer THROUGH the transaction, not around it', async () => {
+      const locked = requestedRide();
+      queryRunner.manager.findOne.mockResolvedValue(locked);
+      drivers.findNearby.mockResolvedValue([{ driverId: 'drv-9', userId: 'du-9', distance: 80 }]);
+      drivers.findById.mockResolvedValue({ id: 'drv-9', userId: 'driver-user' });
+      rides.findOne.mockResolvedValue(locked); // relation load + response reload
+
+      const result = await service.rematch('r1', 'u1');
+
+      expect(result.match).toEqual({ status: 'offered', candidates: 1 });
+      // The offer lands in the SAME transaction as the "still requested"
+      // re-check...
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'r1', driverId: 'drv-9' }),
+      );
+      // ...and nothing writes the ride outside it (an out-of-txn save could
+      // commit a stale row over a concurrent cancel).
+      expect(rides.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      expect(queryRunner.rollbackTransaction).not.toHaveBeenCalled();
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledWith(
+        'driver-user',
+        expect.objectContaining({ rideId: 'r1' }),
+      );
+    });
+
+    it('rematch() cancelling a thrice-declined ride also commits in-txn', async () => {
+      const locked = requestedRide({ declinedDriverIds: ['d1', 'd2', 'd3'] });
+      queryRunner.manager.findOne.mockResolvedValue(locked);
+      rides.findOne.mockResolvedValue(locked); // response reload after commit
+      drivers.findNearby.mockResolvedValue([]);
+
+      const result = await service.rematch('r1', 'u1');
+
+      expect(result.match).toEqual({ status: 'no_drivers', candidates: 0 });
+      expect(locked.status).toBe('cancelled');
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'cancelled', cancellationReason: 'no_drivers_available' }),
+      );
+      expect(rides.save).not.toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+    });
+  });
+
+  // SEC-9: the review check-write-apply must be atomic (two concurrent
+  // submits used to both read rating == null and double-apply the driver
+  // rating), and the promo cap must be enforced under the promo row lock
+  // (concurrent bookings of one code used to all pass on a stale counter).
+  describe('SEC-9: atomic review + locked promo cap', () => {
+    const bookingDto = {
+      vehicleType: 'auto' as const,
+      pickup: { address: 'Point A', lat: 12.9, lng: 77.6 },
+      dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
+    };
+
+    describe('submitReview', () => {
+      const completedRide = (overrides: Record<string, unknown> = {}) =>
+        requestedRide({ id: 'r9', status: 'completed', driverId: 'drv-1', ...overrides });
+
+      it('writes the review and the driver aggregate in one locked transaction', async () => {
+        queryRunner.manager.findOne.mockResolvedValue(completedRide());
+        // Post-commit reload for the response view.
+        rides.findOne.mockResolvedValue(
+          completedRide({ rating: 5, tipAmount: 10, compliments: ['safe'] }),
+        );
+
+        const view = await service.submitReview('r9', 'u1', {
+          rating: 5,
+          compliments: ['safe'],
+          tipAmount: 10,
+        });
+
+        expect(queryRunner.manager.save).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'r9', rating: 5, tipAmount: 10 }),
+        );
+        // The aggregate joins the SAME transaction — it moves only if the
+        // review commits.
+        expect(drivers.applyRating).toHaveBeenCalledWith('drv-1', 5, queryRunner.manager);
+        expect(queryRunner.commitTransaction).toHaveBeenCalled();
+        expect(view).toMatchObject({ id: 'r9', status: 'completed', rating: 5 });
+      });
+
+      it('rejects the concurrent second submit with 409 under the lock', async () => {
+        // The lock makes the loser re-read the committed row: rating is set.
+        queryRunner.manager.findOne.mockResolvedValue(completedRide({ rating: 4 }));
+
+        await expect(
+          service.submitReview('r9', 'u1', { rating: 5 }),
+        ).rejects.toThrow(ConflictException);
+
+        expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+        expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+        expect(queryRunner.manager.save).not.toHaveBeenCalled();
+        expect(drivers.applyRating).not.toHaveBeenCalled();
+        expect(rides.findOne).not.toHaveBeenCalled(); // no response reload on throw
+      });
+
+      it('enforces ownership inside the lock', async () => {
+        queryRunner.manager.findOne.mockResolvedValue(
+          completedRide({ riderId: 'someone-else' }),
+        );
+
+        await expect(service.submitReview('r9', 'u1', { rating: 5 })).rejects.toThrow(
+          ForbiddenException,
+        );
+        expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+        expect(queryRunner.manager.save).not.toHaveBeenCalled();
+        expect(drivers.applyRating).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('promo booking', () => {
+      it('runs the cap gate and the INSERT in one transaction with the normalised code', async () => {
+        rides.count.mockResolvedValue(0);
+        drivers.findByUserId.mockResolvedValue(null);
+        promos.assertBookable.mockResolvedValue(20);
+        rides.findOne.mockResolvedValue(requestedRide()); // post-commit reload
+
+        const out = await service.create('u1', { ...bookingDto, promoCode: ' vazhi20 ' });
+
+        // Trim + upper handed to the gate together with the txn manager...
+        expect(promos.assertBookable).toHaveBeenCalledWith(
+          queryRunner.manager,
+          'VAZHI20',
+          'u1',
+        );
+        // ...and the ride INSERT joins that transaction with the discount the
+        // gate approved.
+        expect(queryRunner.manager.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            promoCode: 'VAZHI20',
+            fareBreakdown: expect.objectContaining({ discount: 20 }),
+          }),
+        );
+        expect(queryRunner.commitTransaction).toHaveBeenCalled();
+        // Nothing books through the old lock-free advisory path.
+        expect(promos.resolveDiscount).not.toHaveBeenCalled();
+        expect(rides.save).not.toHaveBeenCalled();
+        expect(out.match).toEqual({ status: 'no_drivers', candidates: 0 });
+      });
+
+      it('a full cap rejects the booking before any row is written', async () => {
+        rides.count.mockResolvedValue(0);
+        drivers.findByUserId.mockResolvedValue(null);
+        promos.assertBookable.mockRejectedValue(
+          new BadRequestException('Promo code "VAZHI20" has reached its redemption limit.'),
+        );
+
+        await expect(
+          service.create('u1', { ...bookingDto, promoCode: 'VAZHI20' }),
+        ).rejects.toThrow('has reached its redemption limit');
+
+        expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+        expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+        expect(queryRunner.manager.save).not.toHaveBeenCalled();
+        expect(drivers.findNearby).not.toHaveBeenCalled(); // no driver search storm
+      });
+    });
   });
 
   describe('P-1: driver payment confirmation', () => {
@@ -280,43 +694,92 @@ describe('RidesService phase-1 fixes', () => {
         ...overrides,
       });
 
+    // Pass-4 (task 2): the confirmation runs under the ride row lock — the
+    // locked read is queryRunner.manager.findOne, the write a conditional
+    // manager.update, and the audit row joins the same transaction.
+    const lockCompletedRide = (ride: Record<string, unknown>) => {
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      applyLockUpdates(ride);
+      rides.findOne.mockResolvedValue(ride); // post-commit reload for the view
+      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1', user: { name: 'Driver' } });
+    };
+
     it('settles a pending ride and records paymentMarkedBy=driver', async () => {
       const ride = completedRide();
-      rides.findOne.mockResolvedValue(ride);
-      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1', user: { name: 'Driver' } });
+      lockCompletedRide(ride);
 
       await service.markPaymentReceived('r5', 'du1');
 
       expect(ride.paymentStatus).toBe('paid');
       expect(ride.paymentMarkedBy).toBe('driver');
-      expect(rides.save).toHaveBeenCalledWith(ride);
+      // Conditional write on the validated row — never a whole-entity save.
+      expect(rides.save).not.toHaveBeenCalled();
+      expect(queryRunner.manager.update).toHaveBeenCalledWith(
+        RideEntity,
+        { id: 'r5', status: 'completed', paymentStatus: 'pending' },
+        { paymentStatus: 'paid', paymentMarkedBy: 'driver' },
+      );
+      // The audit row is written in the SAME transaction (admin console
+      // must see every driver self-confirmation).
+      expect(queryRunner.manager.save).toHaveBeenCalledWith(
+        AdminAuditLogEntity,
+        expect.objectContaining({
+          action: 'payment_driver_confirm',
+          targetType: 'ride',
+          targetId: 'r5',
+          meta: { rideId: 'r5', amount: 240 },
+        }),
+      );
+      // Payment rows stay consistent with the ride (P-1 regression).
+      expect(rides.manager.update).toHaveBeenCalledWith(
+        PaymentEntity,
+        { rideId: 'r5', status: expect.anything() },
+        { status: 'paid' },
+      );
     });
 
     it('is idempotent when already paid', async () => {
       const ride = completedRide({ paymentStatus: 'paid', paymentMarkedBy: 'driver' });
-      rides.findOne.mockResolvedValue(ride);
-      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1', user: { name: 'Driver' } });
+      lockCompletedRide(ride);
 
       await service.markPaymentReceived('r5', 'du1');
 
-      expect(rides.save).not.toHaveBeenCalled();
+      expect(queryRunner.manager.update).not.toHaveBeenCalled(); // no re-transition
+      expect(queryRunner.manager.save).not.toHaveBeenCalled(); // no second audit row
       expect(ride.paymentMarkedBy).toBe('driver');
+    });
+
+    it('two rapid confirmations produce exactly ONE audit row', async () => {
+      const ride = completedRide();
+      lockCompletedRide(ride);
+
+      // The pessimistic row lock serialises the two calls in production;
+      // sequential calls through the mocked lock model that ordering.
+      await service.markPaymentReceived('r5', 'du1');
+      await service.markPaymentReceived('r5', 'du1');
+
+      expect(ride.paymentStatus).toBe('paid');
+      expect(queryRunner.manager.update).toHaveBeenCalledTimes(1); // one transition
+      expect(queryRunner.manager.save).toHaveBeenCalledTimes(1); // one audit row
     });
 
     it('refuses to settle a disputed payment', async () => {
       const ride = completedRide({ paymentStatus: 'disputed' });
-      rides.findOne.mockResolvedValue(ride);
-      drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1', user: { name: 'Driver' } });
+      lockCompletedRide(ride);
 
       await expect(service.markPaymentReceived('r5', 'du1')).rejects.toThrow(ConflictException);
       expect(ride.paymentStatus).toBe('disputed');
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
     });
 
     it("refuses a driver who does not own the ride", async () => {
-      rides.findOne.mockResolvedValue(completedRide());
+      const ride = completedRide();
+      lockCompletedRide(ride);
       drivers.findByUserId.mockResolvedValue({ id: 'drv-other', userId: 'du2', user: { name: 'Other' } });
 
       await expect(service.markPaymentReceived('r5', 'du2')).rejects.toThrow(ForbiddenException);
+      expect(queryRunner.manager.update).not.toHaveBeenCalled();
     });
   });
 
@@ -326,6 +789,8 @@ describe('RidesService phase-1 fixes', () => {
       const ride = requestedRide({ driverId: 'drv-1' });
       rides.findOne.mockResolvedValue(ride);
       drivers.findNearby.mockResolvedValue([]); // re-match after release finds nobody
+      queryRunner.manager.findOne.mockResolvedValue(ride); // locked read (pass-4)
+      applyLockUpdates(ride);
 
       await internals.scheduleOfferTimeout('r1', 15_000);
       expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
@@ -346,6 +811,8 @@ describe('RidesService phase-1 fixes', () => {
       const ride = requestedRide({ driverId: 'drv-1' });
       rides.findOne.mockResolvedValue(ride);
       drivers.findNearby.mockResolvedValue([]);
+      queryRunner.manager.findOne.mockResolvedValue(ride); // locked read (pass-4)
+      applyLockUpdates(ride);
 
       await internals.scheduleOfferTimeout('r1', 15_000);
       // Second process: same mocks, SAME FakeRedis = a shared Redis server.
@@ -385,6 +852,8 @@ describe('RidesService phase-1 fixes', () => {
       const ride = requestedRide({ driverId: 'drv-1' });
       rides.findOne.mockResolvedValue(ride);
       drivers.findNearby.mockResolvedValue([]);
+      queryRunner.manager.findOne.mockResolvedValue(ride); // locked read (pass-4)
+      applyLockUpdates(ride);
       expect(await (s2 as unknown as RidesInternals).sweepDueTimers(Date.now() + 8_000)).toBe(1);
       expect(drivers.setAvailability).toHaveBeenCalledWith('drv-1', true);
 
@@ -400,6 +869,275 @@ describe('RidesService phase-1 fixes', () => {
       expect(await fake.zcard(RIDE_TIMERS_KEY)).toBe(0);
       // A sweep afterwards finds nothing to fire.
       expect(await internals.sweepDueTimers(Date.now() + 120_000)).toBe(0);
+    });
+  });
+
+  // Pass-4 (task 2): timer handlers re-validate the ride under the row lock,
+  // so a timer firing after the state already moved is a strict no-op.
+  describe('pass-4 task-2: timer/mutation races', () => {
+    it('offer timer firing after the driver already accepted is a no-op', async () => {
+      // The driver accepted between arming and firing: by claim time the
+      // status is no longer `requested`.
+      const accepted = requestedRide({ driverId: 'drv-1', status: 'matched' });
+      queryRunner.manager.findOne.mockResolvedValue(accepted);
+
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      expect(await internals.sweepDueTimers(Date.now() + 16_000)).toBe(1); // claimed
+
+      expect(queryRunner.manager.update).not.toHaveBeenCalled(); // no stale write
+      expect(drivers.setAvailability).not.toHaveBeenCalled(); // driver stays reserved
+      expect(gateway.emitRideStatus).not.toHaveBeenCalled();
+      expect(accepted.status).toBe('matched'); // ride untouched
+    });
+
+    it('search timer on a cancelled ride is a no-op', async () => {
+      const cancelled = requestedRide({ status: 'cancelled', cancelledBy: 'rider' });
+      queryRunner.manager.findOne.mockResolvedValue(cancelled);
+      // The search window came due after the rider had cancelled the ride.
+      await fake.zadd(RIDE_TIMERS_KEY, Date.now(), 'search:r1');
+
+      expect(await internals.sweepDueTimers(Date.now() + 1)).toBe(1); // claimed
+
+      expect(queryRunner.manager.update).not.toHaveBeenCalled();
+      expect(gateway.emitRideStatus).not.toHaveBeenCalled();
+      expect(cancelled.status).toBe('cancelled');
+    });
+
+    it('a conditional write that matched no row releases nothing', async () => {
+      const ride = requestedRide({ driverId: 'drv-1' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      // Belt-and-braces: even under the lock the write is conditional on the
+      // exact status+driver; affected=0 means "someone beat us to it".
+      queryRunner.manager.update.mockResolvedValueOnce({ affected: 0 });
+
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      expect(await internals.sweepDueTimers(Date.now() + 16_000)).toBe(1); // claimed
+
+      expect(drivers.setAvailability).not.toHaveBeenCalled(); // nothing committed
+      expect(gateway.emitRideStatus).not.toHaveBeenCalled();
+    });
+  });
+
+  // Pass-4 (task 6): hard trip limits (block absurd input) + soft fraud
+  // flags (never block — one `ride_flag` audit row per target+reason).
+  describe('pass-4 task-6: trip fraud limits', () => {
+    const booking = (overrides: Record<string, unknown> = {}) => ({
+      vehicleType: 'auto' as const,
+      pickup: { address: 'Point A', lat: 12.9, lng: 77.6 },
+      dropoff: { address: 'Point B', lat: 13.0, lng: 77.5 },
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      drivers.findByUserId.mockResolvedValue(null);
+    });
+
+    describe('hard limits on create()', () => {
+      it('refuses pickup == dropoff (< 100 m apart)', async () => {
+        await expect(
+          service.create('u1', booking({ dropoff: { address: 'Here', lat: 12.9, lng: 77.6 } })),
+        ).rejects.toThrow('must be at least 100 m apart');
+        expect(rides.save).not.toHaveBeenCalled();
+      });
+
+      it('refuses a routed distance over MAX_TRIP_KM with a clear message', async () => {
+        service = buildService({}, 200); // routed 200 km > default 150
+
+        await expect(service.create('u1', booking())).rejects.toThrow('exceeds the 150 km limit');
+        expect(rides.save).not.toHaveBeenCalled();
+      });
+
+      it('refuses a pickup outside SERVICE_AREA_BBOX', async () => {
+        service = buildService({ SERVICE_AREA_BBOX: '12.0,76.5,13.0,77.4' }); // pickup lng too far east
+
+        await expect(service.create('u1', booking())).rejects.toThrow(
+          'Pickup is outside the service area',
+        );
+      });
+
+      it('refuses a dropoff outside SERVICE_AREA_BBOX', async () => {
+        service = buildService({ SERVICE_AREA_BBOX: '12.8,77.4,12.95,78.0' }); // dropoff lat too far north
+
+        await expect(service.create('u1', booking())).rejects.toThrow(
+          'Dropoff is outside the service area',
+        );
+      });
+    });
+
+    describe('soft flag: pickup_far (verifyPickupOtp)', () => {
+      const armTripStart = () => {
+        const ride = requestedRide({
+          status: 'driver_en_route',
+          driverId: 'drv-1',
+          pickupOtp: '1234',
+        });
+        queryRunner.manager.findOne.mockResolvedValue(ride);
+        rides.findOne.mockResolvedValue(ride);
+        drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1' });
+        return ride;
+      };
+
+      it('flags a driver > 1 km from pickup when the trip starts', async () => {
+        armTripStart();
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          location: { coordinates: [77.6, 12.911] }, // ~1.2 km north of pickup
+          locationUpdatedAt: new Date(),
+        });
+
+        await service.verifyPickupOtp('r1', 'du1', { otp: '1234' });
+
+        expect(rides.manager.save).toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({
+            action: 'ride_flag',
+            targetType: 'ride',
+            targetId: 'r1',
+            reason: 'pickup_far',
+          }),
+        );
+      });
+
+      it('does NOT flag a driver standing at the pickup', async () => {
+        armTripStart();
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          location: { coordinates: [77.6, 12.9] },
+          locationUpdatedAt: new Date(),
+        });
+
+        await service.verifyPickupOtp('r1', 'du1', { otp: '1234' });
+
+        expect(rides.manager.save).not.toHaveBeenCalled();
+      });
+
+      it('does NOT flag on a stale location (> 5 min old)', async () => {
+        armTripStart();
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          location: { coordinates: [77.6, 12.911] },
+          locationUpdatedAt: new Date(Date.now() - 6 * 60_000),
+        });
+
+        await service.verifyPickupOtp('r1', 'du1', { otp: '1234' });
+
+        expect(rides.manager.save).not.toHaveBeenCalled();
+      });
+
+      it('writes the flag only once per ride+reason (dedup)', async () => {
+        armTripStart();
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          location: { coordinates: [77.6, 12.911] },
+          locationUpdatedAt: new Date(),
+        });
+        rides.manager.findOne.mockResolvedValue({ id: 'audit-1' }); // flag already exists
+
+        await service.verifyPickupOtp('r1', 'du1', { otp: '1234' });
+
+        expect(rides.manager.save).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('soft flags on complete()', () => {
+      const armComplete = (driverAt: [number, number]) => {
+        const ride = requestedRide({
+          status: 'in_progress',
+          driverId: 'drv-1',
+          distanceKm: '5',
+        });
+        queryRunner.manager.findOne.mockResolvedValue(ride);
+        rides.findOne.mockResolvedValue(ride);
+        drivers.findByUserId.mockResolvedValue({ id: 'drv-1', userId: 'du1' });
+        drivers.findById.mockResolvedValue({
+          id: 'drv-1',
+          userId: 'du1',
+          vehicleType: 'auto',
+          location: { coordinates: driverAt }, // [lng, lat]
+          locationUpdatedAt: new Date(),
+        });
+        return ride;
+      };
+
+      it('flags dropoff_far when the driver is > 1 km from the dropoff', async () => {
+        armComplete([77.6, 12.9]); // ~15 km from dropoff (13.0, 77.5)
+
+        await service.complete('r1', 'du1', {});
+
+        expect(rides.manager.save).toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({
+            action: 'ride_flag',
+            targetType: 'ride',
+            targetId: 'r1',
+            reason: 'dropoff_far',
+          }),
+        );
+        // No distance claim given → no inflated flag.
+        expect(rides.manager.save).not.toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({ reason: 'distance_inflated' }),
+        );
+      });
+
+      it('flags distance_inflated when the claim is > 1.15x the routed distance', async () => {
+        armComplete([77.5, 13.0]); // at the dropoff — no dropoff_far
+
+        await service.complete('r1', 'du1', { actualDistanceKm: 10 });
+
+        expect(rides.manager.save).toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({
+            action: 'ride_flag',
+            targetType: 'ride',
+            targetId: 'r1',
+            reason: 'distance_inflated',
+          }),
+        );
+        expect(rides.manager.save).not.toHaveBeenCalledWith(
+          AdminAuditLogEntity,
+          expect.objectContaining({ reason: 'dropoff_far' }),
+        );
+      });
+
+      it('does NOT flag a normal completion (at dropoff, honest distance)', async () => {
+        armComplete([77.5, 13.0]);
+
+        await service.complete('r1', 'du1', { actualDistanceKm: 5.2 });
+
+        expect(rides.manager.save).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('Idempotency-Key support (Task 11)', () => {
+      it('returns cached response when the same idempotency key is presented within 60s', async () => {
+        const cachedPayload = { id: 'ride-cached-1', status: 'requested', fareBreakdown: { total: 100 } };
+        // Seed Redis with the idempotency key
+        await (service as any).redis.set(
+          'idempotency:rides:rider-1:key-123',
+          JSON.stringify(cachedPayload),
+          'EX',
+          60,
+        );
+
+        const result = await service.create(
+          'rider-1',
+          {
+            vehicleType: 'auto',
+            pickup: { address: 'A', lat: 11.66, lng: 78.15 },
+            dropoff: { address: 'B', lat: 11.67, lng: 78.16 },
+          },
+          'key-123',
+        );
+
+        expect(result).toEqual(cachedPayload);
+        // Did not create a new ride
+        expect(rides.create).not.toHaveBeenCalled();
+      });
     });
   });
 });

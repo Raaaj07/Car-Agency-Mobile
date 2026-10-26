@@ -1,4 +1,4 @@
-import { IsBoolean, IsDateString, IsInt, IsOptional, IsString, Length, Min } from 'class-validator';
+import { IsBoolean, IsDateString, IsInt, IsOptional, IsString, Length, Max, Min } from 'class-validator';
 
 /**
  * Admin create/update body for a promo (POST/PATCH /admin/promos).
@@ -11,6 +11,9 @@ export class PromoAdminDto {
 
   @IsInt()
   @Min(0)
+  // Upper bound: an extra zero typed in the admin form must be a 400, not a
+  // promo that makes every ride free (the discount is subtracted from the fare).
+  @Max(5000)
   discountAmount!: number;
 
   // Copy fields accept null to clear (falls back to the composed default).
@@ -50,5 +53,6 @@ export class PromoAdminDto {
   @IsOptional()
   @IsInt()
   @Min(1)
+  @Max(1_000_000)
   maxRedemptions?: number | null;
 }

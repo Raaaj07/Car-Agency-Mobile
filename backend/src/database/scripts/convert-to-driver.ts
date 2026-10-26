@@ -20,23 +20,32 @@
 import 'reflect-metadata';
 import { DataSource, ILike } from 'typeorm';
 import { dataSourceOptions } from '../../config/typeorm.datasource';
+import { assertSafeForScript } from '../../config/db-guard';
 import { UserEntity } from '../../auth/entities/user.entity';
 import { DriverEntity, VehicleType } from '../../drivers/entities/driver.entity';
 
 type Args = { phone: string; apply: boolean; pending: boolean };
 
-function parseArgs(): Args {
+function parseArgs(): Args | null {
   const rest = process.argv.slice(2);
   const phone = rest.find((a) => !a.startsWith('--'));
+  // No default phone: the target account must be stated explicitly.
+  if (!phone) return null;
   return {
-    phone: phone ?? '6383462213',
+    phone,
     apply: rest.includes('apply'),
     pending: rest.includes('--pending'),
   };
 }
 
 async function main(): Promise<void> {
-  const { phone, apply, pending } = parseArgs();
+  assertSafeForScript({ destructive: true });
+  const parsed = parseArgs();
+  if (!parsed) {
+    console.error('Usage: convert-to-driver.ts <10-digit-phone> [apply] [--pending]');
+    process.exit(1);
+  }
+  const { phone, apply, pending } = parsed;
 
   const ds = new DataSource(dataSourceOptions);
   await ds.initialize();

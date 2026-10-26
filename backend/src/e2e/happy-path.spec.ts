@@ -46,7 +46,7 @@ type QueryRunnerStub = {
   commitTransaction: jest.Mock;
   rollbackTransaction: jest.Mock;
   release: jest.Mock;
-  manager: { findOne: jest.Mock; save: jest.Mock; update: jest.Mock };
+  manager: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock; update: jest.Mock };
 };
 
 const ACTIVE_RIDE_STATUSES = ['requested', 'matched', 'driver_en_route', 'in_progress'];
@@ -76,7 +76,12 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
     create: jest.Mock;
     save: jest.Mock;
     update: jest.Mock;
-    manager: { connection: { createQueryRunner: jest.Mock }; update: jest.Mock };
+    manager: {
+      connection: { createQueryRunner: jest.Mock };
+      update: jest.Mock;
+      findOne: jest.Mock;
+      save: jest.Mock;
+    };
   };
   let paymentsRepo: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock };
   let geo: Record<string, jest.Mock>;
@@ -189,6 +194,10 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       manager: {
         connection: { createQueryRunner: jest.fn() },
         update: jest.fn(async () => ({ affected: 1 })),
+        // pass-4 task-6: fraud-flag audit rows (dedup lookup + write) — the
+        // e2e trip legitimately trips dropoff_far with the fake coordinates.
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn().mockResolvedValue({}),
       },
     };
 
@@ -205,10 +214,22 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       rollbackTransaction: jest.fn().mockResolvedValue(undefined),
       release: jest.fn().mockResolvedValue(undefined),
       manager: {
-        findOne: jest.fn(async () => rideRow),
-        save: jest.fn(async (r: RideRow) => {
-          rideRow = r;
-          return r;
+        // Pass-4 (task 5): the payments ride-lock also reads PaymentEntity
+        // rows through this manager — route them to paymentsRepo so the
+        // locked createOrder sees the real payment rows (default: none).
+        findOne: jest.fn(async (entity: unknown, ...rest: unknown[]) =>
+          entity === PaymentEntity ? paymentsRepo.findOne(...rest) : rideRow,
+        ),
+        create: jest.fn((_entity: unknown, data: Record<string, unknown>) => ({ ...data })),
+        save: jest.fn(async (a: RideRow, b?: Record<string, unknown>) => {
+          // save(ride) — single-arg form (accept/start) mutates the shared row;
+          // save(EntityClass, dto) — e.g. the in-txn audit row (pass-4) does not.
+          if (b) return { ...a, ...b };
+          // A payment row (locked createOrder, pass-4) must never be assigned
+          // to rideRow — same class of bug as the audit-save fake.
+          if ('providerOrderId' in a) return paymentsRepo.save(a as unknown as PaymentEntity);
+          rideRow = a;
+          return a;
         }),
         // accept()/start() write with a targeted UPDATE under the row lock
         // (PERF) instead of save(); mirror it onto the shared row.
@@ -288,6 +309,7 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       paymentsRepo as unknown as Repository<PaymentEntity>,
       ridesRepo as unknown as Repository<RideEntity>,
       provider as unknown as PaymentProvider,
+      config,
     );
     internals = ridesService as unknown as RidesInternals;
 

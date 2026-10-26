@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { PlaceConfigItem } from './places.config';
+import { BoundedMap } from '../common/bounded-map';
 
 export interface ResolvedPlacePhoto {
   googlePlaceId: string;
@@ -25,6 +25,8 @@ export interface NearbyPlaceHit {
   rating: number | null;
   /** Number of Google ratings behind `rating`. */
   ratingCount: number | null;
+  /** Google place types (e.g. bus_station, train_station, university). */
+  types?: string[];
 }
 
 interface MetaCacheEntry {
@@ -38,9 +40,8 @@ interface PhotoCacheEntry {
   contentType: string;
 }
 
-export type NearbyRank = 'distance' | 'popularity';
+export type NearbyRank = 'popularity' | 'big';
 
-const SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 const NEARBY_URL = 'https://places.googleapis.com/v1/places:searchNearby';
 const FETCH_TIMEOUT_MS = 8000;
 // Metadata: 24 h positive / 10 min negative. Photo bytes: 1 h.
@@ -50,42 +51,35 @@ const META_TTL_NEGATIVE_MS = 10 * 60 * 1000;
 const PHOTO_TTL_MS = 60 * 60 * 1000;
 const NEARBY_TTL_MS = 60 * 60 * 1000;
 const NEARBY_EMPTY_TTL_MS = 10 * 60 * 1000;
+// A FAILED call (bad key, quota, network blip) is remembered only briefly — a
+// genuinely empty area is cached for 10 min, but an outage must not blank the
+// home screen for that long after it is fixed.
+const NEARBY_ERROR_TTL_MS = 60 * 1000;
+// Hard caps so keys influenced by clients (coordinates, place ids) cannot grow
+// the heap without limit. Photo entries hold image bytes (~100-200 KB each).
+const META_CACHE_MAX = 2000;
+const PHOTO_CACHE_MAX = 200;
+const NEARBY_CACHE_MAX = 500;
 
 /** Places API (New) searchNearby accepts a radius of 0-50 000 m. */
 export const MAX_SEARCH_RADIUS_M = 50_000;
 const MIN_SEARCH_RADIUS_M = 500;
-/** Default radius of the distance-ranked ("Near You") search. */
+/** Fallback radius when a caller passes a non-finite radius. */
 export const DEFAULT_NEAR_RADIUS_M = 5_000;
 /** searchNearby returns at most 20 places per call. */
 const MAX_RESULTS = 20;
 
-// "Near You": everyday places people actually travel to — transit, campuses,
-// hospitals, food, worship, malls, plus the sights.
-//
-// IMPORTANT: every value must be a Places API (New) "Table A" type. Table B
+// IMPORTANT (applies to every includedTypes list below): every value must be a Places API (New) "Table A" type. Table B
 // types (e.g. `place_of_worship`, `establishment`, `food`, `health`) can only
 // APPEAR in responses — sending one in `includedTypes` makes Google reject the
 // WHOLE request with HTTP 400, so both home-screen lists came back empty.
 // Places of worship are therefore requested by their Table A types.
-export const NEAR_INCLUDED_TYPES = [
-  'tourist_attraction',
-  'museum',
-  'park',
-  'zoo',
-  'amusement_park',
-  'stadium',
-  'shopping_mall',
-  'university',
-  'hospital',
-  'transit_station',
-  'bus_station',
-  'train_station',
-  'hindu_temple',
-  'church',
-  'mosque',
-  'restaurant',
-  'school',
-];
+
+// "Big places" (home screen, right under recents): the transport hubs and
+// campuses riders actually travel to — bus stands, railway stations, colleges.
+// All Table A types.
+export const BIG_PLACE_TYPES = ['bus_station', 'train_station', 'university'] as const;
+export const BIG_INCLUDED_TYPES: string[] = [...BIG_PLACE_TYPES];
 
 // "Popular": destination-worthy places only. Hospitals, schools and bus
 // stops are not "popular places" no matter how many people use them.
@@ -105,7 +99,7 @@ export const POPULAR_INCLUDED_TYPES = [
 
 const NEAR_FIELD_MASK =
   'places.id,places.displayName,places.formattedAddress,places.location,' +
-  'places.photos.name,places.photos.authorAttributions';
+  'places.photos.name,places.photos.authorAttributions,places.types';
 // Rating fields are only paid for on the popularity search.
 const POPULAR_FIELD_MASK = `${NEAR_FIELD_MASK},places.rating,places.userRatingCount`;
 
@@ -134,6 +128,37 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * A rejected/expired/disabled key fails every call the same way. Say so once
+ * (loudly) instead of one easy-to-miss warning per place.
+ */
+let keyProblemLoggedAt = 0;
+const KEY_PROBLEM_REPEAT_MS = 10 * 60 * 1000;
+function looksLikeKeyProblem(reason: string): boolean {
+  return /api key (expired|not valid)|API_KEY_INVALID|PERMISSION_DENIED|REQUEST_DENIED|billing/i.test(reason);
+}
+
+/**
+ * What to tell the owner when Google rejects the key. A key restricted to
+ * "Android apps" / "iOS apps" / "Websites" is refused for every server call
+ * ("Requests from this Android client application <empty> are blocked") - a
+ * different fix from an expired key.
+ */
+export function keyProblemHint(reason: string): string {
+  if (/client application|referer|referrer|IP address.*not allowed|blocked/i.test(reason)) {
+    return (
+      'GOOGLE_PLACES_API_KEY is RESTRICTED in a way that blocks server calls (Google said: "' + reason + '"). ' +
+      'A backend key must have Application restrictions = None (or IP addresses = this server), ' +
+      'and API restrictions = Places API (New). Do not reuse the Android/iOS app key. ' +
+      'Fix in Google Cloud Console > APIs & Services > Credentials, then restart the backend.'
+    );
+  }
+  return (
+    'GOOGLE_PLACES_API_KEY is rejected by Google (expired / invalid / billing off / Places API (New) not enabled). ' +
+    'Check Google Cloud Console > APIs & Services > Credentials, update backend/.env and restart.'
+  );
 }
 
 /** First ~200 chars of Google's error body — it names the real cause (key blocked, billing, API disabled). */
@@ -166,13 +191,6 @@ function photoOfPlace(place: unknown): { name: string; attribution: string | nul
   return { name: photo.name, attribution };
 }
 
-function firstPhotoOf(payload: unknown): { name: string; attribution: string | null } | null {
-  if (typeof payload !== 'object' || payload === null) return null;
-  const places = (payload as { places?: unknown }).places;
-  if (!Array.isArray(places) || places.length === 0) return null;
-  return photoOfPlace(places[0]);
-}
-
 /** Parse one `places[]` entry of a searchNearby response. Null when unusable. */
 function parseHit(p: Record<string, unknown>): NearbyPlaceHit | null {
   const googlePlaceId = typeof p.id === 'string' ? p.id : '';
@@ -193,19 +211,134 @@ function parseHit(p: Record<string, unknown>): NearbyPlaceHit | null {
     photoAttribution: photo?.attribution ?? null,
     rating: typeof p.rating === 'number' ? p.rating : null,
     ratingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : null,
+    types: Array.isArray(p.types) ? (p.types as unknown[]).filter((t): t is string => typeof t === 'string') : [],
   };
 }
 
+export interface PlacesDiagnosticsResult {
+  keyConfigured: boolean;
+  keyValid: boolean;
+  keyRestrictionsProblem: boolean;
+  billingError: boolean;
+  photosReturned: boolean;
+  details: string;
+}
+
 @Injectable()
-export class GooglePlacesService {
+export class GooglePlacesService implements OnModuleInit {
   private readonly logger = new Logger(GooglePlacesService.name);
-  private readonly metaCache = new Map<string, MetaCacheEntry>();
-  private readonly photoCache = new Map<string, PhotoCacheEntry>();
-  private readonly nearbyCache = new Map<string, { at: number; value: NearbyPlaceHit[] }>();
+  private readonly metaCache = new BoundedMap<string, MetaCacheEntry>(META_CACHE_MAX);
+  private readonly photoCache = new BoundedMap<string, PhotoCacheEntry>(PHOTO_CACHE_MAX);
+  private readonly nearbyCache = new BoundedMap<
+    string,
+    { at: number; value: NearbyPlaceHit[]; errored?: boolean }
+  >(NEARBY_CACHE_MAX);
   private readonly knownHits = new Map<string, NearbyPlaceHit>();
   private missingKeyWarned = false;
+  private sampleLogs = 0;
+  private detailsNoPhotoLogs = 0;
 
   constructor(private readonly config: ConfigService) {}
+
+  /** Task 19: Run startup diagnostics and log clear report on key status & photos. */
+  onModuleInit(): void {
+    if (this.apiKey) {
+      this.logger.log('GOOGLE_PLACES_API_KEY is set — running startup diagnostics...');
+      this.runDiagnostics()
+        .then((diag) => {
+          if (diag.keyValid && diag.photosReturned) {
+            this.logger.log(`[GooglePlaces] Diagnostics PASS: ${diag.details}`);
+          } else {
+            this.logger.warn(`[GooglePlaces] Diagnostics WARNING: ${diag.details}`);
+          }
+        })
+        .catch((err) => {
+          this.logger.warn(`[GooglePlaces] Diagnostics failed: ${(err as Error).message}`);
+        });
+    } else {
+      this.logger.warn('Home-screen places will use Wikipedia photos only (no Google key).');
+    }
+  }
+
+  /** Task 19: Diagnostics probe for key restrictions, photo availability, and billing errors. */
+  async runDiagnostics(): Promise<PlacesDiagnosticsResult> {
+    const key = this.config.get<string>('GOOGLE_PLACES_API_KEY');
+    if (!key) {
+      return {
+        keyConfigured: false,
+        keyValid: false,
+        keyRestrictionsProblem: false,
+        billingError: false,
+        photosReturned: false,
+        details: 'GOOGLE_PLACES_API_KEY is not configured in environment variables.',
+      };
+    }
+
+    const testPlaceId = 'ChIJ2eUgeAK6j4ARbn5u_wAGqWA';
+    try {
+      const url = `https://places.googleapis.com/v1/places/${testPlaceId}`;
+      const res = await fetchWithTimeout(
+        url,
+        {
+          method: 'GET',
+          headers: {
+            'X-Goog-Api-Key': key,
+            'X-Goog-FieldMask': 'id,displayName,photos.name',
+          },
+        },
+        FETCH_TIMEOUT_MS,
+      );
+
+      if (!res.ok) {
+        const reason = await errorReason(res);
+        const isRestriction = /client application|referer|referrer|IP address.*not allowed|blocked/i.test(reason);
+        const isBilling = /billing/i.test(reason);
+        return {
+          keyConfigured: true,
+          keyValid: false,
+          keyRestrictionsProblem: isRestriction,
+          billingError: isBilling,
+          photosReturned: false,
+          details: `Google API error: HTTP ${res.status} — ${reason}. ${keyProblemHint(reason)}`,
+        };
+      }
+
+      const payload = (await res.json()) as any;
+      const photos = payload?.photos;
+      const hasPhotos = Array.isArray(photos) && photos.length > 0 && !!photos[0]?.name;
+
+      if (!hasPhotos) {
+        return {
+          keyConfigured: true,
+          keyValid: true,
+          keyRestrictionsProblem: false,
+          billingError: false,
+          photosReturned: false,
+          details:
+            'Google Places API key is valid and answered HTTP 200, but no photos were returned for test place. ' +
+            'Ensure Places API (New) is enabled and photo access is allowed.',
+        };
+      }
+
+      return {
+        keyConfigured: true,
+        keyValid: true,
+        keyRestrictionsProblem: false,
+        billingError: false,
+        photosReturned: true,
+        details: 'Google Places API (New) is functioning normally. Photos returned successfully.',
+      };
+    } catch (err) {
+      return {
+        keyConfigured: true,
+        keyValid: false,
+        keyRestrictionsProblem: false,
+        billingError: false,
+        photosReturned: false,
+        details: `Network/connection error contacting Google Places API: ${(err as Error).message}`,
+      };
+    }
+  }
 
   private get apiKey(): string | null {
     const key = this.config.get<string>('GOOGLE_PLACES_API_KEY');
@@ -219,101 +352,6 @@ export class GooglePlacesService {
       return null;
     }
     return key;
-  }
-
-  /**
-   * Resolve a curated place to a Google photo reference. Uses the curated
-   * photoName when present, otherwise Places API (New) text search biased
-   * to the curated coordinates. Never throws — returns null on any failure.
-   */
-  async resolvePhoto(item: PlaceConfigItem): Promise<ResolvedPlacePhoto | null> {
-    const cached = this.metaCache.get(item.id);
-    if (cached) {
-      const ttl = cached.value ? META_TTL_POSITIVE_MS : META_TTL_NEGATIVE_MS;
-      if (Date.now() - cached.at < ttl) return cached.value;
-      this.metaCache.delete(item.id);
-    }
-
-    const key = this.apiKey;
-    if (!key) return null;
-
-    // Curated override wins — no Google call needed.
-    if (item.photoName) {
-      const resolved: ResolvedPlacePhoto = {
-        googlePlaceId: item.googlePlaceId ?? '',
-        photoName: item.photoName,
-        photoAttribution: item.photoAttribution ?? null,
-      };
-      this.metaCache.set(item.id, { at: Date.now(), value: resolved });
-      return resolved;
-    }
-
-    try {
-      const res = await fetchWithTimeout(
-        SEARCH_URL,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Goog-Api-Key': key,
-            'X-Goog-FieldMask': 'places.id,places.photos.name,places.photos.authorAttributions',
-          },
-          body: JSON.stringify({
-            textQuery: `${item.title}, ${item.subtitle}, India`,
-            regionCode: 'IN',
-            languageCode: 'en',
-            maxResultCount: 1,
-            locationBias: {
-              circle: {
-                center: { latitude: item.lat, longitude: item.lng },
-                radius: 5000.0,
-              },
-            },
-          }),
-        },
-        FETCH_TIMEOUT_MS,
-      );
-      if (!res.ok) {
-        this.logger.warn(
-          `Places searchText failed for ${item.id}: HTTP ${res.status} ${await errorReason(res)}`,
-        );
-        this.metaCache.set(item.id, { at: Date.now(), value: null });
-        return null;
-      }
-      const payload: unknown = await res.json();
-      if (typeof payload !== 'object' || payload === null || !Array.isArray((payload as { places?: unknown }).places)) {
-        this.metaCache.set(item.id, { at: Date.now(), value: null });
-        return null;
-      }
-      const places = (payload as { places: Array<{ id?: unknown }> }).places;
-      const googlePlaceId = places.length > 0 && typeof places[0].id === 'string' ? places[0].id : '';
-      const photo = firstPhotoOf(payload);
-      if (!photo || !photo.name) {
-        this.metaCache.set(item.id, { at: Date.now(), value: null });
-        return null;
-      }
-      const resolved: ResolvedPlacePhoto = {
-        googlePlaceId,
-        photoName: photo.name,
-        photoAttribution: photo.attribution,
-      };
-      this.metaCache.set(item.id, { at: Date.now(), value: resolved });
-      return resolved;
-    } catch (err) {
-      this.logger.warn(`Places searchText error for ${item.id}: ${(err as Error)?.message ?? err}`);
-      this.metaCache.set(item.id, { at: Date.now(), value: null });
-      return null;
-    }
-  }
-
-  /**
-   * Download the resolved photo bytes server-side (the API key never leaves
-   * the server). Returns null when there is no photo or the fetch fails.
-   */
-  async fetchPlacePhoto(item: PlaceConfigItem): Promise<FetchedPlacePhoto | null> {
-    const resolved = await this.resolvePhoto(item);
-    if (!resolved) return null;
-    return this.fetchMedia(resolved.photoName, item.id);
   }
 
   /**
@@ -356,6 +394,12 @@ export class GooglePlacesService {
       const payload: unknown = await res.json();
       const photo = photoOfPlace(payload);
       if (!photo || !photo.name) {
+        if (this.detailsNoPhotoLogs < 3) {
+          this.detailsNoPhotoLogs += 1;
+          this.logger.warn(
+            `Places details for ${placeId} returned no photos. Response keys: ${Object.keys((payload as object) ?? {}).join(',')}`,
+          );
+        }
         this.metaCache.set(cacheKey, { at: Date.now(), value: null });
         return null;
       }
@@ -396,16 +440,11 @@ export class GooglePlacesService {
   }
 
   /**
-   * "Near You": places closest to a coordinate, NEAREST FIRST (Google's own
-   * distance ranking). Default radius 5 km, up to 50 km.
-   * Never throws — returns [] on any failure (incl. missing API key).
+   * "Big places": nearest bus stands, railway stations and colleges around a
+   * coordinate, NEAREST FIRST. Never throws — [] on any failure.
    */
-  searchNearbyByDistance(
-    lat: number,
-    lng: number,
-    radiusM = DEFAULT_NEAR_RADIUS_M,
-  ): Promise<NearbyPlaceHit[]> {
-    return this.searchNearby('distance', lat, lng, radiusM);
+  searchBigPlaces(lat: number, lng: number, radiusM = 10_000): Promise<NearbyPlaceHit[]> {
+    return this.searchNearby('big', lat, lng, radiusM);
   }
 
   /**
@@ -428,7 +467,8 @@ export class GooglePlacesService {
     lng: number,
     radiusM: number,
   ): Promise<NearbyPlaceHit[]> {
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    // Reject out-of-range coordinates before they can cost a Google call.
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return [];
     const radius = Math.min(
       Math.max(Math.round(Number.isFinite(radiusM) ? radiusM : DEFAULT_NEAR_RADIUS_M), MIN_SEARCH_RADIUS_M),
       MAX_SEARCH_RADIUS_M,
@@ -436,7 +476,11 @@ export class GooglePlacesService {
     const cacheKey = `${rank}:${lat.toFixed(3)},${lng.toFixed(3)},${radius}`;
     const cached = this.nearbyCache.get(cacheKey);
     if (cached) {
-      const ttl = cached.value.length > 0 ? NEARBY_TTL_MS : NEARBY_EMPTY_TTL_MS;
+      const ttl = cached.errored
+        ? NEARBY_ERROR_TTL_MS
+        : cached.value.length > 0
+          ? NEARBY_TTL_MS
+          : NEARBY_EMPTY_TTL_MS;
       if (Date.now() - cached.at < ttl) return cached.value;
       this.nearbyCache.delete(cacheKey);
     }
@@ -452,10 +496,11 @@ export class GooglePlacesService {
           headers: {
             'Content-Type': 'application/json',
             'X-Goog-Api-Key': key,
-            'X-Goog-FieldMask': rank === 'popularity' ? POPULAR_FIELD_MASK : NEAR_FIELD_MASK,
+            // Ratings are requested for both lists: both are ranked by rating.
+            'X-Goog-FieldMask': POPULAR_FIELD_MASK,
           },
           body: JSON.stringify({
-            includedTypes: rank === 'popularity' ? POPULAR_INCLUDED_TYPES : NEAR_INCLUDED_TYPES,
+            includedTypes: rank === 'popularity' ? POPULAR_INCLUDED_TYPES : BIG_INCLUDED_TYPES,
             maxResultCount: MAX_RESULTS,
             rankPreference: rank === 'popularity' ? 'POPULARITY' : 'DISTANCE',
             languageCode: 'en',
@@ -468,13 +513,21 @@ export class GooglePlacesService {
         FETCH_TIMEOUT_MS,
       );
       if (!res.ok) {
-        this.logger.warn(
-          `Places searchNearby (${rank}) failed (${lat},${lng}): HTTP ${res.status} ${await errorReason(res)}`,
-        );
-        this.nearbyCache.set(cacheKey, { at: Date.now(), value: [] });
+        const reason = await errorReason(res);
+        this.logger.warn(`Places searchNearby (${rank}) failed (${lat},${lng}): HTTP ${res.status} ${reason}`);
+        if (looksLikeKeyProblem(reason) && Date.now() - keyProblemLoggedAt > KEY_PROBLEM_REPEAT_MS) {
+          keyProblemLoggedAt = Date.now();
+          this.logger.error(`${keyProblemHint(reason)} Home-screen places are falling back to Wikipedia only.`);
+        }
+        this.nearbyCache.set(cacheKey, { at: Date.now(), value: [], errored: true });
         return [];
       }
       const payload = (await res.json()) as { places?: Array<Record<string, unknown>> };
+      if (this.sampleLogs < 2 && Array.isArray(payload.places) && payload.places.length > 0) {
+        this.sampleLogs += 1;
+        // Diagnostic: shows whether Google sends `photos` at all (first 2 searches only).
+        this.logger.log(`searchNearby (${rank}) raw sample: ${JSON.stringify(payload.places[0]).slice(0, 500)}`);
+      }
       const hits: NearbyPlaceHit[] = [];
       for (const p of Array.isArray(payload.places) ? payload.places : []) {
         const hit = parseHit(p);
@@ -487,7 +540,7 @@ export class GooglePlacesService {
       this.logger.warn(
         `Places searchNearby (${rank}) error (${lat},${lng}): ${(err as Error)?.message ?? err}`,
       );
-      this.nearbyCache.set(cacheKey, { at: Date.now(), value: [] });
+      this.nearbyCache.set(cacheKey, { at: Date.now(), value: [], errored: true });
       return [];
     }
   }

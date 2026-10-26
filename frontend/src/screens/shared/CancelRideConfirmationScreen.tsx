@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertTriangle, Check, ShieldAlert } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Header } from '../../components/primitives/Header';
 import { useRideStore } from '../../store/rideStore';
+import { useAuthStore } from '../../store/authStore';
 
 interface Props {
   onBack?: () => void;
-  onConfirmCancel?: (reason: string) => void;
+  onConfirmCancel?: (reason: string) => void | Promise<void>;
 }
 
 const reasons = [
@@ -25,15 +27,31 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
   const setCancellationReason = useRideStore((state) => state.setCancellationReason);
   const activeRide = useRideStore((state) => state.activeRide);
   const [selectedReason, setSelectedReason] = useState<string>(storeReason || reasons[0]);
+  // True while the cancel request is in flight: locks the confirm button (no
+  // second request) and the "Keep My Ride" button (no leaving mid-cancel).
+  const [cancelling, setCancelling] = useState(false);
+  const insets = useSafeAreaInsets();
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    if (cancelling) return;
     setCancellationReason(selectedReason);
-    if (onConfirmCancel) {
-      onConfirmCancel(selectedReason);
+    if (!onConfirmCancel) return;
+    setCancelling(true);
+    try {
+      await onConfirmCancel(selectedReason);
+    } finally {
+      setCancelling(false);
     }
   };
 
   const status = activeRide?.status;
+  // R-5: a rider cannot end a trip that is already running — the backend
+  // answers 409, so the UI must not offer the action at all (the reasons
+  // list and the confirm button disappear; only "Keep My Ride" remains).
+  // Drivers keep their existing flow: the driver app legitimately ends
+  // trips, and this screen is shared.
+  const role = useAuthStore((state) => state.user?.role ?? 'rider');
+  const tripRunning = role === 'rider' && status === 'in_progress';
   const warningSub =
     status === 'requested'
       ? "We'll stop searching for a driver."
@@ -48,39 +66,50 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
     <View style={styles.container}>
       {onBack && <Header title="Cancel Ride" onBack={onBack} />}
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 140 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Warning Alert Banner */}
         <View style={styles.warningBanner}>
           <AlertTriangle size={24} color={colors.danger} />
           <View style={styles.warningTextWrap}>
-            <Text style={styles.warningTitle}>Are you sure you want to cancel?</Text>
-            <Text style={styles.warningSub}>{warningSub}</Text>
+            <Text style={styles.warningTitle}>
+              {tripRunning ? 'Trip already started' : 'Are you sure you want to cancel?'}
+            </Text>
+            <Text style={styles.warningSub}>
+              {tripRunning
+                ? "You can't cancel once the trip has started. Contact your driver or support."
+                : warningSub}
+            </Text>
           </View>
         </View>
 
-        {/* Cancellation Reason List */}
-        <Card style={styles.reasonsCard}>
-          <Text style={styles.cardHeaderTitle}>SELECT CANCELLATION REASON</Text>
+        {/* Cancellation Reason List (hidden once a rider's trip is running) */}
+        {!tripRunning && (
+          <Card style={styles.reasonsCard}>
+            <Text style={styles.cardHeaderTitle}>SELECT CANCELLATION REASON</Text>
 
-          {reasons.map((reason) => {
-            const isSelected = selectedReason === reason;
-            return (
-              <TouchableOpacity
-                key={reason}
-                style={styles.reasonRow}
-                onPress={() => setSelectedReason(reason)}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.radio, isSelected && styles.radioActive]}>
-                  {isSelected && <Check size={12} color="#FFFFFF" strokeWidth={3} />}
-                </View>
-                <Text style={[styles.reasonText, isSelected && styles.reasonTextActive]}>
-                  {reason}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </Card>
+            {reasons.map((reason) => {
+              const isSelected = selectedReason === reason;
+              return (
+                <TouchableOpacity
+                  key={reason}
+                  style={styles.reasonRow}
+                  onPress={() => setSelectedReason(reason)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.radio, isSelected && styles.radioActive]}>
+                    {isSelected && <Check size={12} color="#FFFFFF" strokeWidth={3} />}
+                  </View>
+                  <Text style={[styles.reasonText, isSelected && styles.reasonTextActive]}>
+                    {reason}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </Card>
+        )}
 
         {/* Policy Box */}
         {showPolicy && (
@@ -94,19 +123,23 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
       </ScrollView>
 
       {/* Footer Action Buttons */}
-      <View style={styles.footer}>
-        <Button
-          title="Confirm Cancellation"
-          onPress={handleConfirm}
-          variant="danger"
-          size="large"
-        />
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
+        {!tripRunning && (
+          <Button
+            title="Confirm Cancellation"
+            onPress={handleConfirm}
+            variant="danger"
+            size="large"
+            loading={cancelling}
+          />
+        )}
         {onBack && (
           <Button
             title="Keep My Ride"
             onPress={onBack}
             variant="outline"
             size="medium"
+            disabled={cancelling}
           />
         )}
       </View>

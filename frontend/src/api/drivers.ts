@@ -28,18 +28,15 @@ export interface DriverProfile {
   upiVpa?: string | null;
 }
 
+// SEC-6: redacted rider-facing shape — position + derived display numbers
+// only (the app draws dots and etas). The server no longer sends (and this
+// type no longer pretends to receive) driverId / userId / name / car model
+// / rating / plate — a live coordinate feed of named drivers.
 export interface NearbyDriver {
-  driverId: string;
-  userId: string;
-  name: string;
-  vehicleType: VehicleType;
-  carModel: string;
-  plateNumber: string;
-  rating: number;
-  distanceMeters: number;
-  etaMinutes: number;
   lat: number;
   lng: number;
+  vehicleType: VehicleType;
+  etaMinutes: number;
 }
 
 export interface DriverApplication {
@@ -57,7 +54,21 @@ export interface DriverApplication {
   hasVehiclePhoto: boolean;
 }
 
+export interface DriverStats {
+  today: { trips: number; earnings: number };
+  week: { trips: number; earnings: number; tips: number };
+  month: { trips: number; earnings: number; tips: number };
+  daily: { date: string; trips: number; earnings: number }[];
+  acceptance: { rate: number | null; accepted: number; declinedOrMissed: number; windowDays: number };
+  availability: {
+    state: 'online' | 'on_trip' | 'offline';
+    reason: 'not_approved' | 'location_stale' | 'manual' | null;
+    message: string;
+  };
+}
+
 export const driversApi = {
+  stats: async (): Promise<DriverStats> => (await api.get<DriverStats>('/drivers/me/stats')).data,
   apply: async (
     input: { vehicleType: VehicleType; carModel: string; plateNumber: string; licenseNumber: string; rcNumber?: string },
     files: { licenseImage: { uri: string; name: string; type: string }; rcImage: { uri: string; name: string; type: string }; vehiclePhoto?: { uri: string; name: string; type: string } },

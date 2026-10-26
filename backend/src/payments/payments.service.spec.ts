@@ -1,6 +1,15 @@
-import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createHmac } from 'crypto';
 import { Repository } from 'typeorm';
 import { PaymentsService } from './payments.service';
+import { RazorpayWebhookDto } from './dto/razorpay-webhook.dto';
 import { PaymentEntity } from './entities/payment.entity';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { PaymentProvider } from './providers/payment-provider.interface';
@@ -14,6 +23,18 @@ describe('PaymentsService', () => {
   let payments: Record<string, jest.Mock>;
   let rides: Record<string, jest.Mock>;
   let provider: Record<string, jest.Mock>;
+  let config: Record<string, jest.Mock>;
+  // Ride-row lock stub: PaymentsService.withRideLock runs through
+  // rides.manager.connection.createQueryRunner(). The manager re-reads
+  // through the SAME per-test repo mocks so per-test overrides keep working.
+  let queryRunner: {
+    connect: jest.Mock;
+    startTransaction: jest.Mock;
+    commitTransaction: jest.Mock;
+    rollbackTransaction: jest.Mock;
+    release: jest.Mock;
+    manager: Record<string, jest.Mock>;
+  };
 
   const rideFixture = (overrides: Record<string, unknown> = {}) => ({
     id: 'r1',
@@ -31,21 +52,46 @@ describe('PaymentsService', () => {
       findOne: jest.fn().mockResolvedValue(null),
       save: jest.fn(async (p) => ({ id: 'pay-1', ...p })),
       create: jest.fn((p) => p),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+      manager: {
+        findOne: jest.fn((entity: unknown, opts?: unknown) =>
+          entity === RideEntity ? rides.findOne(opts) : payments.findOne(opts),
+        ),
+        save: jest.fn((row: Record<string, unknown>) => payments.save(row)),
+        create: jest.fn((_entity: unknown, data: Record<string, unknown>) => payments.create(data)),
+        update: jest.fn((entity: unknown, where: unknown, partial: unknown) =>
+          entity === RideEntity ? rides.update(where, partial) : payments.update(where, partial),
+        ),
+      },
     };
     rides = {
       findOne: jest.fn().mockResolvedValue(rideFixture()),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      manager: Object.assign(jest.fn(), {
+        connection: { createQueryRunner: jest.fn(() => queryRunner) },
+      }),
     };
     provider = {
       createOrder: jest.fn().mockResolvedValue({ orderId: 'order_1', amount: 240, currency: 'INR', providerKey: 'rzp_key' }),
       verifyPayment: jest.fn().mockResolvedValue(true),
       providerKey: jest.fn().mockReturnValue('rzp_key'),
     };
+    config = {
+      get: jest.fn((key: string) => (key === 'RAZORPAY_WEBHOOK_SECRET' ? 'whsec_test_fake' : undefined)),
+    };
 
     service = new PaymentsService(
       payments as unknown as Repository<PaymentEntity>,
       rides as unknown as Repository<RideEntity>,
       provider as unknown as PaymentProvider,
+      config as unknown as ConfigService,
     );
   });
 
@@ -204,6 +250,197 @@ describe('PaymentsService', () => {
       );
       expect(provider.verifyPayment).not.toHaveBeenCalled();
       expect(payments.save).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // Pass-4 (task 5): signature-verified gateway → server settlement.
+  describe('Razorpay webhook', () => {
+    const SECRET = 'whsec_test_fake'; // obvious fake — never a real secret
+    const sign = (body: Buffer, secret: string): string =>
+      createHmac('sha256', secret).update(body).digest('hex');
+
+    const eventFor = (event: string, payload: Record<string, unknown>): RazorpayWebhookDto => ({
+      event,
+      payload,
+    });
+
+    /** Build the raw body from the DTO and deliver it with a chosen signature. */
+    const deliver = (
+      dto: RazorpayWebhookDto,
+      opts: { signature?: string } = {},
+    ): Promise<{ received: true }> => {
+      const body = Buffer.from(JSON.stringify(dto), 'utf8');
+      const signature = opts.signature ?? sign(body, SECRET);
+      return service.handleRazorpayWebhook(body, signature, dto);
+    };
+
+    const captureEvent = () =>
+      eventFor('payment.captured', {
+        payment: {
+          entity: {
+            id: 'pay_rzp_fake',
+            order_id: 'order_1',
+            // Phase-2.1: the signed payload is authoritative (paise/INR/captured).
+            amount: 24_000,
+            currency: 'INR',
+            status: 'captured',
+          },
+        },
+      });
+
+    /** Same event with one signed field overridden (mismatch cases). */
+    const captureEventWith = (entity: Record<string, unknown>) =>
+      eventFor('payment.captured', {
+        payment: {
+          entity: {
+            id: 'pay_rzp_fake',
+            order_id: 'order_1',
+            amount: 24_000,
+            currency: 'INR',
+            status: 'captured',
+            ...entity,
+          },
+        },
+      });
+    const pendingCapture = () =>
+      payments.findOne.mockResolvedValue({
+        id: 'pay-1',
+        rideId: 'r1',
+        providerOrderId: 'order_1',
+        method: 'upi',
+        amount: 240,
+        status: 'pending',
+      });
+
+    it('settles payment + ride on a valid signature (payment.captured)', async () => {
+      pendingCapture();
+
+      const result = await deliver(captureEvent());
+
+      expect(result).toEqual({ received: true });
+      expect(payments.update).toHaveBeenCalledWith(
+        { id: 'pay-1' },
+        { status: 'paid', providerPaymentId: 'pay_rzp_fake' },
+      );
+      expect(rides.update).toHaveBeenCalledWith(
+        { id: 'r1' },
+        { paymentStatus: 'paid', paymentMarkedBy: 'provider' },
+      );
+    });
+
+    it('rejects an invalid signature with 401 and settles nothing', async () => {
+      pendingCapture();
+
+      await expect(deliver(captureEvent(), { signature: 'f'.repeat(64) })).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('fails closed with 401 when the webhook secret is not configured', async () => {
+      config.get.mockImplementation(() => undefined);
+      pendingCapture();
+
+      await expect(deliver(captureEvent())).rejects.toThrow(UnauthorizedException);
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a delivery with no signature header', async () => {
+      const body = Buffer.from('{}', 'utf8');
+      await expect(service.handleRazorpayWebhook(body, undefined, captureEvent())).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('a replayed delivery is idempotent (already-settled ride)', async () => {
+      payments.findOne.mockResolvedValue({
+        id: 'pay-1',
+        rideId: 'r1',
+        providerOrderId: 'order_1',
+        method: 'upi',
+        amount: 240,
+        status: 'paid',
+      });
+      rides.findOne.mockResolvedValue(rideFixture({ paymentStatus: 'paid' }));
+
+      const result = await deliver(captureEvent());
+
+      expect(result).toEqual({ received: true });
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an amount mismatch instead of settling', async () => {
+      payments.findOne.mockResolvedValue({
+        id: 'pay-1',
+        rideId: 'r1',
+        providerOrderId: 'order_1',
+        method: 'upi',
+        amount: 999,
+        status: 'pending',
+      });
+
+      // Signed amount matches OUR stored order (999 * 100) so the new
+      // Phase-2.1 gate passes; the existing amount-vs-FARE gate must still
+      // reject this tampered order with a 400.
+      await expect(deliver(captureEventWith({ amount: 99_900 }))).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('acks unknown events with 200 without touching state', async () => {
+      const result = await deliver(eventFor('payment.failed', {}));
+
+      expect(result).toEqual({ received: true });
+      expect(payments.findOne).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    // Phase-2.1: the signed payload must describe the money we ordered.
+    it('acks but does NOT settle when the captured amount differs from our order', async () => {
+      pendingCapture();
+
+      const result = await deliver(captureEventWith({ amount: 23_999 }));
+
+      expect(result).toEqual({ received: true });
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('acks but does NOT settle for a non-INR currency', async () => {
+      pendingCapture();
+
+      const result = await deliver(captureEventWith({ currency: 'USD' }));
+
+      expect(result).toEqual({ received: true });
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('acks but does NOT settle an authorized (not captured) payment', async () => {
+      pendingCapture();
+
+      const result = await deliver(captureEventWith({ status: 'authorized' }));
+
+      expect(result).toEqual({ received: true });
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('does not settle when the signed payload omits amount/currency/status', async () => {
+      pendingCapture();
+
+      const result = await deliver(
+        eventFor('payment.captured', {
+          payment: { entity: { id: 'pay_rzp_fake', order_id: 'order_1' } },
+        }),
+      );
+
+      expect(result).toEqual({ received: true });
       expect(rides.update).not.toHaveBeenCalled();
     });
   });

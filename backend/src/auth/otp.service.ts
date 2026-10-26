@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomInt, timingSafeEqual } from 'crypto';
+import { randomInt } from 'crypto';
 import type Redis from 'ioredis';
 import { REDIS_CLIENT } from '../config/redis.module';
 
@@ -8,12 +8,55 @@ const OTP_KEY_PREFIX = 'otp:phone:';
 const OTP_ATTEMPTS_PREFIX = 'otp:attempts:';
 const OTP_SEND_COUNT_PREFIX = 'otp:sendcount:';
 const OTP_SEND_COOLDOWN_PREFIX = 'otp:sendcool:';
+const OTP_FAIL_PREFIX = 'otp:fail:';
+const OTP_IP_FAIL_PREFIX = 'otp:ipfail:';
 const MAX_VERIFY_ATTEMPTS = 5;
+// SEC-1: per-phone failed-verify lockout. The per-code attempts counter is
+// useless against an attacker who just re-sends (issue() resets it), so this
+// counter lives on its own key, is never touched by issue(), and locks the
+// number for the REST of its window once reached. Only a successful verify
+// clears it.
+const MAX_FAIL_PER_WINDOW = 10;
+const FAIL_WINDOW_SECONDS = 3600;
+// Pass-4 (task 4): per-IP failed-verify cap. The per-phone lockout alone
+// still lets an attacker rotate through MANY victim numbers (10 guesses each
+// — ~2.4%/day takeover odds per number with a 4-digit code). Capping total
+// failures per IP bounds the whole campaign; legitimate callers never come
+// close (20 failures/hour from one address is far beyond human typos).
+const MAX_IP_FAIL_PER_WINDOW = 20;
+const IP_FAIL_WINDOW_SECONDS = 3600;
+
+/**
+ * Pass-4 (task 3): ONE atomic read+compare+consume. Two round-trips (GET,
+ * then DEL after a Node-side compare) let two parallel requests redeem the
+ * same code: both read it, both compare OK, both succeed. Redis 7
+ * (docker-compose) has GETDEL, but that would consume the code even on a
+ * WRONG guess, breaking the attempts-per-code semantics above; this script
+ * deletes ONLY on a match, preserving every existing behaviour. The compare
+ * runs inside Redis: constant-time string equality under network jitter —
+ * no prefix-length timing signal measurable at the HTTP layer. Returns
+ * 1 (match) / 0 (mismatch) / -1 (nothing stored).
+ */
+export const OTP_VERIFY_SCRIPT = `
+local stored = redis.call('GET', KEYS[1])
+if not stored then return -1 end
+if stored == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+`;
 
 @Injectable()
 export class OtpService {
   private readonly ttlSeconds: number;
-  private readonly otpLength: number;
+  /**
+   * Width of the codes this server issues (OTP_LENGTH, clamped to the 4..8
+   * window VerifyOtpDto accepts so the code width and the DTO regex can never
+   * disagree). Public: POST /auth/otp/send echoes it so the OTP screen renders
+   * that many boxes (apps default to 4 when the field is absent).
+   */
+  readonly otpLength: number;
   private readonly sendMax: number;
   private readonly sendWindowSeconds: number;
   private readonly resendCooldownSeconds: number;
@@ -23,7 +66,13 @@ export class OtpService {
     private readonly config: ConfigService,
   ) {
     this.ttlSeconds = this.config.get<number>('OTP_TTL_SECONDS') ?? 300;
-    this.otpLength = this.config.get<number>('OTP_LENGTH') ?? 4;
+    // Task 9: In production default to 6 digits unless ALLOW_4_DIGIT_OTP=true is set.
+    const isProd = (this.config.get<string>('NODE_ENV') ?? 'development') === 'production';
+    const allow4Digit = (this.config.get<string>('ALLOW_4_DIGIT_OTP') ?? 'false') === 'true';
+    const rawLen = this.config.get<string>('OTP_LENGTH');
+    const defaultLen = isProd && !allow4Digit ? 6 : 4;
+    const len = rawLen !== undefined ? Math.trunc(Number(rawLen)) : defaultLen;
+    this.otpLength = Number.isFinite(len) && len >= 4 ? Math.min(len, 8) : defaultLen;
     // AU-1: per-phone SMS bomb guard (defaults are intentionally strict).
     this.sendMax = this.config.get<number>('OTP_SEND_MAX') ?? 3;
     this.sendWindowSeconds = this.config.get<number>('OTP_SEND_WINDOW_SECONDS') ?? 600;
@@ -46,8 +95,80 @@ export class OtpService {
     return `${OTP_SEND_COOLDOWN_PREFIX}${phone}`;
   }
 
+  private failKey(phone: string) {
+    return `${OTP_FAIL_PREFIX}${phone}`;
+  }
+
+  private ipFailKey(ip: string) {
+    return `${OTP_IP_FAIL_PREFIX}${ip}`;
+  }
+
+  /**
+   * SEC-1: current failed-verify count for the phone (0 when never failed).
+   * Read from its own key precisely so issue() cannot reset it.
+   */
+  private async failCount(phone: string): Promise<number> {
+    const raw = await this.redis.get(this.failKey(phone));
+    const n = Number(raw ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  /** Pass-4 (task 4): current failed-verify count for the IP. */
+  private async ipFailCount(ip: string): Promise<number> {
+    const raw = await this.redis.get(this.ipFailKey(ip));
+    const n = Number(raw ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  private lockout(): HttpException {
+    // Pass-4 (task 4): ONE generic message shared by the failure lockout,
+    // the send lockout and the IP cap — a caller must never learn whether a
+    // phone was locked by wrong guesses or by too many sends.
+    return new HttpException(
+      'Too many attempts. Please try again later.',
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  /**
+   * SEC-1: every failed verify counts toward the phone's lockout window.
+   * Reaching the cap turns THIS failure into a 429 for the rest of the window.
+   * Pass-4 (task 4): the same failure also counts toward the caller's IP cap.
+   */
+  private async failVerify(
+    phone: string,
+    reason: string,
+    ip?: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const fails = await this.recordFailure(phone);
+    if (ip !== undefined) {
+      const ipFails = await this.recordIpFailure(ip);
+      if (ipFails > MAX_IP_FAIL_PER_WINDOW) throw this.lockout();
+    }
+    if (fails >= MAX_FAIL_PER_WINDOW) throw this.lockout();
+    return { ok: false, reason };
+  }
+
+  private async recordFailure(phone: string): Promise<number> {
+    const key = this.failKey(phone);
+    const count = await this.redis.incr(key);
+    // Same crash-safe window pattern as the send counter (see ensureWindow).
+    await this.ensureWindow(key, count, FAIL_WINDOW_SECONDS);
+    return count;
+  }
+
+  /** Pass-4 (task 4): same window pattern as recordFailure, keyed by IP. */
+  private async recordIpFailure(ip: string): Promise<number> {
+    const key = this.ipFailKey(ip);
+    const count = await this.redis.incr(key);
+    await this.ensureWindow(key, count, IP_FAIL_WINDOW_SECONDS);
+    return count;
+  }
+
   /**
    * AU-1: strict per-phone limits, checked before any SMS is issued.
+   *  - SEC-1 lockout: a phone with too many failed verifies is refused first,
+   *    so a locked-out attacker cannot spend more SMS at all.
    *  - resend cooldown (default 30 s between sends to one number)
    *  - max sends per window (default 3 per 10 min)
    * Throwing here keeps the counter from being consumed by rejected requests
@@ -55,6 +176,9 @@ export class OtpService {
    * burst cannot exceed the window cap.
    */
   async assertCanSend(phone: string): Promise<void> {
+    if ((await this.failCount(phone)) >= MAX_FAIL_PER_WINDOW) {
+      throw this.lockout();
+    }
     const cooldownTtl = await this.redis.ttl(this.sendCooldownKey(phone));
     if (cooldownTtl > 0) {
       throw new HttpException(
@@ -71,6 +195,24 @@ export class OtpService {
       );
     }
     await this.redis.set(this.sendCooldownKey(phone), '1', 'EX', this.resendCooldownSeconds);
+  }
+
+  /**
+   * Phase-1.5: undo the send accounting when the SMS provider itself failed.
+   * `assertCanSend` intentionally consumed the window slot and the cooldown
+   * BEFORE the provider call; without this the user would be locked out for
+   * the cooldown (and one of three daily sends wasted) by an outage that was
+   * not their fault. Also drops the issued code: it never reached the phone.
+   */
+  async rollbackSend(phone: string): Promise<void> {
+    await this.redis.del(this.key(phone));
+    await this.redis.del(this.sendCooldownKey(phone));
+    const remaining = await this.redis.decr(this.sendCountKey(phone));
+    // A rollback that lands on (or below) zero removes the counter entirely,
+    // so the next legitimate send starts a fresh window with a fresh TTL.
+    if (remaining <= 0) {
+      await this.redis.del(this.sendCountKey(phone));
+    }
   }
 
   /**
@@ -99,30 +241,45 @@ export class OtpService {
     return code;
   }
 
-  async verify(phone: string, code: string): Promise<{ ok: boolean; reason?: string }> {
+  async verify(
+    phone: string,
+    code: string,
+    ip?: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    // SEC-1: once the phone is locked, NO comparison runs — the window must
+    // actually cap guesses, not just label them. Only time or a prior
+    // successful verify can have cleared the counter (issue() never does).
+    if ((await this.failCount(phone)) >= MAX_FAIL_PER_WINDOW) {
+      throw this.lockout();
+    }
+    // Pass-4 (task 4): once the CALLER'S IP is capped, nothing runs either —
+    // this bounds an attacker rotating through many victim numbers.
+    if (ip !== undefined && (await this.ipFailCount(ip)) >= MAX_IP_FAIL_PER_WINDOW) {
+      throw this.lockout();
+    }
+
     const attempts = await this.redis.incr(this.attemptsKey(phone));
     await this.ensureWindow(this.attemptsKey(phone), attempts, this.ttlSeconds);
     if (attempts > MAX_VERIFY_ATTEMPTS) {
-      return { ok: false, reason: 'Too many attempts, request a new OTP' };
+      return this.failVerify(phone, 'Too many attempts, request a new OTP', ip);
     }
 
-    const stored = await this.redis.get(this.key(phone));
-    if (!stored) {
-      return { ok: false, reason: 'OTP expired or not found, request a new one' };
+    // Pass-4 (task 3): atomic redeem — one code can never be redeemed twice
+    // by parallel requests (see OTP_VERIFY_SCRIPT).
+    const outcome = Number(
+      await this.redis.eval(OTP_VERIFY_SCRIPT, 1, this.key(phone), code),
+    );
+    if (outcome === -1) {
+      return this.failVerify(phone, 'OTP expired or not found, request a new one', ip);
     }
-    // AU-2: constant-time comparison — a plain !== leaks prefix matches via
-    // response timing. Length mismatch is rejected without timingSafeEqual
-    // (it throws on unequal lengths).
-    const storedBuf = Buffer.from(stored, 'utf8');
-    const codeBuf = Buffer.from(code, 'utf8');
-    const matches =
-      storedBuf.length === codeBuf.length && timingSafeEqual(storedBuf, codeBuf);
-    if (!matches) {
-      return { ok: false, reason: 'Incorrect OTP' };
+    if (outcome !== 1) {
+      return this.failVerify(phone, 'Incorrect OTP', ip);
     }
 
-    await this.redis.del(this.key(phone));
+    // SEC-1: success is the ONLY thing that clears the lockout counter.
+    // (The stored code itself was already consumed inside the script.)
     await this.redis.del(this.attemptsKey(phone));
+    await this.redis.del(this.failKey(phone));
     return { ok: true };
   }
 }

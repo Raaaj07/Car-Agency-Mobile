@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, Check } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -26,6 +27,7 @@ const VEHICLE_LABELS: Record<string, string> = {
 export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline, onExpire }) => {
   const activeRide = useRideStore((state) => state.activeRide);
   const isFocused = useIsFocused();
+  const insets = useSafeAreaInsets();
   const [seconds, setSeconds] = useState<number>(activeRide?.expiresInSeconds ?? 15);
   // Set the instant the driver taps Accept/Decline (or the timer expires).
   // The old countdown kept ticking while the accept request was in flight and
@@ -94,7 +96,7 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline, 
       <RealMapView mode="picker" pickup={activeRide?.pickup} dropoff={activeRide?.dropoff} />
 
       {/* Countdown Ring Header */}
-      <View style={styles.timerHeader}>
+      <View style={[styles.timerHeader, { top: 20 + insets.top }]}>
         <View style={styles.timerCircle}>
           <Text style={styles.timerText}>{seconds}</Text>
         </View>
@@ -102,7 +104,7 @@ export const RideRequestNearbyScreen: React.FC<Props> = ({ onAccept, onDecline, 
       </View>
 
       {/* Incoming Request Bottom Sheet */}
-      <View style={styles.bottomSheet}>
+      <View style={[styles.bottomSheet, { paddingBottom: 20 + insets.bottom }]}>
         <View style={styles.fareRow}>
           <View>
             <Text style={styles.estLabel}>ESTIMATED FARE</Text>

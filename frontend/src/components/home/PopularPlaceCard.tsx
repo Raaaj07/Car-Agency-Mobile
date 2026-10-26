@@ -1,47 +1,46 @@
 import React, { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { ArrowRight, MapPin } from 'lucide-react-native';
-import { colors, radii, shadows } from '../../theme/theme';
+import { ArrowRight } from 'lucide-react-native';
 import { PlaceImage } from './PlaceImage';
 import { PlaceItem } from '../../api/places';
-import { formatDistance } from '../../utils/distance';
+import { colors } from '../../theme/theme';
 
 interface Props {
   place: PlaceItem;
   onPress: (place: PlaceItem) => void;
-  cardWidth?: number;
+  cardWidth: number;
 }
 
-export const PopularPlaceCard: React.FC<Props> = memo(({ place, onPress, cardWidth = 160 }) => {
-  // "2.3 km" from the rider's current location; null (hidden) when unknown.
-  const distance = formatDistance(place.distanceKm);
+const IMAGE_HEIGHT = 86;
 
+/**
+ * "Popular Places" card (Rapido style): bold name top-left, yellow circular
+ * arrow top-right, landscape photo underneath. A photo that cannot load shows
+ * a map-pin placeholder; the card stays so the list is never emptied.
+ */
+export const PopularPlaceCard: React.FC<Props> = memo(({ place, onPress, cardWidth }) => {
   return (
     <TouchableOpacity
       style={[styles.card, { width: cardWidth }]}
       onPress={() => onPress(place)}
-      activeOpacity={0.85}
+      activeOpacity={0.88}
       accessibilityRole="button"
-      accessibilityLabel={`Go to ${place.title}${distance ? `, ${distance} away` : ''}`}
+      accessibilityLabel={`Go to ${place.title}`}
     >
-      <View style={styles.titleRow}>
-        <Text style={styles.title} numberOfLines={1}>
+      <View style={styles.top}>
+        <Text style={styles.title} numberOfLines={2}>
           {place.title}
         </Text>
-        <View style={styles.arrowChip}>
-          <ArrowRight size={14} color="#FFFFFF" />
+        <View style={styles.arrow}>
+          <ArrowRight size={13} color="#111827" />
         </View>
       </View>
-      {distance ? (
-        <View style={styles.distanceRow}>
-          <MapPin size={12} color={colors.textSecondary} />
-          <Text style={styles.distanceText} numberOfLines={1}>
-            {distance} away
-            {place.rating ? `  ·  ★ ${place.rating.toFixed(1)}` : ''}
-          </Text>
-        </View>
-      ) : null}
-      <PlaceImage uri={place.imageUrl} width="100%" height={100} borderRadius={16} />
+      <PlaceImage
+        uri={place.imageUrl}
+        width={cardWidth - 14}
+        height={IMAGE_HEIGHT}
+        borderRadius={10}
+      />
     </TouchableOpacity>
   );
 });
@@ -51,43 +50,33 @@ PopularPlaceCard.displayName = 'PopularPlaceCard';
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: radii.card,
     borderWidth: 1,
-    borderColor: colors.border,
-    overflow: 'hidden',
-    padding: 10,
-    gap: 8,
-    ...shadows.card,
+    borderColor: '#E5E9F0',
+    borderRadius: 14,
+    padding: 6,
+    gap: 6,
   },
-  titleRow: {
+  top: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 6,
+    paddingHorizontal: 2,
+    minHeight: 32,
   },
   title: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 11.5,
+    lineHeight: 15,
     fontWeight: '700',
     color: colors.textPrimary,
   },
-  arrowChip: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: colors.accent,
+  arrow: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#FFC928',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  distanceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: -4,
-  },
-  distanceText: {
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.textSecondary,
   },
 });

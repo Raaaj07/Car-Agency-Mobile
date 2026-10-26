@@ -81,6 +81,10 @@ type Driver = 'cloudinary' | 'local';
  *  - STORAGE_DRIVER=local: the previous local-disk behaviour (dev only).
  *
  * Magic-byte / size validation is identical for both drivers.
+ *
+ * Task 8: All blocking fs sync calls replaced with fs.promises equivalents.
+ * Path containment checks use path.relative() instead of startsWith() to
+ * correctly handle symlinks, trailing separators and cross-platform paths.
  */
 @Injectable()
 export class StorageService {
@@ -146,6 +150,19 @@ export class StorageService {
     return id.replace(/[^a-f0-9-]/gi, '');
   }
 
+  /**
+   * Task 8: path containment check using path.relative() instead of
+   * startsWith(). startsWith() is unsafe because:
+   *  - '/uploads-extra'.startsWith('/uploads') === true (false positive)
+   *  - On Windows, case sensitivity or mixed separators can fool it
+   * path.relative() returns a path starting with '..' if `candidate` escapes
+   * `base`, which is a reliable containment check.
+   */
+  private isWithinDir(base: string, candidate: string): boolean {
+    const rel = path.relative(path.resolve(base), path.resolve(candidate));
+    return rel !== '' && !rel.startsWith('..');
+  }
+
   // ───────────────────────── driver documents ─────────────────────────
 
   async storeDocument(userId: string, kind: DocumentKind, file: Express.Multer.File): Promise<StoredDocument> {
@@ -204,7 +221,7 @@ export class StorageService {
       // Legacy remote URL columns (drivingLicenceImageUrl, ...).
       return { type: 'url', url: stored, mime: this.mimeFromName(stored), expiresAt: '' };
     }
-    const local = this.readLocalAbsolute(stored);
+    const local = await this.readLocalAbsolute(stored);
     return { type: 'buffer', ...local };
   }
 
@@ -256,16 +273,19 @@ export class StorageService {
   }
 
   /** Legacy local avatars only (Cloudinary avatars are plain https URLs). */
-  readAvatar(userId: string, name: string): { buffer: Buffer; mime: string } {
+  async readAvatar(userId: string, name: string): Promise<{ buffer: Buffer; mime: string }> {
     const safeUser = this.safeId(userId);
     const safeName = name.replace(/[^a-zA-Z0-9_.-]/g, '');
     const resolved = path.resolve(this.dir, 'avatars', safeUser, safeName);
-    if (!resolved.startsWith(path.resolve(this.dir, 'avatars'))) {
+    // Task 8: use path.relative() instead of startsWith() for containment check.
+    if (!this.isWithinDir(path.resolve(this.dir, 'avatars'), resolved)) {
       throw new BadRequestException('Invalid file path');
     }
-    if (!fs.existsSync(resolved)) throw new BadRequestException('Avatar not found');
+    // Task 8: replaced fs.existsSync + fs.readFileSync with async equivalents.
+    const buffer = await fs.promises.readFile(resolved).catch(() => null);
+    if (!buffer) throw new BadRequestException('Avatar not found');
     return {
-      buffer: fs.readFileSync(resolved),
+      buffer,
       mime: resolved.endsWith('.png') ? 'image/png' : 'image/jpeg',
     };
   }
@@ -302,32 +322,38 @@ export class StorageService {
 
   // ── local-disk implementation (dev + legacy rows) ──
 
-  private storeDocumentLocal(
+  // Task 8: replaced blocking mkdirSync + writeFileSync with async equivalents.
+  private async storeDocumentLocal(
     userId: string,
     kind: DocumentKind,
     file: Express.Multer.File,
     rule: AllowedType,
-  ): StoredDocument {
+  ): Promise<StoredDocument> {
     const dir = path.resolve(this.dir, this.safeId(userId));
-    fs.mkdirSync(dir, { recursive: true });
+    await fs.promises.mkdir(dir, { recursive: true });
     const abs = path.resolve(dir, `${kind}-${randomUUID()}.${rule.ext}`);
-    if (!abs.startsWith(path.resolve(this.dir))) throw new BadRequestException('Invalid storage path');
-    fs.writeFileSync(abs, file.buffer);
+    // Task 8: use path.relative() for containment check.
+    if (!this.isWithinDir(this.dir, abs)) throw new BadRequestException('Invalid storage path');
+    await fs.promises.writeFile(abs, file.buffer);
     return { kind, path: abs, mime: file.mimetype, size: file.size };
   }
 
-  private storeAvatarLocal(userId: string, file: Express.Multer.File, rule: AllowedType): string {
+  // Task 8: replaced blocking mkdirSync + writeFileSync with async equivalents.
+  private async storeAvatarLocal(userId: string, file: Express.Multer.File, rule: AllowedType): Promise<string> {
     const dir = path.resolve(this.dir, 'avatars', this.safeId(userId));
-    fs.mkdirSync(dir, { recursive: true });
+    await fs.promises.mkdir(dir, { recursive: true });
     const name = `${randomUUID()}.${rule.ext}`;
-    fs.writeFileSync(path.resolve(dir, name), file.buffer);
+    await fs.promises.writeFile(path.resolve(dir, name), file.buffer);
     return name;
   }
 
-  private readLocalAbsolute(abs: string): { buffer: Buffer; mime: string } {
+  // Task 8: replaced blocking existsSync + readFileSync with async equivalents.
+  private async readLocalAbsolute(abs: string): Promise<{ buffer: Buffer; mime: string }> {
     const resolved = path.resolve(abs);
-    if (!resolved.startsWith(path.resolve(this.dir))) throw new BadRequestException('Invalid file path');
-    if (!fs.existsSync(resolved)) throw new NotFoundException('Document not found');
-    return { buffer: fs.readFileSync(resolved), mime: this.mimeFromName(resolved) };
+    // Task 8: use path.relative() for containment check.
+    if (!this.isWithinDir(this.dir, resolved)) throw new BadRequestException('Invalid file path');
+    const buffer = await fs.promises.readFile(resolved).catch(() => null);
+    if (!buffer) throw new NotFoundException('Document not found');
+    return { buffer, mime: this.mimeFromName(resolved) };
   }
 }

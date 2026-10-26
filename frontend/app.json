@@ -30,25 +30,13 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
+      "googleServicesFile": "./google-services.json",
       "predictiveBackGestureEnabled": false,
       "package": "com.vijayrajvj.CarAgencyMobile",
+      "allowBackup": false,
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION"
-      ],
-      "intentFilters": [
-        {
-          "action": "android.intent.action.VIEW",
-          "data": [
-            {
-              "scheme": "google.navigation"
-            }
-          ],
-          "category": [
-            "android.intent.category.DEFAULT",
-            "android.intent.category.BROWSABLE"
-          ]
-        }
       ]
     },
     "web": {
@@ -80,6 +68,7 @@
           "android": {
             "enableProguardInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
+            "usesCleartextTraffic": false,
             "buildArchs": [
               "arm64-v8a",
               "armeabi-v7a"
@@ -87,7 +76,9 @@
           }
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-notifications",
+      "@react-native-google-signin/google-signin"
     ],
     "extra": {
       "eas": {

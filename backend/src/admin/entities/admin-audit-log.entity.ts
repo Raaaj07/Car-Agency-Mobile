@@ -8,9 +8,23 @@ export type AuditAction =
   | 'reinstate'
   | 'ride_cancel'
   | 'payment_resolve'
-  | 'upi_update';
+  | 'payment_driver_confirm'
+  // Pass-4 (task 6): soft trip-fraud flags (pickup_far / dropoff_far /
+  // distance_inflated / location_jump) — never block a trip, just leave a
+  // trace the admin ride detail surfaces as `flags[]`.
+  | 'ride_flag'
+  | 'upi_update'
+  // Pass-4 (task 12): self-service compliance account deletion.
+  | 'account_delete'
+  // Task 12: Admin promo CRUD auditing
+  | 'promo_create'
+  | 'promo_update'
+  | 'promo_delete';
 
-export type AuditTargetType = 'driver' | 'ride';
+// Pass-4 (task 12): account deletion targets the USER row (targetId = userId);
+// driver-specific effects are recorded in `meta.driverId`.
+// Task 12: promo target type added for admin promo management audit trail.
+export type AuditTargetType = 'driver' | 'ride' | 'user' | 'promo';
 
 @Entity('admin_audit_logs')
 @Index(['targetType', 'targetId'])

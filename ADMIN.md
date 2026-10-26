@@ -30,10 +30,13 @@ and `AUDIT.md` (as-found baseline).
 cd backend && npm run migration:run
 ```
 
-13 migrations total; all are applied on the dev machine. For a fresh checkout the
-post-pull migrations are `1791300000000-AddPromosTables` (creates `promos` +
-`promo_redemptions` and seeds `VAZHI20` with the original config copy) and
-`1791400000000-AddRideOfferAndOtpColumns` (M-3 fix — see below).
+16 migrations total. For a fresh checkout the newest are `1791500000000-AddUserEmailVerified`
+(social sign-in no longer links accounts by raw email — the flag must be set by a verified
+audience), `1791600000000-AddActiveRideUniqueIndex` (partial unique index
+`UQ_rides_active_per_rider` — at most ONE active ride per rider, enforced by the database;
+dedupes any pre-existing double-bookings first, then cancels the older ones as system) and
+`1791400000000-AddRideOfferAndOtpColumns` (M-3 fix — see below). Run them on Render after
+every pull that touches `backend/src/database/migrations/` — they are never automatic.
 
 > **⚠ M-2 — fresh-database blocker (owner fix pending):** on a *brand-new*
 > database `migration:run` fails at the legacy auto-generated
@@ -51,9 +54,53 @@ post-pull migrations are `1791300000000-AddPromosTables` (creates `promos` +
 ## Environment (names only)
 
 - Backend: `ADMIN_PHONES`, `UPLOAD_DIR`, `MAX_UPLOAD_MB`, `STORAGE_DRIVER` (`local`|`cloudinary`, needs `CLOUDINARY_*` for deploys), `CORS_ORIGIN`,
-  `DB_SSL_REJECT_UNAUTHORIZED`, `OTP_DEV_MODE`, `PAYMENTS_DEV_MODE` (both **refuse to boot in production when `true`**),
-  `TIMER_SWEEP_MS` (ride-offer/search timer sweep interval, default 5000), `PRNG_SEED` (deterministic dev seed).
-- Frontend: `EXPO_PUBLIC_API_URL` (must end in `/api/v1`), plus the Google/Mapbox keys already in use.
+  `DB_SSL_REJECT_UNAUTHORIZED` (same policy for the app AND `migration:run` — see `config/db-ssl.ts`),
+  `OTP_DEV_MODE`, `PAYMENTS_DEV_MODE` (both **refuse to boot in production when `true`**),
+  `RAZORPAY_WEBHOOK_SECRET` (pass-4: signing secret for `POST /payments/webhook/razorpay` —
+  optional in dev, the endpoint **fails closed with 401** when unset; **required in production
+  when `PAYMENTS_DEV_MODE` is false**, and must match the secret configured on Razorpay's
+  webhook, otherwise gateway-settled payments never reach the server),
+  `OTP_LENGTH` (4–8, default 4 — the APK shipped 4-digit OTP entry; **flip to 6 once the
+  updated app is out** and set `ADMIN_OTP_MIN_LENGTH`-style expectations for phone-based admin promotion, which always requires ≥ 6),
+  `GOOGLE_WEB_CLIENT_ID` / `APPLE_CLIENT_ID` (social sign-in **audience** checks — required in
+  production; the app refuses social sign-in with a 503 when unset, and Google/Apple tokens are
+  rejected when their `aud` does not match),
+  `TIMER_SWEEP_MS` (ride-offer/search timer sweep interval, default 5000), `PRNG_SEED` (deterministic dev seed),
+  `MAX_TRIP_KM` (pass-4: refuse bookings whose routed distance exceeds it, default 150),
+  `SERVICE_AREA_BBOX` (pass-4, optional: `minLat,minLng,maxLat,maxLng` — both trip points must
+  sit inside it; a malformed value fails boot),
+  `TRUST_PROXY` (default `false`; set `true` **only** behind a reverse proxy so rate limiting sees real client IPs —
+  never enable when the app port is directly reachable, or clients could spoof `X-Forwarded-For` to bypass throttles),
+  `REQUIRE_AUTH_FOR_PHOTOS` (pass-4 task 10: `false` by default so existing APKs keep rendering; set `true` to require a
+  valid access token on the billable photo proxy `GET /places/photo/*` — flip it only after a build that sends the
+  `Authorization` header has shipped, or curated/live photos will 401 for old clients).
+- Frontend: `EXPO_PUBLIC_API_URL` (must end in `/api/v1`), `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`
+  (Google sign-in client id), plus the Google Places/Maps and Mapbox keys — all `EXPO_PUBLIC_*`
+  values compile INTO the JS bundle and are extractable from any APK: restrict them in their
+  cloud consoles (API restrictions, quota/billing alerts).
+
+## Environments (pass 4 — never share state between them)
+
+Each environment (your laptop, a teammate's machine, CI, Render) gets its **own
+set of everything**. A dev command must never be able to see or change
+production data, and a leaked dev `.env` must never forge production tokens:
+
+| Piece | Dev (per machine) | Prod (Render) |
+| --- | --- | --- |
+| Postgres | own local/docker database | own managed database |
+| Redis | own local/docker instance | own managed instance |
+| JWT secrets | own random `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | own, rotated when shared anywhere |
+| Cloudinary | own folder (`CLOUDINARY_FOLDER`, e.g. `vazhi-dev`) | production folder |
+| MSG91 / Razorpay / Google / Mapbox | dev keys or dev modes | prod keys |
+
+Enforced in code (pass 4): every one-off script (`src/database/scripts/*`,
+`src/database/seeds/seed.ts`, `scripts/repair-schema.ts`,
+`scripts/remove-seed-drivers.ts`) refuses `NODE_ENV=production` and any
+non-local DB host unless started with
+`--i-understand-this-is-a-remote-database` (destructive scripts additionally
+need `ALLOW_REMOTE_DB_WRITES=true`); the integration suite refuses a test
+database that is not named `*test*`, equals `DB_DATABASE`, or points at a
+remote host without `TEST_DB_ALLOW_REMOTE=1`.
 
 ## Owner security checklist (S-1)
 
@@ -65,10 +112,36 @@ post-pull migrations are `1791300000000-AddPromosTables` (creates `promos` +
   JWT, MSG91, Razorpay and Cloudinary secrets. This pass never touched those files — rotation is owner-only.
 - Before real users: set `OTP_DEV_MODE=false` and `PAYMENTS_DEV_MODE=false`, and move uploads to `STORAGE_DRIVER=cloudinary` (local disk dies on ephemeral hosts).
 
+## Security hardening (2026-10-09)
+
+- **Default-deny auth**: `JwtAuthGuard` is a global `APP_GUARD` (registered after `ThrottlerGuard`).
+  Every route requires a bearer token unless its handler/controller is explicitly `@Public()`.
+  The complete public surface: `POST /auth/otp/send`, `POST /auth/otp/verify`, `POST /auth/refresh`,
+  `POST /auth/google`, `POST /auth/apple`, `GET /users/:id/avatar`, `GET /places/photo/*`.
+  A new controller added without a guard is now **401, not open**. `RolesGuard` /
+  `ApprovedDriverGuard` keep running per-route on top of it.
+- **Throttles**: global 300 req/min; OTP send 10/10min and verify 30/5min per IP (on top of
+  per-phone caps + the OTP failure lockout — 10 wrong codes in 60 min locks verification);
+  `refresh`/`google`/`apple` 30/5min; both public photo routes 120/min/IP
+  (each cache miss is a billable server-side Google/Wikimedia fetch, and the proxy cache is
+  LRU-bounded: 400 entries / 32 MB).
+  **Authenticated traffic is keyed PER USER** (`user:<id>` from the verified bearer token —
+  `UserKeyedThrottlerGuard`), falling back to per-IP only for anonymous/forged tokens, so
+  rotating IPs cannot refresh a bucket and CGNAT/proxy users cannot starve each other.
+  IP-keyed limits are still only correct behind a proxy with `TRUST_PROXY=true` (see Environment).
+- **Dependencies**: `npm audit --omit=dev` went 13 (3 high) → 5 via npm `overrides`
+  (multer 2.4.0, qs 6.16.0, body-parser 1.20.8, lodash 4.18.1, file-type 21.x, uuid 11.1.1).
+  The 5 remaining are all the one `@nestjs/core` advisory fixed only in **Nest 12** (major
+  upgrade — owner decision) plus its transitive spread; re-check with `npm audit --omit=dev`.
+- **Container**: `backend/.dockerignore` keeps `.env*`, keystores and keys out of the build
+  context; the runtime image installs with `npm ci` and runs as the unprivileged `node` user.
+  Rebuild + smoke after pulling (`docker compose build`) — Docker is absent on the dev machine,
+  so these changes were verified by inspection only.
+
 ## Verification commands
 
 ```bash
-cd backend  && npx tsc --noEmit && npx jest          # unit: 128 tests / 12 suites (no DB needed)
+cd backend  && npx tsc --noEmit && npx jest          # unit: 209 tests / 20 suites (no DB needed)
 cd frontend && npx tsc --noEmit && npx eslint src    # 0 errors
 ```
 
@@ -93,3 +166,14 @@ against the local server and creates its own `vazhi_test` database (never dev's)
 - `D-4` background location heartbeat needs a new native build (`npx expo run:android|ios` or EAS) and background permission ("allow all the time") on the driver's device.
 - CSV export is capped at 50 000 rows per request; ride-list phone privacy applies to the export too.
 - Device/DB/Redis/payment-sandbox tests in the delivery report's "needs manual verification" list have not been run here.
+- **Multi-device sessions**: refresh tokens are single-use (rotation on every refresh), but there is
+  no server-side session registry — logging in on a second device with the same phone does NOT
+  revoke the first device's tokens, and logout on one device does not invalidate the other's
+  refresh token (only that device's current token dies when it is presented). A "revoke all
+  sessions" / session-family table is the known follow-up if account-takeover response needs it.
+- Security-hardening pass 2 residuals (2026-10-09, branch `security-hardening`): `npm audit` still
+  reports 5 backend moderates (all on the Nest 12 upgrade chain, `fixAvailable` wants a major bump)
+  and 16 frontend build-tool highs with `fixAvailable: false` (Expo/Metro toolchain — upgrading is
+  Expo's job, not a pin away); the global rate limiter sits before the router so 400s/404s consume
+  buckets; `docker-compose.yml`'s `migration:run` service is missing `ts-node` (use
+  `npm run migration:run` on the host instead); there is still no root `README.md`.

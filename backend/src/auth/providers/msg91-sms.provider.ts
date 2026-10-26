@@ -2,6 +2,7 @@ import { HttpService } from '@nestjs/axios';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { last4 } from '../../common/log-hygiene';
 import { SmsProvider, SmsSendResult } from './sms-provider.interface';
 
 /**
@@ -39,7 +40,9 @@ export class Msg91SmsProvider implements SmsProvider {
       );
       return { sent: true };
     } catch (err) {
-      this.logger.error(`MSG91 send failed for ${phone}`, err as Error);
+      // Pass-4 (task 13): log only the last 4 digits — full numbers don't
+      // belong in log drains.
+      this.logger.error(`MSG91 send failed for •••••${last4(phone)}`, err as Error);
       // Return sent:false so callers can fall back — but auth.service must NOT
       // leak devOtp on sent:false in production (fixed there).
       return { sent: false };

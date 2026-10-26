@@ -8,6 +8,7 @@
  */
 import { DataSource } from 'typeorm';
 import { dataSourceOptions } from '../src/config/typeorm.datasource';
+import { assertSafeForScript } from '../src/config/db-guard';
 import { SCHEMA_REPAIR_STATEMENTS } from '../src/database/schema-repair';
 
 const REQUIRED: Record<string, string[]> = {
@@ -25,6 +26,7 @@ const REQUIRED: Record<string, string[]> = {
 };
 
 async function main(): Promise<void> {
+  assertSafeForScript({ destructive: true });
   // Plain connection: no entity/migration globbing needed for raw DDL.
   const ds = new DataSource({ ...dataSourceOptions, entities: [], migrations: [], synchronize: false });
   await ds.initialize();

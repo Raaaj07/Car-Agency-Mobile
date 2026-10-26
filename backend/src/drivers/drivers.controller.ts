@@ -1,9 +1,9 @@
 import { BadRequestException, Body, Controller, Get, Patch, Post, Query, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { NearbyDriversQueryDto } from './dto/nearby-drivers-query.dto';
 import { ApplyDriverDto } from './dto/apply-driver.dto';
 import { UpdateDriverLocationDto } from './dto/update-driver-location.dto';
@@ -23,8 +23,11 @@ export class DriversController {
   ) {}
 
   // Driver application with document uploads (multipart). Any authenticated
-  // rider; allowed when never applied or after rejection.
-  @UseGuards(JwtAuthGuard)
+  // rider; allowed when never applied or after rejection. Auth is global
+  // (SEC-1 default-deny).
+  // Route throttle: 5/min — multipart uploads cost storage + scan time; a
+  // human re-applies at most a handful of times after a rejection.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('apply')
   @UseInterceptors(
     FileFieldsInterceptor(
@@ -93,35 +96,33 @@ export class DriversController {
   }
 
   // Own application status (null when never applied).
-  @UseGuards(JwtAuthGuard)
   @Get('application')
   getApplication(@CurrentUser() user: AuthenticatedUser) {
     return this.drivers.getApplication(user.userId);
   }
 
   // Matches DriverDashboardScreen's online/offline Switch (approved only).
-  @UseGuards(JwtAuthGuard, ApprovedDriverGuard)
+  @UseGuards(ApprovedDriverGuard)
   @Post('status')
   setStatus(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateDriverStatusDto) {
     return this.drivers.setStatus(user.userId, dto.isOnline);
   }
 
   // Matches DriverDashboardScreen's top bar + earnings card, and DriverAccountScreen.
-  @UseGuards(JwtAuthGuard)
   @Get('me')
   getMyProfile(@CurrentUser() user: AuthenticatedUser) {
     return this.drivers.tryGetMyProfile(user.userId);
   }
 
   // D-1: payee VPA for the payment QR (approved only, validated, audited).
-  @UseGuards(JwtAuthGuard, ApprovedDriverGuard)
+  @UseGuards(ApprovedDriverGuard)
   @Patch('me/upi-vpa')
   setMyUpiVpa(@CurrentUser() user: AuthenticatedUser, @Body() dto: SetUpiVpaDto) {
     return this.drivers.setMyUpiVpa(user.userId, dto.vpa);
   }
 
   // Matches TurnByTurnNavigationScreen's periodic location pings (approved only).
-  @UseGuards(JwtAuthGuard, ApprovedDriverGuard)
+  @UseGuards(ApprovedDriverGuard)
   @Patch('location')
   updateLocation(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateDriverLocationDto) {
     return this.drivers.updateLocation(user.userId, dto.lat, dto.lng);
@@ -129,10 +130,14 @@ export class DriversController {
 
   // Matches VehicleSelectionScreen / FindingDriverScreen — driver search
   // around the rider's pickup point, optionally filtered by vehicle type.
-  @UseGuards(JwtAuthGuard)
+  // SEC-6: the HTTP response is redacted (see findNearbyPublic) — riders
+  // get dots + etas, never the drivers' ids/names/models/ratings.
+  // Route throttle: 30/min — the app polls while searching, but each call
+  // walks the driver table; 30/min bounds the CPU cost per user.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('nearby')
   findNearby(@Query() query: NearbyDriversQueryDto) {
-    return this.drivers.findNearby(
+    return this.drivers.findNearbyPublic(
       query.lat,
       query.lng,
       query.radiusMeters,

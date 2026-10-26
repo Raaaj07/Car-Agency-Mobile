@@ -22,6 +22,10 @@ export interface User {
 }
 
 const MODE_KEY = 'vazhi.activeMode';
+// Survives logout: the onboarding stack opens the language picker only
+// on first run ('' = nothing chosen yet) and starts at SignIn afterwards,
+// so logging out lands on the login page — not language settings again.
+const LANG_KEY = 'vazhi.language';
 
 async function saveSecure(key: string, value: string | null) {
   try {
@@ -41,6 +45,8 @@ interface AuthState {
   accessToken: string | null;
   refreshToken: string | null;
   developmentOtp: string | null;
+  // SEC-1: code width reported by POST /auth/otp/send (old servers omit it → 4).
+  otpLength: number;
   activeMode: 'rider' | 'driver';
   hydrated: boolean;
   bootOffline: boolean;
@@ -49,6 +55,7 @@ interface AuthState {
   setLanguage: (lang: string) => void;
   setPhone: (phone: string) => void;
   setDevelopmentOtp: (otp: string | null) => void;
+  setOtpLength: (length: number) => void;
   setActiveMode: (mode: 'rider' | 'driver') => void;
   setHydrated: () => void;
   login: (userData: User, tokens?: { accessToken: string; refreshToken: string }) => void;
@@ -59,21 +66,27 @@ interface AuthState {
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  language: 'en',
+  // '' until the user picks a language in onboarding (see LANG_KEY).
+  language: '',
   phone: '',
   user: null,
   isAuthenticated: false,
   accessToken: null,
   refreshToken: null,
   developmentOtp: null,
+  otpLength: 4,
   activeMode: 'rider',
   hydrated: false,
   bootOffline: false,
   justLoggedIn: false,
 
-  setLanguage: (lang) => set({ language: lang }),
+  setLanguage: (lang) => {
+    set({ language: lang });
+    void saveSecure(LANG_KEY, lang);
+  },
   setPhone: (phone) => set({ phone }),
   setDevelopmentOtp: (otp) => set({ developmentOtp: otp }),
+  setOtpLength: (length) => set({ otpLength: length }),
   setActiveMode: (mode) => {
     set({ activeMode: mode });
     void saveSecure(MODE_KEY, mode);
@@ -125,9 +138,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     const state = useAuthStore.getState();
     if (remote && state.accessToken) {
       // Best-effort server revocation; never blocks local logout.
+      // The refresh token is read NOW: tokenManager.clear() below runs before
+      // this dynamic import resolves.
+      const refreshForServer = state.refreshToken ?? tokenManager.getRefreshToken() ?? undefined;
+      const accessForServer = state.accessToken;
       import('../api/auth').then(({ authApi }) =>
-        authApi.logout().catch(() => {}),
+        authApi.logout(refreshForServer, accessForServer).catch(() => {}),
       );
+      // Stop pushes for this account on this device (needs the token NOW).
+      import('../lib/push').then((m) => m.unregisterPush(accessForServer)).catch(() => {});
     }
     disconnectSocket();
     // D-4: a signed-out driver must not keep the background location service.
@@ -135,12 +154,18 @@ export const useAuthStore = create<AuthState>((set) => ({
     tokenManager.clear();
     void saveSecure(ACCESS_KEY, null);
     void saveSecure(REFRESH_KEY, null);
-    // The persisted Rider/Driver mode belongs to the account that just left.
-    // Left behind, the NEXT approved driver to sign in on this phone would
-    // reopen straight in driver mode (restoreSession reads this key).
-    void saveSecure(MODE_KEY, null);
+    // The Rider/Driver mode deliberately survives logout: the same approved
+    // driver signing back in must land in driver mode again. login() only
+    // honors the remembered mode for an approved account (everyone else
+    // falls back to rider), and updateUser forces rider if the server ever
+    // downgrades the driver — so keeping it here is preference, not privilege.
     import('./rideStore')
       .then((m) => m.useRideStore.getState().resetRide())
+      .catch(() => {});
+    // Per-user places: recents/saved/promos (and the local search history)
+    // must never leak from one account to the next on the same device.
+    import('./placesStore')
+      .then((m) => m.usePlacesStore.getState().reset())
       .catch(() => {});
     set({
       isAuthenticated: false,
@@ -148,7 +173,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       accessToken: null,
       refreshToken: null,
       developmentOtp: null,
-      activeMode: 'rider',
+      otpLength: 4,
+      // activeMode kept — the same account must reopen in its last mode.
       bootOffline: false,
       justLoggedIn: false,
     });
@@ -160,15 +186,20 @@ export const useAuthStore = create<AuthState>((set) => ({
       let access: string | null = null;
       let refresh: string | null = null;
       let mode: string | null = null;
+      let lang: string | null = null;
       try {
-        [access, refresh, mode] = await Promise.all([
+        [access, refresh, mode, lang] = await Promise.all([
           SecureStore.getItemAsync(ACCESS_KEY),
           SecureStore.getItemAsync(REFRESH_KEY),
           SecureStore.getItemAsync(MODE_KEY),
+          SecureStore.getItemAsync(LANG_KEY),
         ]);
       } catch {
         // No secure storage — stay logged out.
       }
+      // Set before the !access early-return below: a logged-out launch must
+      // still know a language was chosen (otherwise it re-shows the picker).
+      if (lang) set({ language: lang });
       if (access || refresh) {
         tokenManager.setTokens({
           ...(access ? { accessToken: access } : {}),
@@ -176,6 +207,31 @@ export const useAuthStore = create<AuthState>((set) => ({
         });
       }
       if (mode === 'driver') set({ activeMode: 'driver' });
+      // Pass-4 (task 11): a stored access token may be absent or already
+      // wiped (it was expired / cleared), while the refresh token survives.
+      // Do NOT log the user out in that case — mint a fresh access token via
+      // the normal client path, then continue as authenticated below.
+      if (!access && refresh) {
+        tokenManager.setTokens({ refreshToken: refresh });
+        set({ refreshToken: refresh });
+        const { authApi } = await import('../api/auth');
+        try {
+          const tokens = await authApi.refresh(refresh);
+          access = tokens.accessToken;
+          refresh = tokens.refreshToken ?? refresh;
+          tokenManager.setTokens({ accessToken: access, refreshToken: refresh });
+        } catch (e) {
+          if (isHttpResponseError(e)) {
+            // 401/403 = the refresh token is dead → treat as logged out.
+            // (remote=false: nothing to revoke server-side on a dead token.)
+            useAuthStore.getState().logout(false);
+            return;
+          }
+          // No response (airplane mode / backend asleep) → offline retry screen.
+          set({ bootOffline: true });
+          return;
+        }
+      }
       if (!access) return;
       // Validate against the server; refresh happens via the 401 interceptor.
       const { authApi } = await import('../api/auth');

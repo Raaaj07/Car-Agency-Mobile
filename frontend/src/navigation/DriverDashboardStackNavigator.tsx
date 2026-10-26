@@ -19,6 +19,10 @@ export const DriverDashboardStackNavigator: React.FC = () => {
   const [otpError, setOtpError] = useState<string | undefined>();
   // Guards against a double-tap on "Accept Ride" firing accept() twice.
   const acceptingRef = useRef(false);
+  // Same guard for Start Trip / Complete Trip / Verify OTP. `isSubmitting` is
+  // React state (updates a frame late), so a very fast double tap could still
+  // send the request twice; a ref blocks the second tap immediately.
+  const submittingRef = useRef(false);
 
   return (
     <Stack.Navigator
@@ -122,7 +126,8 @@ export const DriverDashboardStackNavigator: React.FC = () => {
             }}
             onPrimaryAction={async () => {
               const ride = useRideStore.getState().activeRide;
-              if (!ride) return;
+              if (!ride || submittingRef.current) return;
+              submittingRef.current = true;
               setIsSubmitting(true);
               try {
                 if ((route.params?.phase ?? 'to_pickup') === 'to_pickup') {
@@ -152,6 +157,7 @@ export const DriverDashboardStackNavigator: React.FC = () => {
                   getApiError(error),
                 );
               } finally {
+                submittingRef.current = false;
                 setIsSubmitting(false);
               }
             }}
@@ -167,7 +173,8 @@ export const DriverDashboardStackNavigator: React.FC = () => {
             serverError={otpError}
             onVerify={async (otp) => {
               const ride = useRideStore.getState().activeRide;
-              if (!ride) return;
+              if (!ride || submittingRef.current) return;
+              submittingRef.current = true;
               setIsSubmitting(true);
               setOtpError(undefined);
               try {
@@ -186,6 +193,7 @@ export const DriverDashboardStackNavigator: React.FC = () => {
               } catch (error) {
                 setOtpError(getApiError(error));
               } finally {
+                submittingRef.current = false;
                 setIsSubmitting(false);
               }
             }}

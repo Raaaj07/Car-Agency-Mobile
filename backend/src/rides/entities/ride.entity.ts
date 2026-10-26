@@ -24,6 +24,13 @@ export type RideStatus =
   | 'completed'
   | 'cancelled';
 
+// Single source of truth for "the rider/driver is locked into this ride"
+// statuses — used by RidesService.create()/findActiveForRider() (booking
+// pre-check) and by PromosService's SEC-9 cap accounting (an in-flight ride
+// still holds its promo slot until it completes or cancels). Lives here so
+// the promos module can use it without importing rides.service.
+export const ACTIVE_RIDE_STATUSES = ['requested', 'matched', 'driver_en_route', 'in_progress'] as const;
+
 export type PaymentMethod = 'upi' | 'wallet' | 'card' | 'cash';
 // State machine (P-1): pending → rider_claimed → paid | disputed, plus
 // 'failed' for a failed Razorpay verification. Only the driver/admin/provider
@@ -37,6 +44,17 @@ export interface RideLocation {
   lng: number;
 }
 
+// SEC-4: at most ONE active ride per rider, enforced by the database. The
+// count() pre-check in RidesService.create() is only a friendly fast path —
+// two concurrent POST /rides both saw zero and double-booked (two active
+// rides, two driver searches). Partial index: completed/cancelled history
+// rows are unaffected. Declared here with the SAME name/shape as migration
+// 1791600000000 so DB_SYNCHRONIZE keeps it (TypeORM drops indexes the
+// entity does not know) and can even create it on a synchronize-only DB.
+@Index('UQ_rides_active_per_rider', ['riderId'], {
+  unique: true,
+  where: `"status" IN ('requested','matched','driver_en_route','in_progress')`,
+})
 @Entity('rides')
 export class RideEntity {
   @PrimaryGeneratedColumn('uuid')
@@ -113,6 +131,10 @@ export class RideEntity {
   @Column({ type: 'jsonb', nullable: true })
   compliments?: string[] | null;
 
+  // Optional free-text feedback typed with the rating (admin-visible only).
+  @Column({ type: 'varchar', length: 300, nullable: true })
+  ratingComment?: string | null;
+
   @Column({ type: 'int', default: 0 })
   tipAmount!: number;
 
@@ -148,4 +170,18 @@ export class RideEntity {
 
   @Column({ type: 'timestamptz', nullable: true })
   cancelledAt?: Date | null;
+
+  // Safety: SHA-256 of the live-share token (raw token is only ever returned
+  // once, to the rider), its expiry, and the SOS flag + last known position.
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  shareTokenHash?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  shareExpiresAt?: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  sosAt?: Date | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  sosLocation?: { lat: number; lng: number } | null;
 }

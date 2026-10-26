@@ -1,7 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApprovedDriverGuard } from '../drivers/guards/approved-driver.guard';
 import { CancelRideDto } from './dto/cancel-ride.dto';
 import { CompleteRideDto } from './dto/complete-ride.dto';
@@ -11,22 +11,31 @@ import { SubmitReviewDto } from './dto/submit-review.dto';
 import { VerifyPickupOtpDto } from './dto/verify-pickup-otp.dto';
 import { RidesService } from './rides.service';
 
-@UseGuards(JwtAuthGuard)
+// Authentication is global (SEC-1 default-deny); driver-only routes below add
+// ApprovedDriverGuard on top.
 @Controller('rides')
 export class RidesController {
   constructor(private readonly rides: RidesService) {}
 
   // Vehicle Selection -> Ride Details -> "Book". Any authenticated user; the
   // service rejects double-booking and online-driver booking.
+  // Route throttle: booking is the most expensive mutation (driver match, SMS
+  // hints) — 5/min is far above any real booking pace but caps scripted spam.
+  // Task 11: per-endpoint throttle + Idempotency-Key header support
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post()
-  create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateRideDto) {
-    return this.rides.create(user.userId, dto);
+  create(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateRideDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.rides.create(user.userId, dto, idempotencyKey);
   }
 
   // R-1: "Retry" when the search came back with no drivers — re-runs the
   // match immediately instead of waiting out the server search window.
   @Post(':id/rematch')
-  rematch(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  rematch(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.rematch(id, user.userId);
   }
 
@@ -60,44 +69,47 @@ export class RidesController {
   }
 
   @Get(':id')
-  findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  findOne(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.findById(id, user.userId);
   }
 
   // RideRequestNearbyScreen's "Accept Ride" (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/accept')
-  accept(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  accept(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.accept(id, user.userId);
   }
 
   // RideRequestNearbyScreen's "Decline" / 15s timeout (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/decline')
-  decline(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  decline(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.decline(id, user.userId);
   }
 
   // TurnByTurnNavigationScreen: driver begins heading to pickup (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/en-route')
-  enRoute(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  enRoute(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.markEnRoute(id, user.userId);
   }
 
   // DriverEnRouteScreen's "Driver Arrived (Start)" (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/start')
-  start(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  start(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.start(id, user.userId);
   }
 
   // OTP the driver enters from the rider's YouGotTheRideScreen code (approved only).
+  // Route throttle: a 4-6 digit code is guessable — 10/min backs up the
+  // service's per-ride attempt counter even against an approved driver account.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/verify-pickup-otp')
   verifyPickupOtp(
     @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: VerifyPickupOtpDto,
   ) {
     return this.rides.verifyPickupOtp(id, user.userId, dto);
@@ -106,27 +118,33 @@ export class RidesController {
   // Trip end -> PaymentFareBreakdownScreen's numbers (approved only).
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/complete')
-  complete(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: CompleteRideDto) {
+  complete(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CompleteRideDto) {
     return this.rides.complete(id, user.userId, dto);
   }
 
   // DriverPaymentScreen's "Amount Received" after the rider pays the UPI QR
   // (approved driver who owns the ride; ride must be completed).
+  // Route throttle: 10/min — a payment claim is a state change, not a poll.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseGuards(ApprovedDriverGuard)
   @Patch(':id/payment-received')
-  paymentReceived(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  paymentReceived(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.markPaymentReceived(id, user.userId);
   }
 
   // CancelRideConfirmationScreen (either party can cancel).
+  // Task 11: 5/min per user — cancel spam cannot be used to flap match state.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Patch(':id/cancel')
-  cancel(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: CancelRideDto) {
+  cancel(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelRideDto) {
     return this.rides.cancel(id, user.userId, user.role ?? 'rider', dto);
   }
 
   // ReviewRideScreen's onSubmitReview (ownership checked in service).
+  // Task 11: 5/min per user — reviews are write-once anyway (409 on re-review).
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Patch(':id/review')
-  review(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: SubmitReviewDto) {
+  review(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SubmitReviewDto) {
     return this.rides.submitReview(id, user.userId, dto);
   }
 }

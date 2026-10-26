@@ -1,8 +1,10 @@
 import React from 'react';
 import { Alert } from 'react-native';
-import { createNativeStackNavigator, NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { RiderHomeStackParamList, RootStackParamList } from './types';
-import { useNavigation } from '@react-navigation/native';
+import { createNativeStackNavigator, NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
+import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { MainTabParamList, RiderHomeStackParamList, RootStackParamList } from './types';
+import { CommonActions, useNavigation } from '@react-navigation/native';
+import { goToRideCancelled, resetRiderHomeStack } from './navHelpers';
 
 import { HomeDashboardScreen } from '../screens/rider/HomeDashboardScreen';
 import { DestinationSearchScreen } from '../screens/rider/DestinationSearchScreen';
@@ -37,12 +39,14 @@ export const RiderHomeStackNavigator: React.FC = () => {
       screenOptions={{ headerShown: false, animation: 'slide_from_right' }}
     >
       <Stack.Screen name="HomeDashboard">
-        {({ navigation }) => (
+        {/* Annotated explicitly: this native-stack version doesn't contextually
+            type the render-prop navigation (it falls back to `any`). */}
+        {({ navigation }: NativeStackScreenProps<RiderHomeStackParamList, 'HomeDashboard'>) => (
           <HomeDashboardScreen
             onSearchPress={(focus) => navigation.navigate('DestinationSearch', { focus })}
             onSelectVehicle={() => navigation.navigate('VehicleSelection')}
             onBellPress={() => rootNavigation.navigate('RideAnnouncementsSettings')}
-            onExploreServices={() => (navigation.getParent() as any)?.navigate('ServicesTab')}
+            onExploreServices={() => navigation.getParent<BottomTabNavigationProp<MainTabParamList>>()?.navigate('ServicesTab')}
           />
         )}
       </Stack.Screen>
@@ -94,15 +98,26 @@ export const RiderHomeStackNavigator: React.FC = () => {
                 // is nearby. Backend defaults this to false.
                 allowUpgrade: true,
               };
+              // One key per confirm press: reused by the automatic retries below,
+              // so a double-tap / lost response never books twice.
+              const idempotencyKey = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
               const bookOnce = async () => {
                 beginBooking();
                 try {
-                  const ride = await ridesApi.create(bookingInput);
+                  const ride = await ridesApi.create(bookingInput, idempotencyKey);
                   setActiveRide(ride);
                   // R-1: remember whether the search came back empty so
                   // FindingDriver can show the honest "no drivers" state.
                   setMatchResult(ride.match?.status ?? null);
-                  navigation.navigate('FindingDriver');
+                  // D2: entering the search resets the stack to
+                  // [HomeDashboard, FindingDriver] so back can never walk
+                  // into the booking form while a ride is being matched.
+                  navigation.dispatch(
+                    CommonActions.reset({
+                      index: 1,
+                      routes: [{ name: 'HomeDashboard' }, { name: 'FindingDriver' }],
+                    }),
+                  );
                 } finally {
                   // Keep the flag up for the whole booking attempt so a
                   // concurrent restoreActiveRide() cannot clear the new ride.
@@ -132,7 +147,9 @@ export const RiderHomeStackNavigator: React.FC = () => {
                             return;
                           }
                           applyRideToStore(active);
-                          navigation.navigate(screenForStatus(active.status));
+                          // D8: resume into a clean stack — never on top of
+                          // whatever booking screens are still open.
+                          resetRiderHomeStack(navigation, [screenForStatus(active.status)]);
                         } catch (err) {
                           Alert.alert('Booking failed', getApiError(err));
                         }
@@ -168,14 +185,14 @@ export const RiderHomeStackNavigator: React.FC = () => {
             <Stack.Screen name="FindingDriver">
         {({ navigation }) => (
           <FindingDriverScreen
-            onDriverFound={() => navigation.navigate('YouGotTheRide')}
+            onDriverFound={() => navigation.replace('YouGotTheRide')}
             onCancelPress={() => rootNavigation.navigate('CancelRideConfirmation')}
             onRideCancelled={() => {
               // The ride is already cancelled by the time this fires — go
               // straight to the outcome screen instead of re-prompting for
               // confirmation (that re-prompt was the double-modal bug).
               const ride = useRideStore.getState().activeRide;
-              rootNavigation.navigate('RideCancelled', {
+              goToRideCancelled(rootNavigation, {
                 reason: ride?.cancellationReason ?? undefined,
               });
             }}
@@ -186,12 +203,12 @@ export const RiderHomeStackNavigator: React.FC = () => {
       <Stack.Screen name="YouGotTheRide">
         {({ navigation }) => (
           <YouGotTheRideScreen
-            onTrackDriver={() => navigation.navigate('DriverEnRoute')}
+            onTrackDriver={() => navigation.replace('DriverEnRoute')}
             onRideCancelled={(reason) => {
               // Driver cancelled (or the system did) right after matching —
               // land on the outcome screen instead of a dead live map.
               resetRide();
-              rootNavigation.navigate('RideCancelled', { reason });
+              goToRideCancelled(rootNavigation, { reason });
             }}
           />
         )}
@@ -200,15 +217,15 @@ export const RiderHomeStackNavigator: React.FC = () => {
       <Stack.Screen name="DriverEnRoute">
         {({ navigation }) => (
           <DriverEnRouteScreen
-            onStartTrip={() => navigation.navigate('TripProgress')}
+            onStartTrip={() => navigation.replace('TripProgress')}
             onCancelRide={() => rootNavigation.navigate('CancelRideConfirmation')}
             onRideCancelled={(reason) => {
               // Cancelled by the driver or the stale sweep while this screen
               // was open — mirror FindingDriver: land on the outcome screen.
               resetRide();
-              rootNavigation.navigate('RideCancelled', { reason });
+              goToRideCancelled(rootNavigation, { reason });
             }}
-            onRideCompleted={() => navigation.navigate('ReviewRide')}
+            onRideCompleted={() => navigation.replace('ReviewRide')}
           />
         )}
       </Stack.Screen>
@@ -216,13 +233,12 @@ export const RiderHomeStackNavigator: React.FC = () => {
       <Stack.Screen name="TripProgress">
         {({ navigation }) => (
           <TripProgressScreen
-            onCompleteTrip={() => navigation.navigate('ReviewRide')}
+            onCompleteTrip={() => navigation.replace('ReviewRide')}
             onCancelRide={() => rootNavigation.navigate('CancelRideConfirmation')}
             onRideCancelled={(reason) => {
               resetRide();
-              rootNavigation.navigate('RideCancelled', { reason });
+              goToRideCancelled(rootNavigation, { reason });
             }}
-            onEmergencyPress={() => rootNavigation.navigate('RideAnnouncementsSettings')}
           />
         )}
       </Stack.Screen>
@@ -230,12 +246,17 @@ export const RiderHomeStackNavigator: React.FC = () => {
       <Stack.Screen name="ReviewRide">
         {({ navigation }) => (
           <ReviewRideScreen
-            onBack={() => navigation.goBack()}
-            onSubmitReview={async (rating, compliments, tipAmount) => {
+            onBack={() => {
+              // D3: the ride is already finished — back goes Home, never into a
+              // live-trip screen. Skipping the rating is allowed.
+              resetRide();
+              resetRiderHomeStack(navigation);
+            }}
+            onSubmitReview={async (rating, compliments, tipAmount, comment) => {
               const ride = useRideStore.getState().activeRide;
               if (!ride) return Alert.alert('Ride unavailable', 'No active ride was found.');
               try {
-                const updated = await ridesApi.review(ride.id, { rating, compliments, tipAmount });
+                const updated = await ridesApi.review(ride.id, { rating, compliments, tipAmount, ...(comment ? { comment } : {}) });
                 setActiveRide(updated);
                 // No silent auto-payment here: the rider pays the UPI QR on
                 // the driver's phone and the driver taps "Amount Received",
@@ -266,7 +287,11 @@ export const RiderHomeStackNavigator: React.FC = () => {
       <Stack.Screen name="PaymentFareBreakdown">
         {({ navigation }) => (
           <PaymentFareBreakdownScreen
-            onBack={() => navigation.goBack()}
+            onBack={() => {
+              // D3: don't return to the already-submitted ReviewRide; go Home.
+              resetRide();
+              resetRiderHomeStack(navigation);
+            }}
             onDone={() => navigation.navigate('RideCompleted')}
           />
         )}
@@ -277,7 +302,10 @@ export const RiderHomeStackNavigator: React.FC = () => {
           <RideCompletedScreen
             onGoHome={() => {
               resetRide();
-              navigation.navigate('HomeDashboard');
+              // D1: navigate() would push a second HomeDashboard on top of the
+              // whole booking chain (v7) — reset so back from Home exits the
+              // app instead of returning to RideCompleted.
+              resetRiderHomeStack(navigation);
             }}
           />
         )}

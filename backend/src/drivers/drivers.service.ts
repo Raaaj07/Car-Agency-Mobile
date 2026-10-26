@@ -1,13 +1,14 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { EntityManager, In, MoreThan, Repository } from 'typeorm';
 import { DriverEntity, VehicleType } from './entities/driver.entity';
 import { GeoService, NearbyDriverHit } from './geo.service';
 import { RideEntity } from '../rides/entities/ride.entity';
 import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { StorageService } from './storage.service';
 import { ApplicationEventsService } from '../common/events/application-events.service';
+import { haversineKm } from '../common/geo-utils';
 import { appTimezone, zonedStartOfDay } from '../common/timezone';
 
 // D-1: the payee VPA must look like `name@bank` (kept in sync with the
@@ -26,6 +27,18 @@ export interface NearbyDriverResult {
   lat: number;
   lng: number;
   heading?: number;
+}
+
+// SEC-6: the RIDER-FACING shape of a nearby driver — position and derived
+// display numbers only. No driverId / userId / name / car model / rating:
+// together with a live coordinate feed those turn "how many cars are
+// around me" into a real-time tracker for NAMED people that any rider
+// account could poll and scrape.
+export interface NearbyPublicDriver {
+  lat: number;
+  lng: number;
+  vehicleType: VehicleType;
+  etaMinutes: number;
 }
 
 @Injectable()
@@ -188,10 +201,13 @@ export class DriversService {
 
   // Called by RidesService after ReviewRideScreen submits a star rating —
   // rolls the new rating into the driver's running average (atomic, no lost writes).
-  async applyRating(driverId: string, newRating: number): Promise<void> {
+  // SEC-9: an optional `manager` lets the aggregate update join the review's
+  // transaction — the ride.rating write and the driver's rating/totalTrips
+  // then commit (or roll back) together.
+  async applyRating(driverId: string, newRating: number, manager?: EntityManager): Promise<void> {
     if (!Number.isFinite(newRating) || newRating < 1 || newRating > 5) return;
     // Atomic: rating = (rating*totalTrips + new)/(totalTrips+1), totalTrips+1.
-    await this.drivers
+    await (manager ?? this.drivers.manager)
       .createQueryBuilder()
       .update(DriverEntity)
       .set({
@@ -206,6 +222,9 @@ export class DriversService {
   // PATCH /drivers/location — periodic pings from the driver app.
   async updateLocation(userId: string, lat: number, lng: number): Promise<DriverEntity> {
     const driver = await this.findByUserId(userId);
+    // Pass-4 (task 6): the PREVIOUS ping drives the implied-speed soft flag.
+    const prev = driver.location;
+    const prevAt = driver.locationUpdatedAt;
     driver.location = { type: 'Point', coordinates: [lng, lat] };
     driver.locationUpdatedAt = new Date();
     await this.drivers.save(driver);
@@ -213,7 +232,51 @@ export class DriversService {
     if (driver.isOnline) {
       await this.geo.upsertDriverLocation(driver.id, driver.vehicleType, lat, lng);
     }
+
+    // Pass-4 (task 6): soft flag — implied speed between consecutive pings
+    // > 200 km/h (GPS spoofing or a location jump). Never blocks the ping;
+    // at most one `location_jump` row per driver per hour.
+    if (prev && prevAt) {
+      const km = haversineKm(
+        { lat: prev.coordinates[1], lng: prev.coordinates[0] },
+        { lat, lng },
+      );
+      const hours = (driver.locationUpdatedAt.getTime() - prevAt.getTime()) / 3_600_000;
+      if (hours > 0 && km / hours > 200) {
+        await this.flagLocationJump(driver.id, km, hours);
+      }
+    }
     return driver;
+  }
+
+  // Pass-4 (task 6): once-per-hour (per driver) dedup on the location_jump
+  // soft flag — the ping cadence would otherwise flood the audit log. The
+  // row is never allowed to fail the ping itself.
+  private async flagLocationJump(driverId: string, km: number, hours: number): Promise<void> {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60_000);
+      const recent = await this.auditLogs.findOne({
+        where: {
+          action: 'ride_flag',
+          targetType: 'driver',
+          targetId: driverId,
+          reason: 'location_jump',
+          createdAt: MoreThan(oneHourAgo),
+        },
+      });
+      if (recent) return;
+      await this.auditLogs.save({
+        actorUserId: null,
+        actorName: null,
+        action: 'ride_flag',
+        targetType: 'driver',
+        targetId: driverId,
+        reason: 'location_jump',
+        meta: { reason: 'location_jump', km: Math.round(km * 10) / 10, speedKmh: Math.round(km / hours) },
+      });
+    } catch (err) {
+      this.logger.warn(`location_jump flag for driver ${driverId} not recorded: ${(err as Error).message}`);
+    }
   }
   
   // New method — matches GET /drivers/me:
@@ -354,6 +417,33 @@ export class DriversService {
     }
 
     return results;
+  }
+
+  // GET /drivers/nearby (rider-facing). SEC-6: same search as the internal
+  // findNearby() above — which ride matching still needs (driverId/userId
+  // to offer and de-duplicate) — but the HTTP response is REDACTED down to
+  // NearbyPublicDriver. The app only draws dots and counts.
+  async findNearbyPublic(
+    lat: number,
+    lng: number,
+    radiusMeters?: number,
+    vehicleType?: VehicleType,
+    groupByType?: boolean,
+  ): Promise<
+    NearbyPublicDriver[] | { drivers: NearbyPublicDriver[]; countsByType: Record<string, { count: number; bestEtaMinutes: number | null }> }
+  > {
+    const found = await this.findNearby(lat, lng, radiusMeters, vehicleType, groupByType);
+    const redact = (list: NearbyDriverResult[]): NearbyPublicDriver[] =>
+      list.map((d) => ({
+        lat: d.lat,
+        lng: d.lng,
+        vehicleType: d.vehicleType,
+        etaMinutes: d.etaMinutes,
+      }));
+    if (Array.isArray(found)) {
+      return redact(found);
+    }
+    return { drivers: redact(found.drivers), countsByType: found.countsByType };
   }
   
   private async hydrateFromRedis(hits: NearbyDriverHit[], minUpdatedAt: Date): Promise<NearbyDriverResult[]> {

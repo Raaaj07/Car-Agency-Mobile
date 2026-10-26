@@ -1,29 +1,34 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, ActivityIndicator, Text, Alert } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './types';
 
 import { OnboardingNavigator } from './OnboardingNavigator';
 import { MainTabNavigator } from './MainTabNavigator';
 import { AdminNavigator } from './AdminNavigator';
+import { flattenRouteNames, goToRideCancelled } from './navHelpers';
 
 import { CancelRideConfirmationScreen } from '../screens/shared/CancelRideConfirmationScreen';
 import { RideCancelledScreen } from '../screens/shared/RideCancelledScreen';
 import { RideAnnouncementsSettingsScreen } from '../screens/shared/RideAnnouncementsSettingsScreen';
+import { HelpSupportScreen } from '../screens/shared/HelpSupportScreen';
+import { MyVehicleScreen } from '../screens/driver/MyVehicleScreen';
+import { PaymentQrScreen } from '../screens/driver/PaymentQrScreen';
 import { BecomeDriverScreen } from '../screens/driver/BecomeDriverScreen';
 import { CompleteProfileScreen } from '../screens/onboarding/CompleteProfileScreen';
 import { useAuthStore } from '../store/authStore';
 import { useRideStore } from '../store/rideStore';
 import { ridesApi } from '../api/rides';
 import { authApi } from '../api/auth';
-import { getApiError } from '../api/client';
+import { getApiError, getApiStatus } from '../api/client';
 import { colors } from '../theme/theme';
 import { Button } from '../components/primitives/Button';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export const AppNavigator: React.FC = () => {
+  const navigationRef = useRef<NavigationContainerRef<RootStackParamList>>(null);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const hydrated = useAuthStore((state) => state.hydrated);
   const bootOffline = useAuthStore((state) => state.bootOffline);
@@ -35,6 +40,16 @@ export const AppNavigator: React.FC = () => {
   useEffect(() => {
     restoreSession();
   }, [restoreSession]);
+
+  // Push: register this device once the account is signed in and complete.
+  const pushReady = isAuthenticated && user?.profileComplete !== false;
+  useEffect(() => {
+    if (!pushReady) return;
+    void import('../lib/push').then(async (m) => {
+      await m.configurePushHandler();
+      await m.registerForPush();
+    });
+  }, [pushReady]);
 
   if (!hydrated) {
     return (
@@ -63,7 +78,16 @@ export const AppNavigator: React.FC = () => {
   const needsProfile = isAuthenticated && user && user.profileComplete === false;
 
   return (
-    <NavigationContainer>
+    <NavigationContainer
+      ref={navigationRef}
+      // Back-navigation audit evidence: prints the focused route chain on
+      // every state change, e.g. "[nav] Main > HomeTab > DestinationSearch".
+      onStateChange={() => {
+        if (!__DEV__) return;
+        const names = flattenRouteNames(navigationRef.current?.getRootState());
+        if (names.length > 0) console.log(`[nav] ${names.join(' > ')}`);
+      }}
+    >
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!isAuthenticated ? (
           <Stack.Screen name="Onboarding" component={OnboardingNavigator} />
@@ -132,26 +156,52 @@ export const AppNavigator: React.FC = () => {
                         await ridesApi.cancel(ride.id, reason);
                         useRideStore.getState().setCancellationReason(reason);
                         useRideStore.getState().resetRide();
-                        navigation.navigate('RideCancelled', { reason });
+                        // D4: replace the whole root state — [fresh Main
+                        // (HomeTab > HomeDashboard), RideCancelled] — instead
+                        // of pushing RideCancelled over this modal and then
+                        // stacking a second Main on top of it.
+                        goToRideCancelled(navigation, { reason });
                       } catch (error) {
-                        Alert.alert('Cancellation failed', getApiError(error));
+                        // SEC-3: a mid-trip cancel is refused with 409 — say what
+                        // to do instead (ask the driver / support) and keep the
+                        // active ride intact so the trip view stays usable.
+                        if (getApiStatus(error) === 409) {
+                          // R-5: refresh from the server so the trip view shows
+                          // reality after the refusal (and any transition that
+                          // happened meanwhile). The alert is awaited LAST so the
+                          // user always sees it — never a stuck spinner.
+                          const fresh = await ridesApi.getActive().catch(() => null);
+                          if (fresh) {
+                            useRideStore.getState().setActiveRide(fresh as any);
+                          }
+                          Alert.alert('Cannot cancel now', getApiError(error));
+                        } else {
+                          Alert.alert('Cancellation failed', getApiError(error));
+                        }
                       }
                     }}
                   />
                 )}
               </Stack.Screen>
 
-              <Stack.Screen name="RideCancelled">
+              <Stack.Screen
+                name="RideCancelled"
+                // D4: no swipe-back into the (now fresh) stack below — the
+                // outcome screen is a dead end: back and both buttons go Home.
+                options={{ gestureEnabled: false }}
+              >
                 {({ navigation, route }) => (
                   <RideCancelledScreen
                     reason={route.params?.reason}
                     onBookNew={() => {
                       useRideStore.getState().resetRide();
-                      navigation.navigate('Main', { screen: 'HomeTab' } as any);
+                      // Pop back to the Main that goToRideCancelled placed
+                      // underneath us — it is already HomeTab > HomeDashboard.
+                      navigation.popTo('Main');
                     }}
                     onGoHome={() => {
                       useRideStore.getState().resetRide();
-                      navigation.navigate('Main', { screen: 'HomeTab' } as any);
+                      navigation.popTo('Main');
                     }}
                   />
                 )}
@@ -164,6 +214,17 @@ export const AppNavigator: React.FC = () => {
                     onSave={() => navigation.goBack()}
                   />
                 )}
+              </Stack.Screen>
+
+              {/* Profile-page destinations (rider + driver share these). */}
+              <Stack.Screen name="HelpSupport">
+                {({ navigation }) => <HelpSupportScreen onBack={() => navigation.goBack()} />}
+              </Stack.Screen>
+              <Stack.Screen name="MyVehicle">
+                {({ navigation }) => <MyVehicleScreen onBack={() => navigation.goBack()} />}
+              </Stack.Screen>
+              <Stack.Screen name="PaymentQr">
+                {({ navigation }) => <PaymentQrScreen onBack={() => navigation.goBack()} />}
               </Stack.Screen>
             </Stack.Group>
           </>

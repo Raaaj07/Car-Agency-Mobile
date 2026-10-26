@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Phone, MessageSquare, ArrowRight, KeyRound } from 'lucide-react-native';
+import { View, Text, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ArrowRight, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
@@ -11,6 +12,7 @@ import { useRideSocket } from '../../hooks/useSocket';
 import { ridesApi } from '../../api/rides';
 import { getRoute } from '../../api/mapbox';
 import { haversineKm } from '../../utils/distance';
+import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
 
 interface Props {
   onTrackDriver: () => void;
@@ -26,6 +28,12 @@ const REROUTE_MAX_AGE_MS = 30_000;
 const POLL_MS = 5000;
 
 export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCancelled }) => {
+  // D2: back must never reveal the booking form while a ride is live —
+  // swallow it (the ride advances through the sockets/polls below).
+  usePreventBack(() => {});
+  // D4: if the ride vanished under this screen, go home — never a dead map.
+  useRequireActiveRide();
+  const insets = useSafeAreaInsets();
   const activeRide = useRideStore((state) => state.activeRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const storePickupCoords = useRideStore((state) => state.pickupCoords);
@@ -181,7 +189,7 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
       />
 
       {/* Pickup / drop summary over the map (real addresses from the ride) */}
-      <View style={styles.topCard} pointerEvents="none">
+      <View style={[styles.topCard, { top: 16 + insets.top }]} pointerEvents="none">
         <View style={styles.locationRow}>
           <View style={[styles.dot, { backgroundColor: colors.success }]} />
           <Text style={styles.locationText} numberOfLines={1}>{pickupAddress}</Text>
@@ -194,7 +202,7 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
       </View>
 
       {/* Driver Matched Sheet */}
-      <View style={styles.bottomSheet} onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}>
+      <View style={[styles.bottomSheet, { paddingBottom: 20 + insets.bottom }]} onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}>
         <View style={styles.matchBanner}>
           <Text style={styles.matchBannerText}>🎉 You Got the Ride!</Text>
           <Text style={styles.matchSubText}>
@@ -230,15 +238,6 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
                   <Text style={styles.plateText}>{plateNumber}</Text>
                 </View>
               ) : null}
-            </View>
-
-            <View style={styles.actionsCol}>
-              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.successLight }]}>
-                <Phone size={18} color={colors.success} />
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#EEF2FF' }]}>
-                <MessageSquare size={18} color={colors.primary} />
-              </TouchableOpacity>
             </View>
           </View>
         </Card>
@@ -385,16 +384,5 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textPrimary,
     letterSpacing: 0.5,
-  },
-  actionsCol: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  actionBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 });

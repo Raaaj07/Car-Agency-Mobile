@@ -1,10 +1,15 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import Redis from 'ioredis';
 import { validateEnv } from './config/env.validation';
-import { RedisModule } from './config/redis.module';
+import { resolveDbSsl } from './config/db-ssl';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
+import { UserKeyedThrottlerGuard } from './common/guards/user-keyed-throttler.guard';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
+import { REDIS_CLIENT, RedisModule } from './config/redis.module';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
 import { DriversModule } from './drivers/drivers.module';
@@ -13,15 +18,8 @@ import { PaymentsModule } from './payments/payments.module';
 import { AdminModule } from './admin/admin.module';
 import { PlacesModule } from './places/places.module';
 import { PromosModule } from './promos/promos.module';
-
-// console.log('DB CONFIG:', {
-//   host: process.env.DB_HOST,
-//   port: process.env.DB_PORT,
-//   username: process.env.DB_USERNAME,
-//   database: process.env.DB_DATABASE,
-//   passwordLoaded: !!process.env.DB_PASSWORD,
-//   passwordLength: process.env.DB_PASSWORD?.length,
-// });
+import { NotificationsModule } from './notifications/notifications.module';
+import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 
 @Module({
   imports: [
@@ -30,9 +28,20 @@ import { PromosModule } from './promos/promos.module';
       validate: validateEnv,
     }),
 
-    // AU-1: global per-IP rate limit (300 req/min — room for 3 s polling),
-    // with tighter per-route overrides on the OTP endpoints.
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
+    // AU-1: global rate limit (300 req/min — room for 3 s polling), with
+    // tighter per-route overrides on the OTP endpoints. SEC-5: buckets are
+    // keyed PER USER for authenticated traffic and per IP for anonymous —
+    // see UserKeyedThrottlerGuard (CGNAT/proxy fairness, rotation-proof).
+    // Pass-4 (task 8): counters live in REDIS (prefix `throttle:`) so they
+    // survive restarts and are shared across instances; fails OPEN if Redis
+    // is down (logged once/min) so an outage does not lock every rider out.
+    ThrottlerModule.forRootAsync({
+      inject: [REDIS_CLIENT],
+      useFactory: (redis: Redis) => ({
+        throttlers: [{ ttl: 60_000, limit: 300 }],
+        storage: new RedisThrottlerStorage(redis),
+      }),
+    }),
 
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -50,14 +59,24 @@ import { PromosModule } from './promos/promos.module';
         // drop idle TCP connections; the next request (e.g. the driver's
         // "Accept Ride" tap after minutes of waiting) then paid a full
         // reconnect + SSL handshake, which showed up as a multi-second stall.
-        extra: { keepAlive: true, keepAliveInitialDelayMillis: 10_000 },
-        // Only disable cert verification for managed dev DBs; in prod use proper CA.
-        ssl:
-          (config.get<string>('DB_SSL') ?? 'true') === 'false'
-            ? false
-            : (config.get<string>('NODE_ENV') ?? 'development') === 'production'
-              ? { rejectUnauthorized: true }
-              : { rejectUnauthorized: false },
+        // connectionTimeoutMillis: fail a dead route in 10 s with a clear error
+        // instead of hanging the request; idleTimeoutMillis: recycle connections
+        // before the managed host silently drops them.
+        extra: {
+          keepAlive: true,
+          keepAliveInitialDelayMillis: 10_000,
+          connectionTimeoutMillis: 10_000,
+          idleTimeoutMillis: 30_000,
+        },
+        // SEC-11: the same SSL policy as the migration CLI (config/db-ssl) —
+        // DB_SSL=false disables TLS; otherwise DB_SSL_REJECT_UNAUTHORIZED
+        // overrides the default (strict in production, relaxed in dev), so
+        // `migration:run` and the app can never disagree about it.
+        ssl: resolveDbSsl({
+          DB_SSL: config.get<string>('DB_SSL'),
+          DB_SSL_REJECT_UNAUTHORIZED: config.get<string>('DB_SSL_REJECT_UNAUTHORIZED'),
+          NODE_ENV: config.get<string>('NODE_ENV'),
+        }),
       }),
     }),
     // Global bridge for cross-module events (admin application notifications).
@@ -70,9 +89,19 @@ import { PromosModule } from './promos/promos.module';
     AdminModule,
     PlacesModule,
     PromosModule,
+    NotificationsModule,
   ],
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Order matters: rate-limit first (cheap, caps request volume before any
+    // JWT work), then default-deny auth. SEC-1: JwtAuthGuard is now global —
+    // every route requires a bearer token unless its handler/controller is
+    // marked @Public() (OTP, refresh, social sign-in, image streams).
+    { provide: APP_GUARD, useClass: UserKeyedThrottlerGuard },
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestLoggerMiddleware).forRoutes('*');
+  }
+}

@@ -1,11 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Switch, Alert, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, Switch, Alert, ScrollView, TouchableOpacity, AppState, Linking } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bell, Phone, Clock, ChevronRight } from 'lucide-react-native';
+import { FocusedStatusBar } from '../../components/primitives/FocusedStatusBar';
+import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import * as Location from 'expo-location';
-import { useNavigation } from '@react-navigation/native';
+import { CompositeNavigationProp, useNavigation } from '@react-navigation/native';
+import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, typography, shadows } from '../../theme/theme';
+import { DriverDashboardStackParamList, DriverMainTabParamList, RootStackParamList } from '../../navigation/types';
 import { Card } from '../../components/primitives/Card';
-import { Button } from '../../components/primitives/Button';
 import { LatLng } from '../../components/primitives/RealMapView';
 import { driversApi, DriverProfile } from '../../api/drivers';
 import { ridesApi, Ride } from '../../api/rides';
@@ -14,15 +19,28 @@ import { useSocket } from '../../hooks/useSocket';
 import { useRideStore } from '../../store/rideStore';
 import { NotificationBar } from '../../components/primitives/NotificationBar';
 import { useAuthStore } from '../../store/authStore';
-import { connectSocket, disconnectSocket } from '../../lib/socket';
-import { tokenManager } from '../../lib/tokenManager';
 import {
+  hasBackgroundLocationPermission,
   promptBackgroundLocationOnce,
   startDriverBackgroundLocation,
   stopDriverBackgroundLocation,
 } from '../../lib/locationTask';
 
+// Dashboard stack screens + the driver tabs it jumps between + the shared
+// root modals (RideAnnouncementsSettings) — fully typed, no `any`.
+type NavProp = CompositeNavigationProp<
+  NativeStackNavigationProp<DriverDashboardStackParamList>,
+  CompositeNavigationProp<
+    BottomTabNavigationProp<DriverMainTabParamList>,
+    NativeStackNavigationProp<RootStackParamList>
+  >
+>;
+
 const LOCATION_HEARTBEAT_MS = 5000;
+// Reuse a GPS fix younger than this when going online: the server only
+// needs locationUpdatedAt ≤2 min old, so a quick off→on toggle reuses the
+// last heartbeat fix instead of waiting for a cold GPS lock.
+const FRESH_FIX_MS = 60_000;
 
 interface Props {
   onRideRequest: () => void;
@@ -70,13 +88,19 @@ function tripLabel(ride: Ride): string {
 }
 
 export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
-  const navigation = useNavigation<any>();
+  const navigation = useNavigation<NavProp>();
+  const insets = useSafeAreaInsets();
+  const tabBarSpace = useTabBarSpace();
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [isOnline, setIsOnline] = useState(false);
   const [isRegistered, setIsRegistered] = useState<boolean | null>(null); // null = still checking
   // Value is never read (only the setters below trigger re-renders).
   const [, setDriverCoords] = useState<LatLng | undefined>();
   const [showWelcome, setShowWelcome] = useState(false);
+  // "Allow all the time" location granted? null = unknown / unsupported (Expo Go).
+  const [bgPermission, setBgPermission] = useState<boolean | null>(null);
+  // Latest switch value for the AppState handler (it must not re-subscribe on every toggle).
+  const isOnlineRef = useRef(false);
   // Driver's in-flight trip as reported by the server (survives app restarts).
   const [activeTrip, setActiveTrip] = useState<Ride | null>(null);
   // Auto-enter a live trip only once per mount, otherwise pressing Back from
@@ -84,6 +108,14 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const autoResumed = useRef(false);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestCoords = useRef<LatLng | undefined>(undefined);
+  // When latestCoords was last refreshed (see FRESH_FIX_MS).
+  const latestCoordsAt = useRef(0);
+  // Toggle bookkeeping: the Switch flips optimistically, so rapid taps are
+  // common. Each tap gets a sequence number (only the latest may roll the
+  // UI back) and status requests are serialised through statusChain so the
+  // server can never end up in the opposite state of the UI.
+  const toggleSeq = useRef(0);
+  const statusChain = useRef<Promise<unknown>>(Promise.resolve());
   // Last offer we already surfaced (socket OR polling) so the request screen
   // is opened exactly once per offer.
   const lastOfferId = useRef<string | null>(null);
@@ -192,6 +224,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
         setDriverCoords(coords);
         latestCoords.current = coords;
+        latestCoordsAt.current = Date.now();
       } catch {
         // Location stays unset; going online will prompt for GPS.
       }
@@ -208,6 +241,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
         setDriverCoords(coords);
         latestCoords.current = coords;
+        latestCoordsAt.current = Date.now();
         driversApi.updateLocation(coords.lat, coords.lng).catch(() => {});
       } catch {
         // Ignored — GPS may be momentarily unavailable
@@ -270,6 +304,84 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     }
   }, [socket, checkPendingOffer]);
 
+  // ── Background permission check ───────────────────────────────────────────
+  // Without "allow all the time" the OS stops our location the moment the app
+  // is backgrounded; the backend then drops the driver after 90 s and riders
+  // see "no drivers around". Tell the driver instead of failing silently.
+  const refreshBgPermission = useCallback(async () => {
+    setBgPermission(await hasBackgroundLocationPermission());
+  }, []);
+
+  useEffect(() => {
+    isOnlineRef.current = isOnline;
+    Promise.resolve().then(refreshBgPermission);
+  }, [isOnline, refreshBgPermission]);
+
+  const enableBackgroundLocation = async () => {
+    try {
+      const res = await Location.requestBackgroundPermissionsAsync();
+      if (res.status === 'granted') {
+        await startDriverBackgroundLocation();
+      } else {
+        Alert.alert(
+          'Allow location all the time',
+          'Open Settings → Permissions → Location and choose "Allow all the time" for Vazhi.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open settings', onPress: () => void Linking.openSettings() },
+          ],
+        );
+      }
+    } catch {
+      void Linking.openSettings();
+    }
+    await refreshBgPermission();
+  };
+
+  // ── Coming back from background ───────────────────────────────────────────
+  // While the app was in the background the socket may have dropped and (if
+  // location stopped) the server may have taken this driver offline even though
+  // the switch still shows ONLINE. Reconcile with the server, put the driver
+  // back online when it is safe to, and pick up any waiting offer.
+  const resumeFromBackground = useCallback(async () => {
+    try {
+      const p = await driversApi.getMyProfile();
+      if (!p) return;
+      setProfile(p);
+      if (isOnlineRef.current && !p.isOnline) {
+        try {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          latestCoords.current = coords;
+          latestCoordsAt.current = Date.now();
+          await driversApi.updateLocation(coords.lat, coords.lng);
+          await driversApi.setStatus(true);
+        } catch {
+          setIsOnline(false);
+          Alert.alert(
+            'You were taken offline',
+            'Location updates stopped while the app was in the background, so riders could no longer see you. Turn the switch on to go online again.',
+          );
+        }
+      } else if (!isOnlineRef.current && p.isOnline) {
+        setIsOnline(true);
+      }
+    } catch {
+      // Offline right now — the next foreground / heartbeat retries.
+    }
+    void checkPendingOffer();
+    void loadActiveTrip();
+    void refreshBgPermission();
+    if (isOnlineRef.current) void startDriverBackgroundLocation();
+  }, [checkPendingOffer, loadActiveTrip, refreshBgPermission]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void resumeFromBackground();
+    });
+    return () => sub.remove();
+  }, [resumeFromBackground]);
+
   // ── Listen for incoming ride requests ─────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
@@ -328,74 +440,85 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   }, [isOnline, setActiveRide]);
 
   // ── Go-online toggle ───────────────────────────────────────────────────────
-  const handleToggle = async (nextStatus: boolean) => {
-    if (nextStatus) {
-      // 1. Ensure location permission
+  // The Switch is optimistic: it flips the instant you tap and reconciles
+  // afterwards (rollback + alert only if this tap is still the latest),
+  // instead of staying stuck for as long as a cold GPS fix plus two
+  // HTTP round-trips take. Network requests are serialised through
+  // statusChain so rapid taps can never land on the server out of order.
+  const handleToggle = (nextStatus: boolean) => {
+    const seq = ++toggleSeq.current;
+    const isLatest = () => toggleSeq.current === seq;
+    const fail = (title: string, message: string) => {
+      if (!isLatest()) return;
+      setIsOnline(!nextStatus);
+      Alert.alert(title, message);
+    };
+
+    if (!nextStatus) {
+      // Going offline has no server-side gates — flip instantly, then
+      // reconcile; a failure snaps the switch back to server truth.
+      setIsOnline(false);
+      const task = statusChain.current.then(() => driversApi.setStatus(false));
+      statusChain.current = task.catch(() => {});
+      task.catch((error) => fail('Unable to update availability', getApiError(error)));
+      return;
+    }
+
+    // Going online: permission first (near-instant when already granted),
+    // and only then flip — a denied permission never flashes an online
+    // state or starts the heartbeat.
+    void (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert(
-          'Location Required',
-          'Please grant location permission to go online. Open Settings and enable location for this app.',
-        );
+        if (isLatest()) {
+          Alert.alert(
+            'Location Required',
+            'Please grant location permission to go online. Open Settings and enable location for this app.',
+          );
+        }
         return;
       }
-      // 2. Get a fresh GPS fix and push it before toggling status
+      if (!isLatest()) return;
+      setIsOnline(true);
+
+      // The server only accepts online drivers with a location ≤2 min old,
+      // so freshen it first — reusing a recent fix means a quick off→on
+      // toggle skips the cold-GPS wait entirely.
+      let coords: LatLng | undefined = latestCoords.current;
+      if (!coords || Date.now() - latestCoordsAt.current > FRESH_FIX_MS) {
+        try {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+          coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          setDriverCoords(coords);
+          latestCoords.current = coords;
+          latestCoordsAt.current = Date.now();
+        } catch {
+          fail('GPS Error', 'Unable to get your current location. Please try again.');
+          return;
+        }
+      }
+      if (!coords || !isLatest()) return;
+
+      const target = coords;
+      const task = statusChain.current
+        .then(() => driversApi.updateLocation(target.lat, target.lng))
+        .then(() => driversApi.setStatus(true));
+      statusChain.current = task.catch(() => {});
       try {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-        const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
-        setDriverCoords(coords);
-        latestCoords.current = coords;
-        await driversApi.updateLocation(coords.lat, coords.lng);
-      } catch {
-        Alert.alert('GPS Error', 'Unable to get your current location. Please try again.');
-        return;
+        await task;
+        // D-4: first go-online of the session nudges for background
+        // permission (non-blocking; registering happens inside once granted).
+        if (isLatest()) void promptBackgroundLocationOnce();
+      } catch (error) {
+        fail('Unable to update availability', getApiError(error));
       }
-    }
-
-    try {
-      await driversApi.setStatus(nextStatus);
-      setIsOnline(nextStatus);
-      // D-4: first go-online of the session nudges for background permission
-      // (non-blocking; registering happens inside once granted).
-      if (nextStatus) void promptBackgroundLocationOnce();
-    } catch (error) {
-      Alert.alert('Unable to update availability', getApiError(error));
-    }
-  };
-
-  // ── Switch to Rider mode ─────────────────────────────────────────────
-  // Online drivers are set offline first; an active trip blocks the switch.
-  const switchToRider = async () => {
-    const current = useRideStore.getState().activeRide;
-    if (activeTrip && activeTrip.status !== 'completed') {
-      Alert.alert('Trip in progress', 'You cannot switch modes while a trip is active. Complete or cancel it first.');
-      return;
-    }
-    if (current && ['matched', 'driver_en_route', 'in_progress'].includes(current.status)) {
-      Alert.alert('Trip in progress', 'You cannot switch modes while a trip is active. Complete or cancel it first.');
-      return;
-    }
-    try {
-      if (isOnline) {
-        await driversApi.setStatus(false);
-        setIsOnline(false);
-      }
-    } catch (error) {
-      Alert.alert('Unable to go offline', getApiError(error));
-      return;
-    }
-    stopHeartbeat();
-    useAuthStore.getState().setActiveMode('rider');
-    useRideStore.getState().resetRide();
-    disconnectSocket();
-    const token = tokenManager.getAccessToken();
-    if (token) connectSocket(token, 'rider');
-    // No explicit navigation: MainTabNavigator swaps to the rider tree
-    // (initial route HomeTab) as soon as activeMode flips.
+    })();
   };
 
   const openNotifications = () => {
-    (navigation.getParent()?.getParent()?.getParent() as any)?.navigate?.('RideAnnouncementsSettings');
+    // D10: two hops reach the root stack (dashboard stack → driver tabs →
+    // root). The third hop used to land on undefined and silently no-op.
+    navigation.getParent()?.getParent<NativeStackNavigationProp<RootStackParamList>>()?.navigate('RideAnnouncementsSettings');
   };
 
   // Ignore rides restored from the rider flow: they are the user's own
@@ -406,9 +529,14 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      {/* Navy header: needs light status-bar icons or the clock/battery vanish. */}
+      <FocusedStatusBar style="light" />
+      <ScrollView
+        contentContainerStyle={[styles.scroll, { paddingBottom: tabBarSpace + 24 }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Navy header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
           <View style={styles.topRow}>
             <View style={styles.brandRow}>
               <View style={styles.logoBadge}>
@@ -470,6 +598,26 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
               <Text style={styles.upiNudgeTitle}>Add your UPI ID</Text>
               <Text style={styles.upiNudgeBody}>
                 Riders pay by scanning a QR made from it after each trip. Set it once in Profile.
+              </Text>
+            </View>
+            <ChevronRight size={18} color={colors.warning} />
+          </TouchableOpacity>
+        ) : null}
+
+        {/* Online but the OS will cut our location in the background */}
+        {isOnline && bgPermission === false ? (
+          <TouchableOpacity
+            style={styles.upiNudge}
+            activeOpacity={0.85}
+            onPress={enableBackgroundLocation}
+            accessibilityRole="button"
+            accessibilityLabel="Allow location all the time"
+          >
+            <View style={styles.upiNudgeText}>
+              <Text style={styles.upiNudgeTitle}>Riders can&apos;t see you in the background</Text>
+              <Text style={styles.upiNudgeBody}>
+                Allow location &quot;all the time&quot; so you stay on the map and keep getting trips when the screen is
+                off. Tap to fix.
               </Text>
             </View>
             <ChevronRight size={18} color={colors.warning} />
@@ -561,8 +709,6 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
             </Text>
           </View>
         )}
-
-        <Button title="Switch to Rider mode" variant="outline" onPress={switchToRider} style={styles.switchBtn} />
       </ScrollView>
 
       <NotificationBar
@@ -638,7 +784,6 @@ const styles = StyleSheet.create({
   viewRideText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
   emptyTitle: { ...typography.bodyBold, fontSize: 15, textAlign: 'center' },
   emptySub: { ...typography.meta, fontSize: 13, textAlign: 'center' },
-  switchBtn: { marginHorizontal: 20, marginTop: 8 },
   activeTripCard: { borderWidth: 1.5, borderColor: colors.success },
   upiNudge: {
     flexDirection: 'row',

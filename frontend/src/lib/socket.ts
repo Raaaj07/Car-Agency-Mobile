@@ -48,12 +48,47 @@ export function connectSocket(token: string, role?: 'rider' | 'driver' | 'admin'
 
   // Expired/revoked JWT: stop infinite reconnect loop and force re-login.
   // Uses tokenManager (not authStore) to avoid a require cycle.
+  // Pass-4 (task 11): match only real auth failures. The old pattern matched
+  // the bare substring "token", so an unrelated server message like
+  // "tokens busy" (or "no token in cache") forced a spurious logout.
+  // Phase-3.2: the server also rejects a revoked refresh session
+  // ("Session ended"); treat it exactly like an expired JWT.
   socket.on('connect_error', (err: any) => {
     const msg = String(err?.message ?? '');
-    if (/jwt|unauthorized|401|token/i.test(msg)) {
+    if (/\bjwt\b|unauthorized|401|expired|session ended|revoked/i.test(msg)) {
       socket.disconnect();
       tokenManager.handleUnauthorized();
     }
+  });
+
+  // Task 7: server emitted session:expired (token expired or user deactivated).
+  // Attempt silent refresh first, then reconnect; if refresh fails (401/403),
+  // handleUnauthorized logs out.
+  socket.on('session:expired', async () => {
+    const refreshToken = tokenManager.getRefreshToken();
+    if (!refreshToken) {
+      socket.disconnect();
+      tokenManager.handleUnauthorized();
+      return;
+    }
+    try {
+      const axios = (await import('axios')).default;
+      const res = await axios.post(`${API_URL}/auth/refresh`, { refreshToken }, { timeout: 10_000 });
+      const { accessToken: next, refreshToken: nextRefresh } = res.data ?? {};
+      if (next) {
+        tokenManager.setTokens({ accessToken: next, ...(nextRefresh ? { refreshToken: nextRefresh } : {}) });
+        socket.connect();
+        return;
+      }
+    } catch (e: any) {
+      if (e?.response?.status === 401 || e?.response?.status === 403) {
+        socket.disconnect();
+        tokenManager.handleUnauthorized();
+        return;
+      }
+    }
+    // If refresh failed due to network, don't force logout; socket will retry when network returns
+    socket.connect();
   });
 
   socket.on('connect', async () => {

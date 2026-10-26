@@ -5,6 +5,7 @@ import { DataSource, In } from 'typeorm';
 import { UserEntity } from '../../auth/entities/user.entity';
 import { DriverEntity } from '../../drivers/entities/driver.entity';
 import { dataSourceOptions } from '../../config/typeorm.datasource';
+import { assertSafeForScript } from '../../config/db-guard';
 import {
   LASTSEEN_PIN_MS,
   adminPhonesFromEnv,
@@ -23,6 +24,8 @@ import {
  * (delete those rows manually if you still have them).
  */
 async function seed() {
+  // Pass-4 guard: never seed anything that is not this machine's database.
+  assertSafeForScript({ destructive: true });
   const cityName = process.env.SEED_CITY_NAME ?? 'Salem, Tamil Nadu';
   const centerLat = parseFloat(process.env.SEED_CITY_LAT ?? '11.6643');
   const centerLng = parseFloat(process.env.SEED_CITY_LNG ?? '78.1460');

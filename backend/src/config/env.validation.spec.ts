@@ -1,0 +1,109 @@
+// class-transformer/class-validator read decorator metadata — nothing else in
+// this suite pulls in the Nest bootstrap that normally imports this first.
+import 'reflect-metadata';
+import { validateEnv } from './env.validation';
+
+/**
+ * SEC-2a: GOOGLE_WEB_CLIENT_ID / APPLE_CLIENT_ID are REQUIRED in production.
+ * Without an audience both sign-in libraries skip the aud check entirely
+ * (google-auth-library only verifies aud "if we have one"; apple-signin-auth
+ * spreads { audience: undefined } into jsonwebtoken options), so any token
+ * minted for another app would be accepted — a classic account takeover.
+ * AuthService also fails closed with 503 when the variable is missing.
+ */
+describe('validateEnv (SEC-2a social sign-in audiences)', () => {
+  const required: Record<string, string> = {
+    DB_HOST: 'localhost',
+    DB_PORT: '5432',
+    DB_USERNAME: 'user',
+    DB_PASSWORD: 'pass',
+    DB_DATABASE: 'vazhi',
+    REDIS_HOST: 'localhost',
+    REDIS_PORT: '6379',
+    JWT_ACCESS_SECRET: 'a'.repeat(40),
+    JWT_REFRESH_SECRET: 'b'.repeat(40),
+  };
+
+  const prodBase = (): Record<string, string> => ({
+    ...required,
+    NODE_ENV: 'production',
+    CORS_ORIGIN: 'https://app.example',
+    PUBLIC_API_URL: 'https://api.example',
+    STORAGE_DRIVER: 'local',
+    // Pass-4 (task 5): webhook signing secret — required in production
+    // (obvious fake, never a real secret).
+    RAZORPAY_WEBHOOK_SECRET: 'whsec_test_fake',
+    // OTP SMS delivery keys — required in production (obvious fakes).
+    MSG91_AUTH_KEY: 'msg91_test_fake',
+    MSG91_OTP_TEMPLATE_ID: 'tpl_test_fake',
+  });
+
+  it('fails boot when GOOGLE_WEB_CLIENT_ID is missing in production', () => {
+    expect(() => validateEnv(prodBase())).toThrow('GOOGLE_WEB_CLIENT_ID is required in production');
+  });
+
+  it('fails boot when APPLE_CLIENT_ID is missing in production', () => {
+    const env = prodBase();
+    env.GOOGLE_WEB_CLIENT_ID = 'gid.apps.example.com';
+    expect(() => validateEnv(env)).toThrow('APPLE_CLIENT_ID is required in production');
+  });
+
+  it('accepts production when both audiences are set', () => {
+    const env = prodBase();
+    env.GOOGLE_WEB_CLIENT_ID = 'gid.apps.example.com';
+    env.APPLE_CLIENT_ID = 'com.example.app';
+    expect(() => validateEnv(env)).not.toThrow();
+  });
+
+  it('keeps both optional outside production (dev machines without social login)', () => {
+    expect(() => validateEnv({ ...required, NODE_ENV: 'development' })).not.toThrow();
+  });
+
+  // Pass-4 (task 5): without the webhook secret every Razorpay delivery is
+  // rejected (401), so a gateway-settled payment could never reach the server.
+  it('fails boot when RAZORPAY_WEBHOOK_SECRET is missing in production', () => {
+    const env = prodBase();
+    env.GOOGLE_WEB_CLIENT_ID = 'gid.apps.example.com';
+    env.APPLE_CLIENT_ID = 'com.example.app';
+    delete env.RAZORPAY_WEBHOOK_SECRET;
+    expect(() => validateEnv(env)).toThrow('RAZORPAY_WEBHOOK_SECRET is required in production');
+  });
+
+  // Without these Msg91SmsProvider silently returns { sent: false } and no
+  // login code ever reaches a user.
+  it.each(['MSG91_AUTH_KEY', 'MSG91_OTP_TEMPLATE_ID'])(
+    'fails boot when %s is missing in production',
+    (key) => {
+      const env = prodBase();
+      env.GOOGLE_WEB_CLIENT_ID = 'gid.apps.example.com';
+      env.APPLE_CLIENT_ID = 'com.example.app';
+      delete env[key];
+      expect(() => validateEnv(env)).toThrow(`${key} is required in production`);
+    },
+  );
+
+  it('keeps the MSG91 keys optional outside production', () => {
+    expect(() => validateEnv({ ...required, NODE_ENV: 'development' })).not.toThrow();
+  });
+
+  it('keeps the webhook secret optional outside production', () => {
+    expect(() => validateEnv({ ...required, NODE_ENV: 'development' })).not.toThrow();
+  });
+
+  // Pass-4 (task 6): a malformed bbox would silently disable the check.
+  it('fails boot on a malformed SERVICE_AREA_BBOX', () => {
+    expect(() =>
+      validateEnv({ ...required, NODE_ENV: 'development', SERVICE_AREA_BBOX: '12.0,76.5,13.5' }),
+    ).toThrow('SERVICE_AREA_BBOX must be');
+  });
+
+  it('accepts a well-formed SERVICE_AREA_BBOX', () => {
+    expect(() =>
+      validateEnv({
+        ...required,
+        NODE_ENV: 'development',
+        SERVICE_AREA_BBOX: '12.0,76.5,13.5,78.0',
+      }),
+    ).not.toThrow();
+  });
+});

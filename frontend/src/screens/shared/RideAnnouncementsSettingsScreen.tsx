@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Switch, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Volume2, Check } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
@@ -17,12 +18,16 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
   const [speedAlerts, setSpeedAlerts] = useState<boolean>(false);
   const [voiceLang, setVoiceLang] = useState<string>('English');
   const [volume, setVolume] = useState<'Soft' | 'Normal' | 'Loud'>('Normal');
+  const insets = useSafeAreaInsets();
 
   return (
     <View style={styles.container}>
       <Header title="Audio Announcements" onBack={onBack} />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Main Audio Voice Prompts Card */}
         <Card style={styles.cardSection}>
           <Text style={styles.cardHeaderTitle}>AUDIO & VOICE ALERTS</Text>
@@ -115,7 +120,7 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
       </ScrollView>
 
       {/* Footer Save Button */}
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Save Audio Preferences"
           onPress={onSave}

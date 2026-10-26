@@ -20,6 +20,7 @@ import {
   PanResponder,
   StyleSheet,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { shadows } from '../../theme/theme';
@@ -38,6 +39,13 @@ interface Props {
   onSnapChange?: (snap: SnapPoint) => void;
   header: React.ReactNode;
   children: React.ReactNode;
+  /** Set false while the header hosts a TextInput, so typing can't drag the sheet. */
+  headerPanEnabled?: boolean;
+  /** Imperative snap request — change `nonce` to ask for `point` (null = none). */
+  snapRequest?: { point: SnapPoint; nonce: number } | null;
+  /** First shot at the Android back button; return true when handled
+   *  (e.g. close inline search before collapsing the sheet). */
+  onHardwareBack?: () => boolean;
 }
 
 export const BottomSheet: React.FC<Props> = memo(({
@@ -46,8 +54,12 @@ export const BottomSheet: React.FC<Props> = memo(({
   onSnapChange,
   header,
   children,
+  headerPanEnabled = true,
+  snapRequest = null,
+  onHardwareBack,
 }) => {
   const [currentSnap, setCurrentSnap] = useState<SnapPoint>(initialSnap);
+  const { height: windowHeight } = useWindowDimensions();
 
   // Stale closure refs
   const snapRef = useRef<SnapPoint>(initialSnap);
@@ -91,10 +103,24 @@ export const BottomSheet: React.FC<Props> = memo(({
     }).start();
   }, [snapY, translateY]);
 
+  // Imperative snap requests (e.g. expand when the inline search opens).
+  // Applied on an async boundary: animateTo() sets state, and a synchronous
+  // setState in an effect body trips react-hooks/set-state-in-effect.
+  useEffect(() => {
+    if (!snapRequest) return;
+    const { point } = snapRequest;
+    Promise.resolve().then(() => animateTo(point));
+  }, [snapRequest, animateTo]);
+
+  // Latest-callback ref so the BackHandler subscription never needs rebinding.
+  const onHardwareBackRef = useRef(onHardwareBack);
+  onHardwareBackRef.current = onHardwareBack;
+
   // Android hardware back button handler
   useFocusEffect(
     useCallback(() => {
       const onBackPress = () => {
+        if (onHardwareBackRef.current?.()) return true;
         if (snapRef.current === 'expanded') {
           animateTo('default');
           return true;
@@ -161,28 +187,43 @@ export const BottomSheet: React.FC<Props> = memo(({
     }),
   ).current;
 
-  const isExpanded = currentSnap === 'expanded';
+  // The sheet is exactly as tall as the screen below its expanded position, so
+  // when expanded its bottom edge IS the screen bottom. At lower snaps it is
+  // pushed down by `translateY`, which leaves `snapY[snap] - snapY.expanded`
+  // px of it below the screen edge. The content area reserves that much
+  // bottom padding so its scroll viewport ends exactly at the screen edge —
+  // otherwise the last rows/sections are drawn off-screen and unreachable.
+  const sheetHeight = Math.max(windowHeight - snapY.expanded, 0);
+  const hiddenBelowScreen = Math.max(snapY[currentSnap] - snapY.expanded, 0);
+  // Scrolling works at the middle snap too (only the collapsed peek is inert),
+  // so everything under the search box can be reached without first dragging
+  // the sheet to full height.
+  const canScroll = currentSnap !== 'collapsed';
 
   return (
     <Animated.View
       style={[
         styles.sheet,
         {
+          height: sheetHeight,
           transform: [{ translateY }],
         },
       ]}
     >
       {/* Header Region */}
-      <View style={styles.headerArea} {...panResponder.panHandlers}>
+      <View
+        style={styles.headerArea}
+        {...(headerPanEnabled ? panResponder.panHandlers : {})}
+      >
         <View style={styles.handle} />
         {header}
       </View>
 
       {/* Content Area */}
-      <View style={styles.contentArea}>
+      <View style={[styles.contentArea, { paddingBottom: hiddenBelowScreen }]}>
         {React.isValidElement(children)
           ? React.cloneElement(children as React.ReactElement<any>, {
-              scrollEnabled: isExpanded,
+              scrollEnabled: canScroll,
               onScroll: (e: any) => {
                 const y = e.nativeEvent?.contentOffset?.y ?? 0;
                 scrollYRef.current = y;
@@ -203,7 +244,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     top: 0,
-    bottom: 0,
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,

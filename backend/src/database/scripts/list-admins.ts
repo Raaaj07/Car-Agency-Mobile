@@ -7,10 +7,14 @@
 import 'dotenv/config';
 import { DataSource } from 'typeorm';
 import { dataSourceOptions } from '../../config/typeorm.datasource';
+import { assertSafeForScript } from '../../config/db-guard';
 import { UserEntity } from '../../auth/entities/user.entity';
 
 async function main() {
   const promotePhone = process.argv[2];
+  // A phone argument makes this script WRITE (promote to admin), so it is
+  // guarded as destructive in that mode; plain listing is read-only.
+  assertSafeForScript({ destructive: Boolean(promotePhone) });
   const ds = new DataSource(dataSourceOptions);
   await ds.initialize();
   try {
