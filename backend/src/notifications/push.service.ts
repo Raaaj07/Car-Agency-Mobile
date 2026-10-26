@@ -82,17 +82,26 @@ export class PushService {
    * Wake a driver whose app is backgrounded: the socket offer only reaches a
    * foreground app, so also send a high-priority push. Deduped per ride+driver,
    * never throws.
+   *
+   * Phase-2.2: the lock-screen text is deliberately generic — pickup address
+   * and fare are visible to anyone glancing at the phone. The driver gets both
+   * after opening the app (data carries only the ride id).
    */
-  async notifyDriverOffer(driverUserId: string, rideId: string, fare: number, pickupAddress?: string): Promise<void> {
+  async notifyDriverOffer(
+    driverUserId: string,
+    rideId: string,
+    // Kept for call-site compatibility; intentionally NOT rendered.
+    _fare: number,
+    _pickupAddress?: string,
+  ): Promise<void> {
     try {
       const first = await this.redis
         .set(`push:offer:${rideId}:${driverUserId}`, '1', 'EX', 120, 'NX')
         .catch(() => 'OK');
       if (first !== 'OK') return;
-      const fareText = fare > 0 ? ` · ₹${Math.round(fare)}` : '';
       await this.sendToUser(driverUserId, {
         title: 'New ride request',
-        body: `${pickupAddress ? `Pickup: ${pickupAddress}` : 'Tap to view the request'}${fareText}`,
+        body: 'Tap to view the request',
         data: { type: 'ride_offer', rideId },
       });
     } catch (err) {

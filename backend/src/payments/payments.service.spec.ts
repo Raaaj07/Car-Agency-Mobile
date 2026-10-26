@@ -277,7 +277,31 @@ describe('PaymentsService', () => {
 
     const captureEvent = () =>
       eventFor('payment.captured', {
-        payment: { entity: { id: 'pay_rzp_fake', order_id: 'order_1' } },
+        payment: {
+          entity: {
+            id: 'pay_rzp_fake',
+            order_id: 'order_1',
+            // Phase-2.1: the signed payload is authoritative (paise/INR/captured).
+            amount: 24_000,
+            currency: 'INR',
+            status: 'captured',
+          },
+        },
+      });
+
+    /** Same event with one signed field overridden (mismatch cases). */
+    const captureEventWith = (entity: Record<string, unknown>) =>
+      eventFor('payment.captured', {
+        payment: {
+          entity: {
+            id: 'pay_rzp_fake',
+            order_id: 'order_1',
+            amount: 24_000,
+            currency: 'INR',
+            status: 'captured',
+            ...entity,
+          },
+        },
       });
     const pendingCapture = () =>
       payments.findOne.mockResolvedValue({
@@ -358,7 +382,12 @@ describe('PaymentsService', () => {
         status: 'pending',
       });
 
-      await expect(deliver(captureEvent())).rejects.toThrow(BadRequestException);
+      // Signed amount matches OUR stored order (999 * 100) so the new
+      // Phase-2.1 gate passes; the existing amount-vs-FARE gate must still
+      // reject this tampered order with a 400.
+      await expect(deliver(captureEventWith({ amount: 99_900 }))).rejects.toThrow(
+        BadRequestException,
+      );
       expect(payments.update).not.toHaveBeenCalled();
       expect(rides.update).not.toHaveBeenCalled();
     });
@@ -368,6 +397,50 @@ describe('PaymentsService', () => {
 
       expect(result).toEqual({ received: true });
       expect(payments.findOne).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    // Phase-2.1: the signed payload must describe the money we ordered.
+    it('acks but does NOT settle when the captured amount differs from our order', async () => {
+      pendingCapture();
+
+      const result = await deliver(captureEventWith({ amount: 23_999 }));
+
+      expect(result).toEqual({ received: true });
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('acks but does NOT settle for a non-INR currency', async () => {
+      pendingCapture();
+
+      const result = await deliver(captureEventWith({ currency: 'USD' }));
+
+      expect(result).toEqual({ received: true });
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('acks but does NOT settle an authorized (not captured) payment', async () => {
+      pendingCapture();
+
+      const result = await deliver(captureEventWith({ status: 'authorized' }));
+
+      expect(result).toEqual({ received: true });
+      expect(payments.update).not.toHaveBeenCalled();
+      expect(rides.update).not.toHaveBeenCalled();
+    });
+
+    it('does not settle when the signed payload omits amount/currency/status', async () => {
+      pendingCapture();
+
+      const result = await deliver(
+        eventFor('payment.captured', {
+          payment: { entity: { id: 'pay_rzp_fake', order_id: 'order_1' } },
+        }),
+      );
+
+      expect(result).toEqual({ received: true });
       expect(rides.update).not.toHaveBeenCalled();
     });
   });

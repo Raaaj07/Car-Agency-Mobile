@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -32,6 +33,8 @@ import { PAYMENT_PROVIDER, PaymentProvider } from './providers/payment-provider.
  */
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     @InjectRepository(PaymentEntity) private readonly payments: Repository<PaymentEntity>,
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
@@ -251,10 +254,18 @@ export class PaymentsService {
       return { received: true };
     }
 
-    // Narrow the (signature-verified) payload to the two ids we need — the
+    // Narrow the (signature-verified) payload to the fields we need — the
     // rest of it is untrusted data and is never logged or echoed.
     const payload = (event.payload ?? {}) as {
-      payment?: { entity?: { id?: unknown; order_id?: unknown } };
+      payment?: {
+        entity?: {
+          id?: unknown;
+          order_id?: unknown;
+          amount?: unknown;
+          currency?: unknown;
+          status?: unknown;
+        };
+      };
       order?: { entity?: { id?: unknown } };
     };
     const orderId =
@@ -283,6 +294,28 @@ export class PaymentsService {
     // A disputed payment belongs to the admin resolution path (P-1) — do not
     // silently overwrite the admin's dispute from a gateway event.
     if (ride.paymentStatus === 'disputed') return { received: true };
+
+    // Phase-2.1: settle ONLY what the SIGNED payload says was actually
+    // captured. Our stored `payment.amount` is integer rupees; Razorpay
+    // reports paise. A completed `order.paid` also carries the captured
+    // payment entity, so "captured" is required for both settlement events —
+    // an authorized-but-not-captured payment is not money in the account.
+    const signed = payload.payment?.entity;
+    const signedAmount = typeof signed?.amount === 'number' ? signed.amount : undefined;
+    const signedCurrency = typeof signed?.currency === 'string' ? signed.currency : undefined;
+    const signedStatus = typeof signed?.status === 'string' ? signed.status : undefined;
+    const capturedAsOrdered =
+      signedStatus === 'captured' &&
+      signedCurrency === 'INR' &&
+      signedAmount === payment.amount * 100;
+    if (!capturedAsOrdered) {
+      // Ack with 200 — a 4xx makes Razorpay retry this delivery forever — but
+      // settle nothing, and log only the ids (never the payload/amounts).
+      this.logger.warn(
+        `Razorpay webhook not settled: ride ${ride.id} order ${orderId} (payment not captured, amount or currency mismatch)`,
+      );
+      return { received: true };
+    }
 
     // Hardening: settle under the ride row lock, re-checking the LOCKED ride,
     // so a webhook racing /payments/verify, a driver confirmation or an admin

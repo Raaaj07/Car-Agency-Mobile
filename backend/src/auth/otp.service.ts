@@ -198,6 +198,24 @@ export class OtpService {
   }
 
   /**
+   * Phase-1.5: undo the send accounting when the SMS provider itself failed.
+   * `assertCanSend` intentionally consumed the window slot and the cooldown
+   * BEFORE the provider call; without this the user would be locked out for
+   * the cooldown (and one of three daily sends wasted) by an outage that was
+   * not their fault. Also drops the issued code: it never reached the phone.
+   */
+  async rollbackSend(phone: string): Promise<void> {
+    await this.redis.del(this.key(phone));
+    await this.redis.del(this.sendCooldownKey(phone));
+    const remaining = await this.redis.decr(this.sendCountKey(phone));
+    // A rollback that lands on (or below) zero removes the counter entirely,
+    // so the next legitimate send starts a fresh window with a fresh TTL.
+    if (remaining <= 0) {
+      await this.redis.del(this.sendCountKey(phone));
+    }
+  }
+
+  /**
    * INCR and EXPIRE are two separate Redis commands. If the process died
    * between them the counter was left WITHOUT a TTL and never reset — a phone
    * number could stay locked out of OTP login permanently. So the window is

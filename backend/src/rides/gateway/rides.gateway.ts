@@ -15,8 +15,13 @@ import { Server, Socket } from 'socket.io';
 import { Repository } from 'typeorm';
 import { DriverEntity } from '../../drivers/entities/driver.entity';
 import { UserEntity } from '../../auth/entities/user.entity';
+import { RefreshSessionEntity } from '../../auth/entities/refresh-session.entity';
 import { JwtPayload } from '../../auth/strategies/jwt.strategy';
-import { ApplicationEventsService } from '../../common/events/application-events.service';
+import { assertTokenClaims } from '../../auth/token-claims';
+import {
+  ApplicationEventsService,
+  SessionRevokedEvent,
+} from '../../common/events/application-events.service';
 import { RideEntity } from '../entities/ride.entity';
 
 interface DriverLocationCache {
@@ -29,6 +34,8 @@ interface AuthedSocket extends Socket {
   data: {
     userId?: string;
     role?: 'rider' | 'driver' | 'admin' | null;
+    /** Refresh-session id this socket authenticated with (absent on legacy tokens). */
+    sessionId?: string;
     driverCache?: DriverLocationCache;
   };
 }
@@ -80,11 +87,19 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
     @InjectRepository(DriverEntity) private readonly drivers: Repository<DriverEntity>,
     @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
+    // Phase-1.1: the socket handshake now enforces the same session check as
+    // the HTTP JwtStrategy (a revoked sid must not keep a live socket).
+    @InjectRepository(RefreshSessionEntity)
+    private readonly sessions: Repository<RefreshSessionEntity>,
   ) {
     // A-11: push new/re-submitted driver applications to every connected
     // admin console (registered here; DriversService cannot import this
     // module without a cycle).
     this.events.register((payload) => this.emitApplicationNew(payload));
+    // Phase-1.1: AuthService announces logout / logout-everywhere / deleteMe
+    // here; close the matching sockets immediately instead of waiting for the
+    // access token to expire (15 min).
+    this.events.registerSessionRevoked((payload) => this.onSessionRevoked(payload));
   }
 
   async handleConnection(client: AuthedSocket): Promise<void> {
@@ -101,20 +116,10 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
         algorithms: ['HS256'],
       });
 
-      // Task 3: verify iss/aud claims with 30-day grace period for old tokens.
-      const CLAIMS_GRACE_DEADLINE = new Date('2026-11-18T00:00:00Z');
-      const now = new Date();
-      const gracePeriodActive = now < CLAIMS_GRACE_DEADLINE;
-      if (payload.iss && payload.iss !== 'vazhi-api') {
-        throw new Error('invalid token issuer');
-      }
-      if (payload.aud) {
-        const audArr = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-        if (!audArr.includes('vazhi-app')) throw new Error('invalid token audience');
-      }
-      if (!gracePeriodActive && (!payload.iss || !payload.aud)) {
-        throw new Error('token missing required claims');
-      }
+      // Task 3: verify iss/aud claims with the 30-day grace period for old
+      // tokens. Phase-1.2: the rule lives in auth/token-claims.ts and is
+      // shared with JwtStrategy and the photo proxy — never duplicated here.
+      assertTokenClaims(payload);
 
       // Reject sockets whose user is missing or deactivated, matching the
       // HTTP JwtStrategy (which does a DB lookup for the same reason).
@@ -122,8 +127,24 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!user || user.isActive === false) {
         throw new Error('user no longer active');
       }
+
+      // Phase-1.1: a token that names its refresh session dies the moment that
+      // session is revoked (logout / replay detection / account deletion).
+      // Same rule as JwtStrategy.validate(); without it a logged-out device
+      // kept receiving ride:status and ride:request until token expiry.
+      if (payload.sid) {
+        const session = await this.sessions.findOne({
+          where: { id: payload.sid },
+          select: { id: true, revokedAt: true },
+        });
+        if (!session || session.revokedAt) {
+          throw new Error('Session ended');
+        }
+      }
+
       client.data.userId = user.id;
       client.data.role = (user.role ?? 'rider') as AuthedSocket['data']['role'];
+      if (payload.sid) client.data.sessionId = payload.sid;
       client.join(this.userRoom(user.id));
       // Admin consoles listen on a shared room for live counts/badges (A-11).
       if (client.data.role === 'admin') {
@@ -402,6 +423,34 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const authed = socket as unknown as AuthedSocket;
       if (authed.data?.userId === userId) {
         delete authed.data.driverCache;
+      }
+    }
+  }
+
+  /** Phase-1.1: close the sockets whose session was just revoked. */
+  private onSessionRevoked({ userId, sessionId, reason }: SessionRevokedEvent): void {
+    if (sessionId) {
+      this.disconnectSession(sessionId, reason);
+    } else {
+      this.disconnectUser(userId, reason);
+    }
+  }
+
+  /**
+   * Phase-1.1: drop every socket of a user (logout-everywhere / account
+   * deletion). Public so AuthService can reach it through the events bridge.
+   */
+  disconnectUser(userId: string, reason: string): void {
+    this.disconnectUserSockets(userId, reason);
+  }
+
+  /** Phase-1.1: drop only the sockets that authenticated with this session. */
+  disconnectSession(sessionId: string, reason: string): void {
+    if (!this.server?.sockets?.sockets) return;
+    for (const [, socket] of this.server.sockets.sockets) {
+      const authed = socket as unknown as AuthedSocket;
+      if (authed.data?.sessionId === sessionId) {
+        this.handleSessionExpired(authed, reason);
       }
     }
   }

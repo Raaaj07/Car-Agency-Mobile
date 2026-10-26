@@ -14,6 +14,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomUUID } from 'crypto';
 import { FindOptionsWhere, In, IsNull, Repository } from 'typeorm';
 import { User as FrontendUser } from '../common/frontend-contracts';
+import { ApplicationEventsService } from '../common/events/application-events.service';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
 import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
@@ -78,6 +79,10 @@ export class AuthService {
     // Pass-4 (task 12): account deletion must also drop a driver from the
     // Redis geo-sets (force offline), so a deleted driver stops matching.
     private readonly geo: GeoService,
+    // Phase-1.1: announces session revocation so the gateway can close the
+    // device's live socket immediately (CommonModule makes this injectable
+    // here without importing RidesModule).
+    private readonly events: ApplicationEventsService,
   ) {}
 
   // Matches MobileNumberScreen -> POST /auth/otp/send
@@ -91,7 +96,17 @@ export class AuthService {
     // SEC-1: assertCanSend also refuses while the phone is locked out.
     await this.otp.assertCanSend(phone);
     const code = await this.otp.issue(phone);
-    await this.sms.sendOtp(phone, code);
+    try {
+      await this.sms.sendOtp(phone, code);
+    } catch {
+      // Phase-1.5: the provider failed AFTER the send counter and cooldown
+      // were consumed. Give both back (and drop the unusable code) so an SMS
+      // outage does not lock the user out for the whole cooldown window.
+      await this.otp.rollbackSend(phone).catch(() => undefined);
+      // No phone, no code, no provider payload — the message could embed either.
+      this.logger.warn('OTP SMS provider failed; send quota rolled back');
+      throw new ServiceUnavailableException('Could not send the code, please try again');
+    }
     const ttl = Number(this.config.get<string>('OTP_TTL_SECONDS') ?? 300);
     const response = {
       message: 'OTP sent',
@@ -441,6 +456,8 @@ export class AuthService {
     if (sid) {
       await this.sessions.update({ id: sid, userId: sub }, { revokedAt: now });
       this.logger.warn(`Refresh token replay detected - session ${sid} revoked (user ${sub})`);
+      // A replayed (possibly stolen) token: drop that session's live socket too.
+      this.events.emitSessionRevoked({ userId: sub, sessionId: sid, reason: 'session_revoked' });
     }
     throw new UnauthorizedException('Refresh token revoked');
   }
@@ -465,6 +482,15 @@ export class AuthService {
       await this.sessions.update({ userId }, { revokedAt: now });
       await this.users.update({ id: userId }, { refreshTokenHash: null });
     }
+    // Phase-1.1: close the socket now — the access token would otherwise keep
+    // receiving ride:status/ride:request for up to 15 minutes. New clients
+    // carry a sid (only that device dies); legacy tokens drop every socket and
+    // the other devices simply reconnect with their still-valid sessions.
+    this.events.emitSessionRevoked({
+      userId,
+      ...(sessionId ? { sessionId } : {}),
+      reason: 'session_revoked',
+    });
     return { ok: true };
   }
 
@@ -474,6 +500,8 @@ export class AuthService {
   async logoutEverywhere(userId: string): Promise<{ ok: true }> {
     await this.sessions.update({ userId }, { revokedAt: new Date() });
     await this.users.update({ id: userId }, { refreshTokenHash: null });
+    // Phase-1.1: every device's socket must die with its session.
+    this.events.emitSessionRevoked({ userId, reason: 'session_revoked' });
     return { ok: true };
   }
 
@@ -569,6 +597,8 @@ export class AuthService {
 
     // Task 2: revoke all sessions after the transaction commits.
     await this.sessions.update({ userId }, { revokedAt: new Date() }).catch(() => undefined);
+    // Phase-1.1: a deleted account must not keep a live socket either.
+    this.events.emitSessionRevoked({ userId, reason: 'account_deleted' });
 
     if (driver) {
       await this.geo.removeDriver(driver.id, driver.vehicleType).catch(() => undefined);

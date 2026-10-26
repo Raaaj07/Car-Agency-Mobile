@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import {
@@ -34,6 +35,7 @@ export class UserKeyedThrottlerGuard extends ThrottlerGuard {
     @InjectThrottlerStorage() storageService: ThrottlerStorage,
     reflector: Reflector,
     private readonly jwt: JwtService,
+    private readonly config: ConfigService,
   ) {
     super(options, storageService, reflector);
   }
@@ -45,7 +47,12 @@ export class UserKeyedThrottlerGuard extends ThrottlerGuard {
       typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : null;
     if (token) {
       try {
-        const payload = await this.jwt.verifyAsync(token);
+        const payload = await this.jwt.verifyAsync(token, {
+          // Phase-1.3: pin the algorithm and secret explicitly — an
+          // unconstrained verifyAsync trusts the token header's alg.
+          secret: this.config.get<string>('JWT_ACCESS_SECRET'),
+          algorithms: ['HS256'],
+        });
         const sub = (payload as { sub?: unknown }).sub;
         if (typeof sub === 'string' && sub.length > 0) {
           return `user:${sub}`;

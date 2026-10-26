@@ -51,9 +51,11 @@ export function connectSocket(token: string, role?: 'rider' | 'driver' | 'admin'
   // Pass-4 (task 11): match only real auth failures. The old pattern matched
   // the bare substring "token", so an unrelated server message like
   // "tokens busy" (or "no token in cache") forced a spurious logout.
+  // Phase-3.2: the server also rejects a revoked refresh session
+  // ("Session ended"); treat it exactly like an expired JWT.
   socket.on('connect_error', (err: any) => {
     const msg = String(err?.message ?? '');
-    if (/\bjwt\b|unauthorized|401|expired/i.test(msg)) {
+    if (/\bjwt\b|unauthorized|401|expired|session ended|revoked/i.test(msg)) {
       socket.disconnect();
       tokenManager.handleUnauthorized();
     }

@@ -18,6 +18,8 @@ import { Repository } from 'typeorm';
 import { Public } from '../common/decorators/public.decorator';
 import { PlaceImageService } from './place-image.service';
 import { UserEntity } from '../auth/entities/user.entity';
+import { RefreshSessionEntity } from '../auth/entities/refresh-session.entity';
+import { assertTokenClaims } from '../auth/token-claims';
 
 // Deliberately @Public(): React Native <Image> cannot send the bearer token
 // unless REQUIRE_AUTH_FOR_PHOTOS is on. The client only ever supplies a
@@ -33,6 +35,9 @@ export class PlacesPhotoController {
     private readonly jwt: JwtService,
     // Task 4: DB lookup to verify user is active when auth is required.
     @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
+    // Phase-1.1/1.3: a token naming a revoked session is rejected here too.
+    @InjectRepository(RefreshSessionEntity)
+    private readonly sessions: Repository<RefreshSessionEntity>,
   ) {}
 
   // SEC-4: every cache miss triggers an outbound provider fetch (billable), so
@@ -81,22 +86,43 @@ export class PlacesPhotoController {
   // REQUIRE_AUTH_FOR_PHOTOS=true after rollout. When on, an unverifiable
   // bearer token is a 401 — the same JwtService/secret as every other route.
   // Task 4: also reject tokens whose user is missing or inactive in the DB.
+  // Phase-1.3: the verify is pinned to HS256 + our secret, and the claims /
+  // session checks match JwtStrategy (one helper, no drift).
   private async requireTokenIfEnabled(req: Request): Promise<void> {
     if ((this.config.get<string>('REQUIRE_AUTH_FOR_PHOTOS') ?? 'false') !== 'true') return;
     const header = req.headers?.authorization;
     const token =
       typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : null;
     if (!token) throw new UnauthorizedException('Missing access token');
-    let sub: string;
+    let payload: { sub: string; iss?: string; aud?: string | string[]; sid?: string };
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: string }>(token);
-      sub = payload.sub;
+      payload = await this.jwt.verifyAsync<{
+        sub: string;
+        iss?: string;
+        aud?: string | string[];
+        sid?: string;
+      }>(token, {
+        secret: this.config.get<string>('JWT_ACCESS_SECRET'),
+        algorithms: ['HS256'],
+      });
     } catch {
       // Never echo why — a forged vs expired token is not the caller's business.
       throw new UnauthorizedException('Invalid or expired access token');
     }
+    // Same iss/aud rule as HTTP requests and the socket handshake.
+    assertTokenClaims(payload);
+    // Phase-1.1: a revoked session must not keep streaming billable photos.
+    if (payload.sid) {
+      const session = await this.sessions.findOne({
+        where: { id: payload.sid },
+        select: { id: true, revokedAt: true },
+      });
+      if (!session || session.revokedAt) {
+        throw new UnauthorizedException('Session ended');
+      }
+    }
     // Task 4: verify the user actually exists and is active (mirrors JwtStrategy).
-    const user = await this.users.findOne({ where: { id: sub } });
+    const user = await this.users.findOne({ where: { id: payload.sub } });
     if (!user || user.isActive === false) {
       throw new UnauthorizedException('User no longer active');
     }

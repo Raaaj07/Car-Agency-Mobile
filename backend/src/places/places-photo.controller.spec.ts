@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Request, Response } from 'express';
 import { Repository } from 'typeorm';
+import { RefreshSessionEntity } from '../auth/entities/refresh-session.entity';
 import { UserEntity } from '../auth/entities/user.entity';
 import { PlaceImageService } from './place-image.service';
 import { PlacesPhotoController } from './places-photo.controller';
@@ -23,13 +24,19 @@ describe('PlacesPhotoController optional auth (pass-4 task-10 / task-4)', () => 
   let jwt: JwtService;
   let res: { setHeader: jest.Mock };
   let usersRepo: { findOne: jest.Mock };
+  let sessionsRepo: { findOne: jest.Mock };
 
-  const build = (env: Record<string, string | undefined>, usersOverride?: { findOne: jest.Mock }) =>
+  const build = (
+    env: Record<string, string | undefined>,
+    usersOverride?: { findOne: jest.Mock },
+    sessionsOverride?: { findOne: jest.Mock },
+  ) =>
     new PlacesPhotoController(
       images as unknown as PlaceImageService,
       { get: (k: string) => env[k] } as unknown as ConfigService,
       jwt,
       (usersOverride ?? usersRepo) as unknown as Repository<UserEntity>,
+      (sessionsOverride ?? sessionsRepo) as unknown as Repository<RefreshSessionEntity>,
     );
 
   const reqWith = (auth?: string) =>
@@ -47,6 +54,10 @@ describe('PlacesPhotoController optional auth (pass-4 task-10 / task-4)', () => 
     // Default: active user found in DB.
     usersRepo = {
       findOne: jest.fn().mockResolvedValue({ id: 'u1', isActive: true }),
+    };
+    // Default: token's session exists and is live.
+    sessionsRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'sess-1', revokedAt: null }),
     };
   });
 
@@ -119,6 +130,67 @@ describe('PlacesPhotoController optional auth (pass-4 task-10 / task-4)', () => 
         GOOGLE_ID,
         res as unknown as Response,
         reqWith(`Bearer ${token}`),
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(images.getLiveImage).not.toHaveBeenCalled();
+  });
+
+  // Phase-1.1: the socket/HTTP session rule now also covers billable photos.
+  it('rejects with 401 when the token names a REVOKED session (Phase 1.1)', async () => {
+    const token = jwt.sign({
+      sub: 'u1',
+      iss: 'vazhi-api',
+      aud: 'vazhi-app',
+      sid: 'sess-revoked',
+    });
+    const revoked = { findOne: jest.fn().mockResolvedValue({ id: 'sess-revoked', revokedAt: new Date() }) };
+
+    await expect(
+      build({ REQUIRE_AUTH_FOR_PHOTOS: 'true' }, undefined, revoked).serveGooglePhoto(
+        GOOGLE_ID,
+        res as unknown as Response,
+        reqWith(`Bearer ${token}`),
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(images.getLiveImage).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 401 when the token names a session that no longer exists (Phase 1.1)', async () => {
+    const token = jwt.sign({
+      sub: 'u1',
+      iss: 'vazhi-api',
+      aud: 'vazhi-app',
+      sid: 'sess-gone',
+    });
+    const missing = { findOne: jest.fn().mockResolvedValue(null) };
+
+    await expect(
+      build({ REQUIRE_AUTH_FOR_PHOTOS: 'true' }, undefined, missing).serveWikiPhoto(
+        '12345',
+        res as unknown as Response,
+        reqWith(`Bearer ${token}`),
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(images.getWikiPlaceImage).not.toHaveBeenCalled();
+  });
+
+  // Phase-1.3: same iss/aud rule as JwtStrategy (shared helper).
+  it('rejects a token with the wrong issuer or audience (Phase 1.2/1.3)', async () => {
+    const wrongIss = jwt.sign({ sub: 'u1', iss: 'evil-api', aud: 'vazhi-app' });
+    await expect(
+      build({ REQUIRE_AUTH_FOR_PHOTOS: 'true' }).serveGooglePhoto(
+        GOOGLE_ID,
+        res as unknown as Response,
+        reqWith(`Bearer ${wrongIss}`),
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+
+    const wrongAud = jwt.sign({ sub: 'u1', iss: 'vazhi-api', aud: 'another-app' });
+    await expect(
+      build({ REQUIRE_AUTH_FOR_PHOTOS: 'true' }).serveGooglePhoto(
+        GOOGLE_ID,
+        res as unknown as Response,
+        reqWith(`Bearer ${wrongAud}`),
       ),
     ).rejects.toThrow(UnauthorizedException);
     expect(images.getLiveImage).not.toHaveBeenCalled();

@@ -6,7 +6,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { Repository } from 'typeorm';
 import { UserEntity } from '../entities/user.entity';
 import { RefreshSessionEntity } from '../entities/refresh-session.entity';
-import { JWT_AUD, JWT_ISS } from '../tokens.service';
+import { assertTokenClaims } from '../token-claims';
 
 export interface JwtPayload {
   sub: string; // user id
@@ -33,14 +33,9 @@ export interface AuthenticatedUser {
 }
 
 /**
- * Task 3 grace-period deadline: 30 days after first deploy of this build.
- * Set to an explicit past date to stop accepting old tokens (remove the
- * fallback branch in `validate()` at that point too).
- *
- * 2026-11-18T00:00:00Z = 30 days after 2026-10-19 deploy.
+ * Task 3 / Phase-1.2: the iss/aud rule lives in ONE place now
+ * (`auth/token-claims.ts`); HTTP, Socket.IO and the photo proxy share it.
  */
-const CLAIMS_GRACE_DEADLINE = new Date('2026-11-18T00:00:00Z');
-
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
@@ -59,27 +54,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload): Promise<AuthenticatedUser> {
-    // Task 3: verify iss and aud claims on new tokens. During the grace period
-    // (first 30 days) tokens without these claims are still accepted so that
-    // users with existing sessions are not abruptly logged out.
-    const now = new Date();
-    const gracePeriodActive = now < CLAIMS_GRACE_DEADLINE;
-    const hasIss = !!payload.iss;
-    const hasAud = !!payload.aud;
-
-    if (hasIss && payload.iss !== JWT_ISS) {
-      throw new UnauthorizedException('Invalid token issuer');
-    }
-    if (hasAud) {
-      const audArr = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-      if (!audArr.includes(JWT_AUD)) {
-        throw new UnauthorizedException('Invalid token audience');
-      }
-    }
-    // After the grace period, require the claims on every token.
-    if (!gracePeriodActive && (!hasIss || !hasAud)) {
-      throw new UnauthorizedException('Token missing required claims');
-    }
+    // Task 3: verify iss and aud claims on new tokens (grace period for old
+    // tokens is inside assertTokenClaims, shared with the socket handshake).
+    assertTokenClaims(payload);
 
     // Source of truth is the database, not the token claims: deleted or
     // deactivated users are rejected even before the access token expires.

@@ -9,8 +9,18 @@ import { ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, tokenManager } from '../lib/tokenM
 const fallbackBaseUrl =
   Platform.OS === 'android' ? 'http://10.0.2.2:3000/api/v1' : 'http://localhost:3000/api/v1';
 
-const rawUrl = process.env.EXPO_PUBLIC_API_URL || fallbackBaseUrl;
-if (!process.env.EXPO_PUBLIC_API_URL && __DEV__) {
+const configuredUrl = process.env.EXPO_PUBLIC_API_URL;
+
+// Phase-3.1: a release build must never silently talk to a dev/cleartext host
+// (Android ships with usesCleartextTraffic:false, so the app would just fail
+// with a confusing network error). Missing or non-https config is a build
+// mistake — fail loudly at module load instead.
+if (!__DEV__ && (!configuredUrl || !configuredUrl.startsWith('https://'))) {
+  throw new Error('EXPO_PUBLIC_API_URL must be an https URL in release builds');
+}
+
+const rawUrl = configuredUrl || fallbackBaseUrl;
+if (!configuredUrl && __DEV__) {
   console.warn(`[api] EXPO_PUBLIC_API_URL not set, using fallback ${fallbackBaseUrl}`);
 }
 

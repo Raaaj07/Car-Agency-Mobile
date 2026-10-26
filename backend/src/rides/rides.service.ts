@@ -1478,7 +1478,10 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       ride.rating = dto.rating;
       ride.compliments = dto.compliments ?? [];
       ride.ratingComment = dto.comment?.trim() ? dto.comment.trim() : null;
-      ride.tipAmount = dto.tipAmount ?? 0;
+      // A tip is part of the amount the rider pays. Once the fare is settled
+      // (paid) a late review must not add a tip nobody actually paid — it
+      // would inflate the driver's recorded earnings.
+      ride.tipAmount = ride.paymentStatus === 'paid' ? (ride.tipAmount ?? 0) : (dto.tipAmount ?? 0);
       await manager.save(ride);
 
       if (ride.driverId) {

@@ -6,6 +6,7 @@ import { createHash } from 'crypto';
 import appleSignin from 'apple-signin-auth';
 import { DriverEntity } from '../drivers/entities/driver.entity';
 import { GeoService } from '../drivers/geo.service';
+import { ApplicationEventsService } from '../common/events/application-events.service';
 import { SavedPlaceEntity } from '../places/entities/saved-place.entity';
 import { StorageService } from '../drivers/storage.service';
 import { AuthService } from './auth.service';
@@ -54,10 +55,13 @@ describe('AuthService', () => {
   };
   let geo: { removeDriver: jest.Mock };
   let storage: { deleteDocument: jest.Mock };
+  let sms: { sendOtp: jest.Mock };
+  let events: { emitSessionRevoked: jest.Mock };
   let otp: {
     verify: jest.Mock;
     assertCanSend: jest.Mock;
     issue: jest.Mock;
+    rollbackSend: jest.Mock;
     otpLength: number;
   };
   let issueTokens: jest.Mock;
@@ -160,10 +164,13 @@ describe('AuthService', () => {
     };
     geo = { removeDriver: jest.fn().mockResolvedValue(undefined) };
     storage = { deleteDocument: jest.fn().mockResolvedValue(undefined) };
+    sms = { sendOtp: jest.fn().mockResolvedValue(undefined) };
+    events = { emitSessionRevoked: jest.fn() };
     otp = {
       verify: jest.fn().mockResolvedValue({ ok: true }),
       assertCanSend: jest.fn().mockResolvedValue(undefined),
       issue: jest.fn().mockResolvedValue('1234'),
+      rollbackSend: jest.fn().mockResolvedValue(undefined),
       otpLength: 4,
     };
     configValues = {
@@ -179,11 +186,12 @@ describe('AuthService', () => {
       sessions as unknown as Repository<RefreshSessionEntity>,
       otp as unknown as OtpService,
       { issueTokens } as unknown as TokensService,
-      { sendOtp: jest.fn().mockResolvedValue(undefined) } as unknown as SmsProvider,
+      sms as unknown as SmsProvider,
       { get: configGet } as unknown as ConfigService,
       {} as unknown as JwtService,
       storage as unknown as StorageService,
       geo as unknown as GeoService,
+      events as unknown as ApplicationEventsService,
     );
   });
 
@@ -244,6 +252,59 @@ describe('AuthService', () => {
         otpLength: 4, // from the mocked OtpService's configured width
       });
       expect(otp.assertCanSend).toHaveBeenCalledWith(adminPhone);
+    });
+  });
+
+  describe('sendOtp provider failure (Phase 1.5)', () => {
+    it('rolls the quota back and answers 503 instead of locking the user out', async () => {
+      sms.sendOtp.mockRejectedValue(new Error('msg91 500 for +91' + adminPhone));
+
+      const err = await service.sendOtp({ phone: adminPhone }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect((err as ServiceUnavailableException).getStatus()).toBe(503);
+      expect(otp.rollbackSend).toHaveBeenCalledWith(adminPhone);
+      // The warning must never carry the phone (nor the code/provider text).
+      expect(warnSpy).toHaveBeenCalledWith(expect.not.stringContaining(adminPhone));
+    });
+
+    it('still surfaces the provider error path as 503 when the rollback itself fails', async () => {
+      sms.sendOtp.mockRejectedValue(new Error('down'));
+      otp.rollbackSend.mockRejectedValue(new Error('redis down'));
+
+      const err = await service.sendOtp({ phone: adminPhone }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+    });
+  });
+
+  describe('session revocation notifies realtime (Phase 1.1)', () => {
+    it('logout with a sid closes only that session', async () => {
+      await service.logout('u-1', undefined, 'sess-9');
+
+      expect(events.emitSessionRevoked).toHaveBeenCalledWith({
+        userId: 'u-1',
+        sessionId: 'sess-9',
+        reason: 'session_revoked',
+      });
+    });
+
+    it('legacy logout without a sid falls back to every socket of the user', async () => {
+      await service.logout('u-1', 'refresh-token');
+
+      expect(events.emitSessionRevoked).toHaveBeenCalledWith({
+        userId: 'u-1',
+        reason: 'session_revoked',
+      });
+    });
+
+    it('logout-everywhere closes every socket of the user', async () => {
+      await service.logoutEverywhere('u-1');
+
+      expect(events.emitSessionRevoked).toHaveBeenCalledWith({
+        userId: 'u-1',
+        reason: 'session_revoked',
+      });
     });
   });
 

@@ -9,6 +9,7 @@ import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { AuthenticatedUser } from './strategies/jwt.strategy';
 import { GoogleSignInDto, AppleSignInDto, RefreshTokenDto } from './dto/social-signin.dto';
+import { LogoutDto } from './dto/logout.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 
 
@@ -71,8 +72,8 @@ export class AuthController {
   // current device session. Old clients that omit it revoke all sessions.
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  logout(@CurrentUser() user: AuthenticatedUser, @Body() body: { refreshToken?: string }) {
-    return this.auth.logout(user.userId, body?.refreshToken, user.sessionId);
+  logout(@CurrentUser() user: AuthenticatedUser, @Body() dto: LogoutDto) {
+    return this.auth.logout(user.userId, dto.refreshToken, user.sessionId);
   }
 
   // Task 2: "log out everywhere" — revokes all sessions for this user.

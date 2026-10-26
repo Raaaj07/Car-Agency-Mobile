@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ThrottlerStorage } from '@nestjs/throttler';
@@ -12,12 +13,17 @@ import { UserKeyedThrottlerGuard } from './user-keyed-throttler.guard';
 describe('UserKeyedThrottlerGuard', () => {
   type TrackerApi = { getTracker(req: Record<string, unknown>): Promise<string> };
 
+  const SECRET = 'throttle_secret_test_fake';
+
   const build = (verifyAsync: jest.Mock): TrackerApi => {
     const guard = new UserKeyedThrottlerGuard(
       [{ ttl: 60_000, limit: 300 }],
       { increment: jest.fn(), decrement: jest.fn() } as unknown as ThrottlerStorage,
       new Reflector(),
       { verifyAsync } as unknown as JwtService,
+      {
+        get: (key: string) => (key === 'JWT_ACCESS_SECRET' ? SECRET : undefined),
+      } as unknown as ConfigService,
     );
     return guard as unknown as TrackerApi;
   };
@@ -30,8 +36,12 @@ describe('UserKeyedThrottlerGuard', () => {
     });
 
     expect(tracker).toBe('user:user-42');
-    // The raw token is verified — never just decoded.
-    expect(verifyAsync).toHaveBeenCalledWith('signed.token.here');
+    // Phase-1.3: the raw token is verified against OUR secret, with the
+    // algorithm pinned — never bare verifyAsync() nor a decoded header.
+    expect(verifyAsync).toHaveBeenCalledWith('signed.token.here', {
+      secret: SECRET,
+      algorithms: ['HS256'],
+    });
   });
 
   it('falls back to the IP bucket for an expired/forged token', async () => {
