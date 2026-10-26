@@ -33,7 +33,7 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Unit tests
-        run: npm test -- --no-coverage --maxWorkers=2
+        run: npm test -- --no-coverage
 
   frontend:
     name: Frontend CI (lint, typecheck)
