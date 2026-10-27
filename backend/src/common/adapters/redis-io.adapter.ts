@@ -17,7 +17,8 @@ import { ConfigService } from '@nestjs/config';
  * falls back to the default in-memory single-instance adapter with a warning.
  */
 export class RedisIoAdapter extends IoAdapter {
-  private readonly logger = new Logger(RedisIoAdapter.name);
+  // Named redisLogger: IoAdapter (Nest 11) already has a `logger` member.
+  private readonly redisLogger = new Logger(RedisIoAdapter.name);
   private adapterConstructor?: ReturnType<typeof createAdapter>;
 
   async connectToRedis(config: ConfigService): Promise<void> {
@@ -27,7 +28,7 @@ export class RedisIoAdapter extends IoAdapter {
     const redisUrl = config.get<string>('REDIS_URL');
     const host = config.get<string>('REDIS_HOST');
     if (!redisUrl && !host) {
-      this.logger.warn('No Redis configured — Socket.IO using single-instance in-memory adapter');
+      this.redisLogger.warn('No Redis configured — Socket.IO using single-instance in-memory adapter');
       return;
     }
 
@@ -56,10 +57,10 @@ export class RedisIoAdapter extends IoAdapter {
       subClient = pubClient.duplicate();
       // Handlers first: an error during connect() must never be unhandled.
       pubClient.on('error', (err) => {
-        this.logger.error(`Redis pub client error: ${err.message}`);
+        this.redisLogger.error(`Redis pub client error: ${err.message}`);
       });
       subClient.on('error', (err) => {
-        this.logger.error(`Redis sub client error: ${err.message}`);
+        this.redisLogger.error(`Redis sub client error: ${err.message}`);
       });
 
       // With a retryStrategy, connect() keeps retrying instead of rejecting, so
@@ -75,9 +76,9 @@ export class RedisIoAdapter extends IoAdapter {
       });
 
       this.adapterConstructor = createAdapter(pubClient, subClient);
-      this.logger.log('Socket.IO Redis adapter connected and enabled');
+      this.redisLogger.log('Socket.IO Redis adapter connected and enabled');
     } catch (err) {
-      this.logger.warn(
+      this.redisLogger.warn(
         `Failed to connect to Redis for Socket.IO adapter (${(err as Error).message}) — falling back to single-instance adapter`,
       );
       this.adapterConstructor = undefined;
