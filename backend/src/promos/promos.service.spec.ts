@@ -257,6 +257,22 @@ describe('PromosService (Task 8 / PR-1 — DB-backed promos)', () => {
       ).rejects.toThrow('Promo code "VAZHI20" is no longer active.');
     });
 
+    it('rejects a rider who already used this code (one use per rider)', async () => {
+      const { service } = buildService([]);
+      // No cap, not first-ride-only: the per-rider count (riderId in where) is 1.
+      const em = bookingEm(promoRow(), 0, 1);
+
+      await expect(
+        service.assertBookable(em as unknown as EntityManager, 'VAZHI20', 'r1'),
+      ).rejects.toThrow('has already been used on your account.');
+      expect(em.count).toHaveBeenCalledWith(
+        RideEntity,
+        expect.objectContaining({
+          where: expect.objectContaining({ riderId: 'r1', promoCode: 'VAZHI20' }),
+        }),
+      );
+    });
+
     it('rejects first-ride promos for riders who already completed a trip', async () => {
       const { service } = buildService([]);
       const em = bookingEm(promoRow({ firstRideOnly: true }), 0, 2);

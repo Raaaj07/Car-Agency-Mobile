@@ -187,7 +187,34 @@ export class PromosService {
         throw new BadRequestException(`Promo code "${code}" is only valid for your first ride.`);
       }
     }
+    await this.assertNotUsedByRider(this.rides, promo.code, riderId, code);
     return promo.discountAmount;
+  }
+
+  /**
+   * One use per rider per code: a rider cannot stack the same promo on every
+   * ride. Counts rides that carry the code and are completed or still in
+   * flight; a cancelled ride frees the code again. `counter` is the repo (the
+   * advisory validate path) or the booking transaction's manager.
+   */
+  private async assertNotUsedByRider(
+    counter: { count: (...args: any[]) => Promise<number> },
+    promoCode: string,
+    riderId: string,
+    displayCode: string,
+  ): Promise<void> {
+    const where = {
+      riderId,
+      promoCode,
+      status: In([...ACTIVE_RIDE_STATUSES, 'completed' as const]),
+    };
+    const used =
+      counter === (this.rides as unknown)
+        ? await this.rides.count({ where })
+        : await (counter as EntityManager).count(RideEntity, { where });
+    if (used > 0) {
+      throw new BadRequestException(`Promo code "${displayCode}" has already been used on your account.`);
+    }
   }
 
   /**
@@ -221,6 +248,7 @@ export class PromosService {
         throw new BadRequestException(`Promo code "${code}" is only valid for your first ride.`);
       }
     }
+    await this.assertNotUsedByRider(em, promo.code, riderId, code);
     return promo.discountAmount;
   }
 

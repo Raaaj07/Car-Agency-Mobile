@@ -338,8 +338,9 @@ describe('AdminService status machine (A-2, A-3)', () => {
 
       const result = await service.resolvePayment('ride-9', 'admin-1', 'paid', 'UPI settlement screenshot verified');
 
+      // Compare-and-set: the update is guarded by the status that was read.
       expect(rides.update).toHaveBeenCalledWith(
-        { id: 'ride-9' },
+        { id: 'ride-9', paymentStatus: 'disputed' },
         { paymentStatus: 'paid', paymentMarkedBy: 'admin' },
       );
       expect(payments.update).toHaveBeenCalledWith({ rideId: 'ride-9' }, { status: 'paid' });

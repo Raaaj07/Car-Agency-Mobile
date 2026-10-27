@@ -517,10 +517,16 @@ export class AdminService implements OnApplicationBootstrap {
     }
     const previousStatus: PaymentStatus = ride.paymentStatus;
     const previousMarkedBy = ride.paymentMarkedBy ?? null;
-    await this.rides.update(
-      { id: ride.id },
+    // Compare-and-set on the status we just read: if a gateway webhook, the
+    // driver or another admin changed it meanwhile, refuse instead of
+    // silently overwriting their decision.
+    const guarded = await this.rides.update(
+      { id: ride.id, paymentStatus: previousStatus },
       { paymentStatus: status, paymentMarkedBy: 'admin' },
     );
+    if (guarded && guarded.affected === 0) {
+      throw new ConflictException('Payment status changed while you were resolving it — reload and retry');
+    }
     if (status === 'paid') {
       await this.payments.update({ rideId: ride.id }, { status: 'paid' }).catch(() => {});
     } else {
