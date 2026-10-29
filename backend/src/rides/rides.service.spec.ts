@@ -1287,4 +1287,22 @@ describe('RidesService phase-1 fixes', () => {
       });
     });
   });
+
+  // The rider's "trip duration" is startedAt -> completedAt, so both views
+  // must carry startedAt (null when the trip never started).
+  describe('ride views expose startedAt', () => {
+    it('includes startedAt in the rider and driver views, null when never started', () => {
+      const startedAt = new Date('2026-10-29T10:00:00.000Z');
+      const completedAt = new Date('2026-10-29T10:18:00.000Z');
+      const ride = requestedRide({ status: 'completed', startedAt, completedAt }) as unknown as RideEntity;
+
+      expect(service.toRiderView(ride).startedAt).toEqual(startedAt);
+      expect(service.toDriverView(ride).startedAt).toEqual(startedAt);
+      expect(service.toRiderView(ride).completedAt).toEqual(completedAt);
+
+      const neverStarted = requestedRide() as unknown as RideEntity;
+      expect(service.toRiderView(neverStarted).startedAt).toBeNull();
+      expect(service.toDriverView(neverStarted).startedAt).toBeNull();
+    });
+  });
 });

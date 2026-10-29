@@ -25,6 +25,8 @@ export interface Ride {
   tipAmount?: number;
   cancellationReason?: string | null;
   createdAt?: string;
+  // Set when the driver verified the pickup OTP (the trip really began).
+  startedAt?: string | null;
   completedAt?: string | null;
   cancelledAt?: string | null;
   // Driver-side view only: first name of the rider.

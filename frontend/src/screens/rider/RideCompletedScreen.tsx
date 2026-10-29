@@ -2,12 +2,13 @@ import React from 'react';
 import { View, Text, StyleSheet, ScrollView, Share } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CheckCircle2, Clock, Navigation, Home, Receipt } from 'lucide-react-native';
-import { colors, radii, typography, shadows } from '../../theme/theme';
+import { colors, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { useRideStore } from '../../store/rideStore';
 import { usePreventBack } from '../../navigation/navHelpers';
+import { tripDurationMinutes } from '../../utils/tripTime';
 
 interface Props {
   onGoHome: () => void;
@@ -27,13 +28,11 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
     'Thanks for riding with Vazhi';
   const totalPaid = Number(activeRide?.fareBreakdown?.total ?? 0) + Number(activeRide?.tipAmount ?? 0);
   const distanceKm = Number(activeRide?.distanceKm ?? 0);
-  const durationMins = (() => {
-    const started = activeRide?.createdAt ? Date.parse(activeRide.createdAt) : NaN;
-    const ended = activeRide?.completedAt ? Date.parse(activeRide.completedAt) : NaN;
-    return Number.isFinite(started) && Number.isFinite(ended) && ended > started
-      ? Math.max(1, Math.round((ended - started) / 60000))
-      : null;
-  })();
+  // Trip duration = pickup OTP verified -> completed (not booking -> completed,
+  // which would include the search and the wait for the driver).
+  const durationMins = tripDurationMinutes(activeRide?.startedAt, activeRide?.completedAt);
+  // "Paid" only once the driver confirmed the payment; before that it is just the fare.
+  const isPaid = activeRide?.paymentStatus === 'paid';
   // Receipt: plain-text summary through the system share sheet (save, WhatsApp,
   // email…). Built only from this ride's own data; nothing is invented.
   const shareReceipt = async () => {
@@ -98,7 +97,7 @@ export const RideCompletedScreen: React.FC<Props> = ({ onGoHome }) => {
             <View style={styles.statCol}>
               <Text style={styles.currencySymbol}>₹</Text>
               <Text style={styles.statVal}>{totalPaid > 0 ? totalPaid.toFixed(0) : '—'}</Text>
-              <Text style={styles.statLabel}>Total Paid</Text>
+              <Text style={styles.statLabel}>{isPaid ? 'Total Paid' : 'Total Fare'}</Text>
             </View>
           </View>
         </Card>
@@ -226,33 +225,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   vehicleInfo: {
-    ...typography.meta,
-    fontSize: 12,
-  },
-  offerCard: {
-    padding: 18,
-    backgroundColor: '#FFF6ED',
-    borderColor: 'rgba(224, 138, 52, 0.3)',
-  },
-  offerBadge: {
-    backgroundColor: colors.accent,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: radii.pill,
-    alignSelf: 'flex-start',
-    marginBottom: 6,
-  },
-  offerBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  offerTitle: {
-    ...typography.cardTitle,
-    fontSize: 16,
-    color: colors.textPrimary,
-  },
-  offerSub: {
     ...typography.meta,
     fontSize: 12,
   },

@@ -1791,6 +1791,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       cancellationReason: ride.cancellationReason ?? null,
       cancelledBy: ride.cancelledBy ?? null,
       cancelledAt: ride.cancelledAt ?? null,
+      // When the driver verified the pickup OTP: the trip itself started here
+      // (the rider's "trip duration" is startedAt -> completedAt).
+      startedAt: ride.startedAt ?? null,
       completedAt: ride.completedAt ?? null,
       createdAt: ride.createdAt,
       updatedAt: (ride as RideEntity).updatedAt ?? null,

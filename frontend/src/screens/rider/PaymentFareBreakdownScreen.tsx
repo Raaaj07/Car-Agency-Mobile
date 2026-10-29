@@ -8,6 +8,7 @@ import { Card } from '../../components/primitives/Card';
 import { Header } from '../../components/primitives/Header';
 import { useRideStore } from '../../store/rideStore';
 import { ridesApi } from '../../api/rides';
+import { vehicleName as nameForVehicleType } from '../../utils/vehicle';
 
 interface Props {
   onBack?: () => void;
@@ -35,7 +36,9 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
         ? 'CLAIMED — AWAITING DRIVER'
         : 'AWAITING PAYMENT';
   const amount = Number(breakdown?.total ?? 0) + tip;
-  const vehicleName = selectedVehicle?.name ?? activeRide?.vehicleType ?? 'your ride';
+  // The booked ride's own vehicle type wins: the store's selectedVehicle is the
+  // booking-form default and names the wrong vehicle after a cold-start resume.
+  const vehicleName = nameForVehicleType(activeRide?.vehicleType) ?? selectedVehicle?.name ?? 'your ride';
   const insets = useSafeAreaInsets();
 
   // Receipt through the system share sheet, built only from this ride's own
@@ -49,6 +52,7 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
       `Base fare: ₹${Number(breakdown?.baseFare ?? 0).toFixed(2)}`,
       `Distance: ₹${Number(breakdown?.distanceFare ?? 0).toFixed(2)}`,
       `Time: ₹${Number(breakdown?.timeCharge ?? 0).toFixed(2)}`,
+      `Toll & parking fee: ₹${Number(breakdown?.tollFee ?? 0).toFixed(2)}`,
       `Taxes: ₹${Number(breakdown?.taxes ?? 0).toFixed(2)}`,
       Number(breakdown?.discount ?? 0) > 0 ? `Discount: -₹${Number(breakdown?.discount).toFixed(2)}` : null,
       tip > 0 ? `Tip: ₹${tip.toFixed(2)}` : null,
@@ -131,7 +135,7 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
           <Text style={styles.cardSectionTitle}>ITEMIZED RECEIPT ({vehicleName})</Text>
 
           <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>Base Fare (Includes 5 km)</Text>
+            <Text style={styles.lineLabel}>Base Fare</Text>
             <Text style={styles.lineValue}>₹{Number(breakdown?.baseFare ?? 0).toFixed(2)}</Text>
           </View>
 
@@ -146,12 +150,12 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
           </View>
 
           <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>Toll & Airport Parking</Text>
+            <Text style={styles.lineLabel}>Toll & Parking Fee</Text>
             <Text style={styles.lineValue}>₹{Number(breakdown?.tollFee ?? 0).toFixed(2)}</Text>
           </View>
 
           <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>GST & Govt Taxes (5%)</Text>
+            <Text style={styles.lineLabel}>GST & Taxes</Text>
             <Text style={styles.lineValue}>₹{Number(breakdown?.taxes ?? 0).toFixed(2)}</Text>
           </View>
 

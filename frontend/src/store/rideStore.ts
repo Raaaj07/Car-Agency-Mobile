@@ -80,6 +80,8 @@ export interface ActiveRide {
   tipAmount?: number;
   // Set once the ride completes (used for duration on RideCompleted).
   completedAt?: string | null;
+  // Set when the driver verified the pickup OTP: the trip really began here.
+  startedAt?: string | null;
   // Origin marker: rides written by restoreActiveRide() are rider-flow state
   // and must never be treated as a driver-mode job offer.
   source?: 'rider-restore';
