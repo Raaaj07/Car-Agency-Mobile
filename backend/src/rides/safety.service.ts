@@ -180,7 +180,7 @@ export class SafetyService {
   }
 }
 
-export function renderSharedTripHtml(v: SharedTripView, token: string): string {
+export function renderSharedTripHtml(v: SharedTripView, _token: string): string {
   const esc = (s: unknown) =>
     String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
   const map = v.driverLocation

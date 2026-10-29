@@ -12,6 +12,7 @@ import { PaymentsService } from './payments.service';
 import { RazorpayWebhookDto } from './dto/razorpay-webhook.dto';
 import { PaymentEntity } from './entities/payment.entity';
 import { RideEntity } from '../rides/entities/ride.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { PaymentProvider } from './providers/payment-provider.interface';
 
 /**
@@ -24,6 +25,7 @@ describe('PaymentsService', () => {
   let rides: Record<string, jest.Mock>;
   let provider: Record<string, jest.Mock>;
   let config: Record<string, jest.Mock>;
+  let audit: Record<string, jest.Mock>;
   // Ride-row lock stub: PaymentsService.withRideLock runs through
   // rides.manager.connection.createQueryRunner(). The manager re-reads
   // through the SAME per-test repo mocks so per-test overrides keep working.
@@ -86,12 +88,18 @@ describe('PaymentsService', () => {
     config = {
       get: jest.fn((key: string) => (key === 'RAZORPAY_WEBHOOK_SECRET' ? 'whsec_test_fake' : undefined)),
     };
+    // Phase-2.1: a mismatch leaves an admin-visible audit row (best-effort).
+    audit = {
+      create: jest.fn((row) => row),
+      save: jest.fn(async (row) => row),
+    };
 
     service = new PaymentsService(
       payments as unknown as Repository<PaymentEntity>,
       rides as unknown as Repository<RideEntity>,
       provider as unknown as PaymentProvider,
       config as unknown as ConfigService,
+      audit as unknown as Repository<AdminAuditLogEntity>,
     );
   });
 
@@ -409,6 +417,14 @@ describe('PaymentsService', () => {
       expect(result).toEqual({ received: true });
       expect(payments.update).not.toHaveBeenCalled();
       expect(rides.update).not.toHaveBeenCalled();
+      // Admin-visible trace of the mismatch (nothing is settled).
+      expect(audit.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'payment_mismatch',
+          targetType: 'ride',
+          targetId: 'r1',
+        }),
+      );
     });
 
     it('acks but does NOT settle for a non-INR currency', async () => {

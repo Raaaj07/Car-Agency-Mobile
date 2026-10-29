@@ -248,4 +248,52 @@ describe('DriversService.setStatus (R-3)', () => {
       expect(audit.save).not.toHaveBeenCalled();
     });
   });
+
+  // RACE: matching must claim a driver atomically. The old read-then-write
+  // (findNearby -> setAvailability(false)) let two bookings offer the same
+  // driver before either wrote.
+  describe('claimAvailability (double-offer race)', () => {
+    const withQueryBuilder = (affected: number) => {
+      const execute = jest.fn().mockResolvedValue({ affected });
+      const qb: any = {
+        update: jest.fn(() => qb),
+        set: jest.fn(() => qb),
+        where: jest.fn(() => qb),
+        andWhere: jest.fn(() => qb),
+        execute,
+      };
+      (drivers as any).manager = { createQueryBuilder: jest.fn(() => qb) };
+      (drivers as any).createQueryBuilder = jest.fn(() => qb);
+      return { execute, qb };
+    };
+
+    it('wins the claim when the conditional UPDATE changed exactly one row', async () => {
+      withQueryBuilder(1);
+      await expect(service.claimAvailability('d1')).resolves.toBe(true);
+    });
+
+    it('loses the claim when another booking already took the driver', async () => {
+      withQueryBuilder(0);
+      await expect(service.claimAvailability('d1')).resolves.toBe(false);
+    });
+
+    it('joins the supplied ride transaction instead of using its own manager', async () => {
+      const manager = { createQueryBuilder: jest.fn() };
+      const execute = jest.fn().mockResolvedValue({ affected: 1 });
+      const qb: any = {
+        update: jest.fn(() => qb),
+        set: jest.fn(() => qb),
+        where: jest.fn(() => qb),
+        andWhere: jest.fn(() => qb),
+        execute,
+      };
+      manager.createQueryBuilder.mockReturnValue(qb);
+      (drivers as any).manager = { createQueryBuilder: jest.fn(() => qb) };
+
+      await expect(service.claimAvailability('d1', manager as any)).resolves.toBe(true);
+
+      expect(manager.createQueryBuilder).toHaveBeenCalled();
+      expect((drivers as any).manager.createQueryBuilder).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -70,14 +70,22 @@ async function findSchemaProblems(ds: DataSource): Promise<string[]> {
       problems.push(`${w.table_name} status column is varchar(${w.len}); 'rider_claimed' needs >= 13`);
     }
   }
-  // SEC-4: without this index a DB silently allows double bookings again —
+  // SEC-4: without these indexes a DB silently allows double bookings again —
   // create()'s count() pre-check is race-prone by design (only the partial
-  // unique index closes the race).
-  const guard: Array<{ indexname: string }> = await ds.query(
-    `SELECT indexname FROM pg_indexes WHERE tablename = 'rides' AND indexname = 'UQ_rides_active_per_rider'`,
-  );
-  if (guard.length === 0) {
-    problems.push('rides: missing unique index UQ_rides_active_per_rider (one active ride per rider)');
+  // unique indexes close the race). Matching claims a driver atomically, and
+  // the per-driver index is the backstop against two active rides.
+  const requiredIndexes = [
+    'UQ_rides_active_per_rider',
+    'UQ_rides_active_per_driver',
+  ];
+  for (const indexName of requiredIndexes) {
+    const guard: Array<{ indexname: string }> = await ds.query(
+      `SELECT indexname FROM pg_indexes WHERE tablename = 'rides' AND indexname = $1`,
+      [indexName],
+    );
+    if (guard.length === 0) {
+      problems.push(`rides: missing unique index ${indexName}`);
+    }
   }
   return problems;
 }

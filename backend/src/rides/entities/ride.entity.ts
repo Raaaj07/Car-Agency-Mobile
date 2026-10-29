@@ -55,6 +55,19 @@ export interface RideLocation {
   unique: true,
   where: `"status" IN ('requested','matched','driver_en_route','in_progress')`,
 })
+// RACE: at most ONE active ride per driver, for the same reason — two
+// bookings could claim the same available driver before either wrote. Only a
+// partial unique index closes that race; matching also claims availability
+// atomically so the loser moves on to the next nearest driver.
+@Index('UQ_rides_active_per_driver', ['driverId'], {
+  unique: true,
+  where: `"driverId" IS NOT NULL AND "status" IN ('requested','matched','driver_en_route','in_progress')`,
+})
+// Hot-path composites (migration 1792100000000): ride lists/stats filter by
+// owner + status, and the stale-requested sweep filters status + updatedAt.
+@Index('IDX_rides_rider_status', ['riderId', 'status'])
+@Index('IDX_rides_driver_status', ['driverId', 'status'])
+@Index('IDX_rides_status_updated', ['status', 'updatedAt'])
 @Entity('rides')
 export class RideEntity {
   @PrimaryGeneratedColumn('uuid')

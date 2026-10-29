@@ -42,7 +42,6 @@ export class RazorpayPaymentProvider implements PaymentProvider {
     });
 
     if (!response.ok) {
-      const body = await response.text();
       this.logger.error(`Razorpay order creation failed: ${response.status}`);
       throw new ServiceUnavailableException('Failed to create payment order');
     }

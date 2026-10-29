@@ -955,7 +955,20 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       `Ride ${ride.id} matching strategy: ${matchedStrategy}, radius ${radius} m, candidates: ${candidates.length}`,
     );
 
-    if (candidates.length === 0) {
+    // RACE: findNearby filters on isAvailable, but two bookings can read the
+    // same candidate list before either writes. Claim the nearest still-free
+    // driver atomically (conditional UPDATE true -> false); a driver another
+    // ride claimed first is skipped, nearest-first. Without this, the same
+    // driver got two simultaneous offers and could end up on two active rides.
+    let nearest: (typeof candidates)[number] | undefined;
+    for (const candidate of candidates) {
+      if (await this.drivers.claimAvailability(candidate.driverId, manager)) {
+        nearest = candidate;
+        break;
+      }
+    }
+
+    if (!nearest) {
       if ((ride.declinedDriverIds?.length ?? 0) >= this.maxOfferAttempts) {
         ride.status = 'cancelled';
         ride.cancellationReason = 'no_drivers_available';
@@ -975,15 +988,23 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     // A driver is being offered: the search window no longer applies — the
     // 15 s offer timer takes over from here.
     await this.clearSearchTimeout(ride.id);
-    const nearest = candidates[0];
-    await this.drivers.setAvailability(nearest.driverId, false);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + this.requestTimeoutSeconds * 1000);
 
     ride.driverId = nearest.driverId;
     ride.offeredAt = now;
     ride.offerExpiresAt = expiresAt;
-    await saveRide(ride);
+    try {
+      await saveRide(ride);
+    } catch (err) {
+      // The per-driver partial unique index rejected the offer (this driver is
+      // already on another active ride). Give the claim back so they are not
+      // stuck unavailable; under a ride transaction the rollback does it.
+      if (!manager) {
+        await this.drivers.setAvailability(nearest.driverId, true).catch(() => {});
+      }
+      throw err;
+    }
 
     const driver = await this.drivers.findById(nearest.driverId);
     const withRider = await this.rides.findOne({ where: { id: ride.id }, relations: ['rider'] });

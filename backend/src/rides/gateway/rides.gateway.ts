@@ -7,6 +7,7 @@ import {
   MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
@@ -36,6 +37,8 @@ interface AuthedSocket extends Socket {
     role?: 'rider' | 'driver' | 'admin' | null;
     /** Refresh-session id this socket authenticated with (absent on legacy tokens). */
     sessionId?: string;
+    /** Access-token `exp` (seconds), used to arm the expiry disconnect timer. */
+    tokenExpiresAt?: number;
     driverCache?: DriverLocationCache;
   };
 }
@@ -59,7 +62,7 @@ function gatewayCorsOrigin(): '*' | string[] | false {
 }
 
 @WebSocketGateway({ cors: { origin: gatewayCorsOrigin() }, namespace: '/realtime' })
-export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
   @WebSocketServer()
   server!: Server;
 
@@ -102,73 +105,108 @@ export class RidesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.events.registerSessionRevoked((payload) => this.onSessionRevoked(payload));
   }
 
-  async handleConnection(client: AuthedSocket): Promise<void> {
-    try {
-      // auth-only: ?token= query support removed (tokens in URLs leak to
-      // proxies/logs). Clients must send auth: { token }.
-      const token = client.handshake.auth?.token as string | undefined;
-      if (!token) {
-        throw new Error('missing token');
-      }
-      // Task 3: pin algorithm to HS256 to prevent algorithm confusion attacks.
-      const payload = this.jwt.verify<JwtPayload & { exp?: number }>(token, {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET'),
-        algorithms: ['HS256'],
-      });
-
-      // Task 3: verify iss/aud claims with the 30-day grace period for old
-      // tokens. Phase-1.2: the rule lives in auth/token-claims.ts and is
-      // shared with JwtStrategy and the photo proxy — never duplicated here.
-      assertTokenClaims(payload);
-
-      // Reject sockets whose user is missing or deactivated, matching the
-      // HTTP JwtStrategy (which does a DB lookup for the same reason).
-      const user = await this.users.findOne({ where: { id: payload.sub } });
-      if (!user || user.isActive === false) {
-        throw new Error('user no longer active');
-      }
-
-      // Phase-1.1: a token that names its refresh session dies the moment that
-      // session is revoked (logout / replay detection / account deletion).
-      // Same rule as JwtStrategy.validate(); without it a logged-out device
-      // kept receiving ride:status and ride:request until token expiry.
-      if (payload.sid) {
-        const session = await this.sessions.findOne({
-          where: { id: payload.sid },
-          select: { id: true, revokedAt: true },
+  /**
+   * Phase-3: authenticate in Socket.IO MIDDLEWARE, not in handleConnection.
+   *
+   * `client.disconnect(true)` inside handleConnection is delivered to the app
+   * as `disconnect` with `io server disconnect` — indistinguishable from a
+   * network drop, so the client kept retrying with the revoked token. Passing
+   * an Error to `next()` aborts the handshake instead, which surfaces as
+   * `connect_error` carrying the reason ("Session ended"), so the app can
+   * stop retrying and send the user back to sign-in.
+   */
+  afterInit(server: Server): void {
+    server.use((socket, next) => {
+      void this.authenticate(socket as AuthedSocket)
+        .then(() => next())
+        .catch((err: unknown) => {
+          this.logger.warn(`Rejected socket connection: ${(err as Error).message}`);
+          next(new Error((err as Error).message));
         });
-        if (!session || session.revokedAt) {
-          throw new Error('Session ended');
-        }
-      }
+    });
+  }
 
-      client.data.userId = user.id;
-      client.data.role = (user.role ?? 'rider') as AuthedSocket['data']['role'];
-      if (payload.sid) client.data.sessionId = payload.sid;
-      client.join(this.userRoom(user.id));
-      // Admin consoles listen on a shared room for live counts/badges (A-11).
-      if (client.data.role === 'admin') {
-        await client.join('admins');
+  async handleConnection(client: AuthedSocket): Promise<void> {
+    // Normally the middleware above already authenticated the socket. Keep
+    // the in-handler path so a direct handleConnection call (tests, or an
+    // adapter that skips middleware) still fails closed.
+    if (!client.data?.userId) {
+      try {
+        await this.authenticate(client);
+      } catch (err) {
+        this.logger.warn(`Rejected socket connection: ${(err as Error).message}`);
+        client.disconnect(true);
+        return;
       }
-
-      // Task 7: Schedule disconnect when access token expires.
-      // Emits session:expired before disconnecting so the client can refresh tokens and reconnect.
-      if (payload.exp) {
-        const msUntilExpiry = payload.exp * 1000 - Date.now();
-        if (msUntilExpiry > 0) {
-          const timer = setTimeout(async () => {
-            this.handleSessionExpired(client, 'token_expired');
-          }, msUntilExpiry);
-          this.expiryTimers.set(client, timer);
-        } else {
-          // Already expired
-          this.handleSessionExpired(client, 'token_expired');
-        }
-      }
-    } catch (err) {
-      this.logger.warn(`Rejected socket connection: ${(err as Error).message}`);
-      client.disconnect(true);
     }
+
+    const userId = client.data.userId!;
+    client.join(this.userRoom(userId));
+    // Admin consoles listen on a shared room for live counts/badges (A-11).
+    if (client.data.role === 'admin') {
+      await client.join('admins');
+    }
+
+    // Task 7: Schedule disconnect when access token expires.
+    // Emits session:expired before disconnecting so the client can refresh tokens and reconnect.
+    if (client.data.tokenExpiresAt) {
+      const msUntilExpiry = client.data.tokenExpiresAt * 1000 - Date.now();
+      if (msUntilExpiry > 0) {
+        const timer = setTimeout(async () => {
+          this.handleSessionExpired(client, 'token_expired');
+        }, msUntilExpiry);
+        this.expiryTimers.set(client, timer);
+      } else {
+        // Already expired
+        this.handleSessionExpired(client, 'token_expired');
+      }
+    }
+  }
+
+  /** Verifies the access token + session and records the identity on the socket. */
+  private async authenticate(client: AuthedSocket): Promise<void> {
+    // auth-only: ?token= query support removed (tokens in URLs leak to
+    // proxies/logs). Clients must send auth: { token }.
+    const token = client.handshake.auth?.token as string | undefined;
+    if (!token) {
+      throw new Error('missing token');
+    }
+    // Task 3: pin algorithm to HS256 to prevent algorithm confusion attacks.
+    const payload = this.jwt.verify<JwtPayload & { exp?: number }>(token, {
+      secret: this.config.get<string>('JWT_ACCESS_SECRET'),
+      algorithms: ['HS256'],
+    });
+
+    // Task 3: verify iss/aud claims with the 30-day grace period for old
+    // tokens. Phase-1.2: the rule lives in auth/token-claims.ts and is
+    // shared with JwtStrategy and the photo proxy — never duplicated here.
+    assertTokenClaims(payload);
+
+    // Reject sockets whose user is missing or deactivated, matching the
+    // HTTP JwtStrategy (which does a DB lookup for the same reason).
+    const user = await this.users.findOne({ where: { id: payload.sub } });
+    if (!user || user.isActive === false) {
+      throw new Error('user no longer active');
+    }
+
+    // Phase-1.1: a token that names its refresh session dies the moment that
+    // session is revoked (logout / replay detection / account deletion).
+    // Same rule as JwtStrategy.validate(); without it a logged-out device
+    // kept receiving ride:status and ride:request until token expiry.
+    if (payload.sid) {
+      const session = await this.sessions.findOne({
+        where: { id: payload.sid },
+        select: { id: true, revokedAt: true },
+      });
+      if (!session || session.revokedAt) {
+        throw new Error('Session ended');
+      }
+    }
+
+    client.data.userId = user.id;
+    client.data.role = (user.role ?? 'rider') as AuthedSocket['data']['role'];
+    if (payload.sid) client.data.sessionId = payload.sid;
+    if (payload.exp) client.data.tokenExpiresAt = payload.exp;
   }
 
   handleDisconnect(client: AuthedSocket): void {

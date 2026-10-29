@@ -5,6 +5,42 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Post-review hardening pass (2026-10-29)
+
+Follow-up to the full-project review, on `fix/local-changes`.
+
+**Correctness / money**
+- Double-offer race closed: `DriversService.claimAvailability()` claims a driver with a
+  conditional `UPDATE ... WHERE "isAvailable" = true`; matching walks candidates nearest-first
+  and skips anyone another ride claimed. New partial unique index
+  `UQ_rides_active_per_driver` (migration `1792000000000`) is the database backstop, with legacy
+  duplicates cancelled first. Claim is released if the ride write is rejected.
+- Razorpay webhook mismatches (status/currency/amount) now leave an admin-visible
+  `payment_mismatch` audit row as well as the warning log; nothing is settled.
+- Socket auth moved into Socket.IO middleware: a revoked session now surfaces as
+  `connect_error: "Session ended"` (the client stops retrying) instead of a successful connect
+  followed by `disconnect`; `handleConnection` keeps the same check as a fail-closed fallback.
+
+**Lifecycle / performance**
+- Dead refresh sessions are purged daily + after boot by `SessionsCleanupService` (7-day
+  retention), removing the table's unbounded growth.
+- Hot-path indexes: `rides(riderId,status)`, `rides(driverId,status)`,
+  `rides(status,updatedAt)`, `refresh_sessions(tokenHash|previousTokenHash|expiresAt)`
+  (migration `1792100000000`).
+- M-2 verified fixed: the legacy `SyncSchemaDrift` migration is idempotent; CI now runs the full
+  chain on a fresh PostGIS database (`backend-integration` job).
+
+**CI / tooling / docs**
+- CI on Node 22 (Node 20 is EOL), backend integration job on a fresh PostGIS service, frontend
+  unit tests, non-blocking `npm audit --audit-level=high`.
+- Frontend test net started: Jest + ts-jest for pure helpers (UPI link building/validation,
+  IST formatting/masking, haversine/formatDistance) — 22 tests.
+- Redis adapter logs reconnect/degraded/recovered transitions (no more silent realtime loss).
+- Added root `README.md` and `RUNBOOK.md`; refreshed `ADMIN.md` (migration count, test counts,
+  M-2 fixed, per-device sessions) and removed the stale "no root README" note.
+
+---
+
 ## Security hardening + safety/push/earnings pass (2026-10-20)
 
 Finishes the 20-item hardening prompt. Antigravity did most of it; the rest and several fixes were done here. **Nothing below was compiled or run by the author — run the checks at the end.**

@@ -62,6 +62,21 @@ export class RedisIoAdapter extends IoAdapter {
       subClient.on('error', (err) => {
         this.redisLogger.error(`Redis sub client error: ${err.message}`);
       });
+      // Mid-run failure is the dangerous case: boot succeeded, then Redis (or
+      // the network to it) died. Socket.IO keeps retrying in the background,
+      // but cross-instance broadcast stops until it reconnects — say so
+      // loudly instead of degrading silently.
+      pubClient.on('reconnecting', () => {
+        this.redisLogger.warn(
+          'Redis connection lost — Socket.IO cross-instance broadcasts are retrying (realtime may be local-only until it recovers)',
+        );
+      });
+      pubClient.on('ready', () => {
+        this.redisLogger.log('Redis connection ready — Socket.IO cross-instance adapter active');
+      });
+      pubClient.on('end', () => {
+        this.redisLogger.error('Redis connection closed — Socket.IO cross-instance broadcasts are degraded');
+      });
 
       // With a retryStrategy, connect() keeps retrying instead of rejecting, so
       // bound it: an unreachable Redis must not hold up boot.

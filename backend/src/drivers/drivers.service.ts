@@ -203,6 +203,30 @@ export class DriversService {
     await this.drivers.update({ id: driverId }, { isAvailable });
   }
 
+  /**
+   * RACE: atomically reserve a driver for ONE offer.
+   *
+   * Matching used to read `isAvailable` from findNearby and then unconditionally
+   * set it false. Two bookings could read the same candidate list before either
+   * wrote, so the same driver received two offers (and could even end up on two
+   * active rides). The conditional UPDATE is the serialization point: only the
+   * caller that flips `true -> false` gets the driver; everyone else sees `false`
+   * and moves on to the next nearest candidate.
+   *
+   * Pass the ride transaction's manager when matching under a row lock so the
+   * claim commits (or rolls back) together with the offer.
+   */
+  async claimAvailability(driverId: string, manager?: EntityManager): Promise<boolean> {
+    const result = await (manager ?? this.drivers.manager)
+      .createQueryBuilder()
+      .update(DriverEntity)
+      .set({ isAvailable: false })
+      .where('id = :id', { id: driverId })
+      .andWhere('"isAvailable" = true')
+      .execute();
+    return (result.affected ?? 0) === 1;
+  }
+
   // Called by RidesService after ReviewRideScreen submits a star rating —
   // rolls the new rating into the driver's running average (atomic, no lost writes).
   // SEC-9: an optional `manager` lets the aggregate update join the review's

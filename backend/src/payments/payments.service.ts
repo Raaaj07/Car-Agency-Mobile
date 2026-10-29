@@ -17,6 +17,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { RazorpayWebhookDto } from './dto/razorpay-webhook.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { PaymentEntity } from './entities/payment.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { PAYMENT_PROVIDER, PaymentProvider } from './providers/payment-provider.interface';
 
 /**
@@ -40,6 +41,8 @@ export class PaymentsService {
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly config: ConfigService,
+    @InjectRepository(AdminAuditLogEntity)
+    private readonly audit: Repository<AdminAuditLogEntity>,
   ) {}
 
   // POST /payments/create-order — a rider *claim* of payment (cash/UPI-QR) or
@@ -314,6 +317,20 @@ export class PaymentsService {
       this.logger.warn(
         `Razorpay webhook not settled: ride ${ride.id} order ${orderId} (payment not captured, amount or currency mismatch)`,
       );
+      // Leave an admin-visible trace. Best-effort: a logging/audit failure
+      // must never turn this into a 4xx that Razorpay retries forever.
+      await this.audit
+        .save(
+          this.audit.create({
+            actorUserId: null,
+            action: 'payment_mismatch',
+            targetType: 'ride',
+            targetId: ride.id,
+            reason: 'Razorpay webhook did not match the order (status/currency/amount)',
+            meta: { orderId, providerPaymentId },
+          }),
+        )
+        .catch(() => undefined);
       return { received: true };
     }
 

@@ -135,6 +135,38 @@ export const SCHEMA_REPAIR_STATEMENTS: string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS "UQ_rides_active_per_rider" ON "rides" ("riderId")
    WHERE "status" IN ('requested', 'matched', 'driver_en_route', 'in_progress')`,
 
+  // RACE: at most one ACTIVE ride per driver (matching claims availability
+  // atomically; this index is the backstop). Dedupe first, exactly like the
+  // rider index above, so the CREATE cannot fail on legacy rows.
+  `WITH dup AS (
+     SELECT "id",
+            ROW_NUMBER() OVER (
+              PARTITION BY "driverId"
+              ORDER BY CASE "status"
+                         WHEN 'in_progress' THEN 4
+                         WHEN 'driver_en_route' THEN 3
+                         WHEN 'matched' THEN 2
+                         ELSE 1
+                       END DESC,
+                       "updatedAt" DESC NULLS LAST,
+                       "createdAt" DESC,
+                       "id"
+            ) AS rn
+     FROM "rides"
+     WHERE "driverId" IS NOT NULL
+       AND "status" IN ('requested', 'matched', 'driver_en_route', 'in_progress')
+   )
+   UPDATE "rides" r
+   SET "status" = 'cancelled',
+       "cancellationReason" = 'duplicate_active_ride',
+       "cancelledBy" = 'system',
+       "cancelledAt" = NOW()
+   FROM dup
+   WHERE r."id" = dup."id" AND dup.rn > 1`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "UQ_rides_active_per_driver" ON "rides" ("driverId")
+   WHERE "driverId" IS NOT NULL
+     AND "status" IN ('requested', 'matched', 'driver_en_route', 'in_progress')`,
+
   // ── payments ────────────────────────────────────────────────────────────
   `ALTER TABLE "payments" ALTER COLUMN "status" TYPE varchar(16)`,
   `ALTER TABLE "payments" ALTER COLUMN "providerOrderId" DROP NOT NULL`,

@@ -2,7 +2,9 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
-    "ignoreDeprecations": "6.0"
+    "ignoreDeprecations": "6.0",
+    "isolatedModules": true,
+    "types": ["jest", "node"]
   },
   "include": [
     "src/**/*",

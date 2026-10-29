@@ -30,26 +30,20 @@ and `AUDIT.md` (as-found baseline).
 cd backend && npm run migration:run
 ```
 
-16 migrations total. For a fresh checkout the newest are `1791500000000-AddUserEmailVerified`
-(social sign-in no longer links accounts by raw email — the flag must be set by a verified
-audience), `1791600000000-AddActiveRideUniqueIndex` (partial unique index
-`UQ_rides_active_per_rider` — at most ONE active ride per rider, enforced by the database;
-dedupes any pre-existing double-bookings first, then cancels the older ones as system) and
-`1791400000000-AddRideOfferAndOtpColumns` (M-3 fix — see below). Run them on Render after
-every pull that touches `backend/src/database/migrations/` — they are never automatic.
+23 migrations total. For a fresh checkout the newest are `1791900000000-AddAppSettings`
+(admin-editable runtime settings, e.g. driver search radius), `1792000000000-AddActiveRidePerDriverIndex`
+(partial unique index `UQ_rides_active_per_driver` — at most ONE active ride per driver;
+dedupes pre-existing double-bookings first) and `1792100000000-AddHotPathIndexes`
+(rides owner+status, the stale-request sweep, and refresh-session lookups). Run them on
+Render after every pull that touches `backend/src/database/migrations/` — they are never automatic.
 
-> **⚠ M-2 — fresh-database blocker (owner fix pending):** on a *brand-new*
-> database `migration:run` fails at the legacy auto-generated
-> `SyncSchemaDrift1790972060287` migration (`column ... already exists` — it
-> re-adds columns the backdated `1700000000200/0300/0400` migrations already
-> create). Dev works only because its history recorded that migration before
-> those files existed. Existing migrations must not be edited in this pass, so:
-> the integration suite detects the conflict and pre-marks the migration after
-> proving it redundant, but **`npm run migration:run` on a truly fresh database
-> still needs the owner to make that migration idempotent
-> (`ADD ... IF NOT EXISTS`) or delete its redundant statements**, then verify on
-> a throwaway database. Until then, new environments bootstrap via the test
-> suite's documented repair or a copy of dev's schema.
+> **M-2 — fixed:** the legacy auto-generated `SyncSchemaDrift1790972060287`
+> migration used to re-add columns the backdated `1700000000200/0300/0400`
+> migrations already create, so a brand-new database failed with
+> `column ... already exists`. Every statement is now idempotent
+> (`ADD COLUMN IF NOT EXISTS`), and CI's `backend-integration` job runs the whole
+> chain on an empty PostGIS database on every PR — a non-idempotent migration
+> fails the build.
 
 ## Environment (names only)
 
@@ -141,8 +135,8 @@ remote host without `TEST_DB_ALLOW_REMOTE=1`.
 ## Verification commands
 
 ```bash
-cd backend  && npx tsc --noEmit && npx jest          # unit: 209 tests / 20 suites (no DB needed)
-cd frontend && npx tsc --noEmit && npx eslint src    # 0 errors
+cd backend  && npx tsc --noEmit && npx jest          # unit: 451 tests / 36 suites (no DB needed)
+cd frontend && npx tsc --noEmit && npx eslint src && npm test   # 22 tests / 3 suites
 ```
 
 Opt-in integration suite (real Postgres, 11 tests / 3 suites — promos FK/atomicity,
@@ -161,19 +155,16 @@ against the local server and creates its own `vazhi_test` database (never dev's)
 ## Known limitations (accepted)
 
 - Payment + OTP run in dev modes until the owner flips them off (fail-closed in production).
-- Fresh-DB `migration:run` blocker **M-2** (see Migrations above): the chain only runs end-to-end on
-  dev until the owner makes the legacy `SyncSchemaDrift` migration idempotent.
 - `D-4` background location heartbeat needs a new native build (`npx expo run:android|ios` or EAS) and background permission ("allow all the time") on the driver's device.
 - CSV export is capped at 50 000 rows per request; ride-list phone privacy applies to the export too.
 - Device/DB/Redis/payment-sandbox tests in the delivery report's "needs manual verification" list have not been run here.
-- **Multi-device sessions**: refresh tokens are single-use (rotation on every refresh), but there is
-  no server-side session registry — logging in on a second device with the same phone does NOT
-  revoke the first device's tokens, and logout on one device does not invalidate the other's
-  refresh token (only that device's current token dies when it is presented). A "revoke all
-  sessions" / session-family table is the known follow-up if account-takeover response needs it.
-- Security-hardening pass 2 residuals (2026-10-09, branch `security-hardening`): `npm audit` still
-  reports 5 backend moderates (all on the Nest 12 upgrade chain, `fixAvailable` wants a major bump)
-  and 16 frontend build-tool highs with `fixAvailable: false` (Expo/Metro toolchain — upgrading is
-  Expo's job, not a pin away); the global rate limiter sits before the router so 400s/404s consume
-  buckets; `docker-compose.yml`'s `migration:run` service is missing `ts-node` (use
-  `npm run migration:run` on the host instead); there is still no root `README.md`.
+- **Multi-device sessions**: every login creates a server-side `refresh_sessions` row; refresh
+  tokens are single-use and rotate on every use, replay outside the grace window revokes that
+  session and closes its sockets. Logout closes only the current device; "log out everywhere"
+  and account deletion close all of them. Dead sessions are purged weekly by
+  `SessionsCleanupService`.
+- Security-hardening pass 2 residuals (2026-10-09, branch `security-hardening`): the global rate
+  limiter sits before the router so 400s/404s consume buckets; `docker-compose.yml`'s
+  `migration:run` service is missing `ts-node` (use `npm run migration:run` on the host instead).
+  `npm audit --omit=dev` is clean on the backend; the remaining advisories are in Expo's
+  build toolchain and are fixed by Expo SDK upgrades.

@@ -139,6 +139,8 @@ describe('RidesService phase-1 fixes', () => {
       findById: jest.fn().mockRejectedValue(new Error('driver not loaded')),
       findNearby: jest.fn().mockResolvedValue([]),
       setAvailability: jest.fn().mockResolvedValue(undefined),
+      // RACE: atomic availability claim; default = this caller wins.
+      claimAvailability: jest.fn().mockResolvedValue(true),
       applyRating: jest.fn().mockResolvedValue(undefined),
     };
     gateway = {
@@ -391,7 +393,10 @@ describe('RidesService phase-1 fixes', () => {
 
       expect(result).toEqual({ status: 'offered', candidates: 2 });
       expect(ride.driverId).toBe('near');
-      expect(drivers.setAvailability).toHaveBeenCalledWith('near', false);
+      // The offer is claimed atomically (true -> false); the old unconditional
+      // setAvailability(false) let two bookings claim the same driver.
+      expect(drivers.claimAvailability).toHaveBeenCalledWith('near', undefined);
+      expect(drivers.setAvailability).not.toHaveBeenCalledWith('near', false);
       // Only that one driver is contacted.
       expect(gateway.emitRideRequestToDriver).toHaveBeenCalledTimes(1);
       expect(gateway.emitRideRequestToDriver).toHaveBeenCalledWith(
@@ -400,6 +405,53 @@ describe('RidesService phase-1 fixes', () => {
       );
       // The offer timer is armed so an unanswered offer passes to the next one.
       expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
+    });
+
+    it('skips a driver another booking already claimed and offers the next nearest', async () => {
+      const ride = requestedRide();
+      drivers.findNearby.mockResolvedValue([hit('near', 200), hit('next', 600)]);
+      // A concurrent booking won the atomic claim on `near`.
+      drivers.claimAvailability.mockImplementation(async (id: string) => id !== 'near');
+      drivers.findById.mockResolvedValue({ id: 'next', userId: 'u-next' });
+      rides.findOne.mockResolvedValue(ride);
+
+      const result = await internals.matchNearestDriver(ride as unknown as RideEntity);
+
+      expect(result).toEqual({ status: 'offered', candidates: 2 });
+      expect(ride.driverId).toBe('next');
+      expect(drivers.claimAvailability).toHaveBeenNthCalledWith(1, 'near', undefined);
+      expect(drivers.claimAvailability).toHaveBeenNthCalledWith(2, 'next', undefined);
+      // The already-claimed driver is never contacted.
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledTimes(1);
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledWith(
+        'u-next',
+        expect.objectContaining({ rideId: 'r1' }),
+      );
+    });
+
+    it('treats a fully-claimed candidate list as no drivers and keeps searching', async () => {
+      const ride = requestedRide();
+      drivers.findNearby.mockResolvedValue([hit('near', 200), hit('next', 600)]);
+      drivers.claimAvailability.mockResolvedValue(false);
+
+      const result = await internals.matchNearestDriver(ride as unknown as RideEntity);
+
+      expect(result).toEqual({ status: 'no_drivers', candidates: 0 });
+      expect(ride.driverId).toBeNull();
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+      // The search window is re-armed, so the rider is not stuck forever.
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).not.toBeNull();
+    });
+
+    it('releases the atomic claim when the ride save is rejected', async () => {
+      const ride = requestedRide();
+      drivers.findNearby.mockResolvedValue([hit('near', 200)]);
+      rides.save.mockRejectedValueOnce({ code: '23505' }); // per-driver index
+
+      await expect(internals.matchNearestDriver(ride as unknown as RideEntity)).rejects.toBeDefined();
+
+      // The driver must not stay unavailable after a failed offer.
+      expect(drivers.setAvailability).toHaveBeenCalledWith('near', true);
     });
 
     it('an unanswered offer moves on to the next nearest driver', async () => {

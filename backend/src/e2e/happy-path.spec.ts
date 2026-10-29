@@ -62,6 +62,8 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
     create: jest.Mock;
     save: jest.Mock;
     update: jest.Mock;
+    createQueryBuilder: jest.Mock;
+    manager?: unknown;
     findNearby: jest.Mock;
     setAvailability: jest.Mock;
     findByUserId: jest.Mock;
@@ -129,6 +131,36 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
         if (driverRow && driverRow.id === where.id) Object.assign(driverRow, partial);
         return { affected: 1 };
       }),
+      // RACE: DriversService.claimAvailability uses a conditional UPDATE
+      // (isAvailable true -> false). Model it against the in-memory row so the
+      // happy path still offers the driver, and a second claim loses.
+      createQueryBuilder: jest.fn(() => {
+        let targetId: string | undefined;
+        let patch: Partial<DriverRow> = {};
+        let requireAvailable = false;
+        const qb: any = {
+          update: () => qb,
+          set: (value: Partial<DriverRow>) => {
+            patch = value;
+            return qb;
+          },
+          where: (_sql: string, params: { id: string }) => {
+            targetId = params.id;
+            return qb;
+          },
+          andWhere: () => {
+            requireAvailable = true;
+            return qb;
+          },
+          execute: async () => {
+            if (!driverRow || driverRow.id !== targetId) return { affected: 0 };
+            if (requireAvailable && !driverRow.isAvailable) return { affected: 0 };
+            Object.assign(driverRow, patch);
+            return { affected: 1 };
+          },
+        };
+        return qb;
+      }),
       findNearby: jest.fn(async () => {
         if (!driverRow || !driverRow.isOnline || !driverRow.isAvailable || driverRow.status !== 'approved') {
           return [];
@@ -162,6 +194,9 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       // hydrateFromRedis re-reads rows by id (relations ignored).
       find: jest.fn(async () => (driverRow ? [driverRow] : [])),
     };
+    // claimAvailability falls back to repo.manager when no ride transaction
+    // manager is supplied (the create() path).
+    (driversRepo as any).manager = { createQueryBuilder: driversRepo.createQueryBuilder };
 
     ridesRepo = {
       findOne: jest.fn(async () => rideRow),
@@ -310,6 +345,7 @@ describe('E2E happy path (T-1): apply → approve → online → book → trip �
       ridesRepo as unknown as Repository<RideEntity>,
       provider as unknown as PaymentProvider,
       config,
+      { create: jest.fn((row) => row), save: jest.fn(async (row) => row) } as unknown as Repository<AdminAuditLogEntity>,
     );
     internals = ridesService as unknown as RidesInternals;
 

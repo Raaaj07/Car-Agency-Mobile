@@ -39,6 +39,7 @@ export class RefreshSessionEntity {
   familyId!: string;
 
   /** SHA-256 hash of the current refresh token for this session. */
+  @Index('IDX_refresh_sessions_token_hash')
   @Column({ type: 'varchar', length: 64 })
   tokenHash!: string;
 
@@ -47,6 +48,7 @@ export class RefreshSessionEntity {
    * grace window. Allows a client whose refresh response was lost in transit
    * to retry with the same token and get a fresh pair.
    */
+  @Index('IDX_refresh_sessions_prev_hash')
   @Column({ type: 'varchar', length: 64, nullable: true })
   previousTokenHash?: string | null;
 
@@ -67,6 +69,7 @@ export class RefreshSessionEntity {
   @Column({ type: 'timestamptz', nullable: true })
   lastUsedAt?: Date | null;
 
+  @Index('IDX_refresh_sessions_expires')
   @Column({ type: 'timestamptz' })
   expiresAt!: Date;
 

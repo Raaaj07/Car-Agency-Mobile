@@ -391,6 +391,38 @@ describe('RidesGateway socket handshake session check (Phase 1.1)', () => {
     expect(c.disconnect).toHaveBeenCalledWith(true);
     expect(users.findOne).not.toHaveBeenCalled();
   });
+
+  it('rejects a revoked session in Socket.IO middleware as connect_error, not disconnect', async () => {
+    verify.mockReturnValue({ sub: 'user-1', role: 'rider', sid: SESSION_ID, iss: JWT_ISS, aud: JWT_AUD });
+    sessions.findOne.mockResolvedValue({ id: SESSION_ID, revokedAt: new Date() });
+    let middleware!: (socket: unknown, next: jest.Mock) => void;
+    gateway.afterInit({ use: (fn: typeof middleware) => (middleware = fn) } as never);
+
+    const c = client('logged-out-token');
+    const next = jest.fn();
+    middleware(c, next);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // An Error passed to next() aborts the handshake -> the client sees
+    // `connect_error` carrying the reason, so it stops retrying.
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: 'Session ended' }));
+    expect(c.join).not.toHaveBeenCalled();
+  });
+
+  it('lets a live session through the middleware', async () => {
+    verify.mockReturnValue({ sub: 'user-1', role: 'rider', sid: SESSION_ID, iss: JWT_ISS, aud: JWT_AUD });
+    let middleware!: (socket: unknown, next: jest.Mock) => void;
+    gateway.afterInit({ use: (fn: typeof middleware) => (middleware = fn) } as never);
+
+    const c = client('good-token');
+    const next = jest.fn();
+    middleware(c, next);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(next).toHaveBeenCalledWith();
+    expect(c.data.userId).toBe('user-1');
+    expect(c.data.sessionId).toBe(SESSION_ID);
+  });
 });
 
 /**

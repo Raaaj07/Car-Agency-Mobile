@@ -19,6 +19,7 @@ import { Msg91SmsProvider } from './providers/msg91-sms.provider';
 import { SMS_PROVIDER } from './providers/sms-provider.interface';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { TokensService } from './tokens.service';
+import { SessionsCleanupService } from './sessions-cleanup.service';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { TokensService } from './tokens.service';
     AuthService,
     OtpService,
     TokensService,
+    SessionsCleanupService,
     JwtStrategy,
     JwtAuthGuard,
     StorageService,

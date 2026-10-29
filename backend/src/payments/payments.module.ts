@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { RideEntity } from '../rides/entities/ride.entity';
+import { AdminAuditLogEntity } from '../admin/entities/admin-audit-log.entity';
 import { PaymentEntity } from './entities/payment.entity';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
@@ -10,7 +11,7 @@ import { PAYMENT_PROVIDER } from './providers/payment-provider.interface';
 import { RazorpayPaymentProvider } from './providers/razorpay-payment.provider';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([PaymentEntity, RideEntity])],
+  imports: [TypeOrmModule.forFeature([PaymentEntity, RideEntity, AdminAuditLogEntity])],
   controllers: [PaymentsController],
   providers: [
     PaymentsService,

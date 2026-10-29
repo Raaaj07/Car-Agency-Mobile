@@ -9,6 +9,10 @@ export type AuditAction =
   | 'ride_cancel'
   | 'payment_resolve'
   | 'payment_driver_confirm'
+  // System: a signature-valid Razorpay webhook that did NOT match the stored
+  // order (status/currency/amount). Nothing is settled; the row is for the
+  // admin's reconciliation view.
+  | 'payment_mismatch'
   // Pass-4 (task 6): soft trip-fraud flags (pickup_far / dropoff_far /
   // distance_inflated / location_jump) — never block a trip, just leave a
   // trace the admin ride detail surfaces as `flags[]`.

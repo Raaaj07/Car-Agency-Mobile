@@ -19,7 +19,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 20 is EOL (April 2026); stay on the active LTS line.
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: backend/package-lock.json
 
@@ -35,6 +36,60 @@ jobs:
       - name: Unit tests
         run: npm test -- --no-coverage
 
+      - name: Dependency audit (high/critical)
+        # Regression gate for the advisories fixed in this hardening pass.
+        # Non-blocking until the Nest 12 upgrade lands; it still prints the
+        # full report in the job log.
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+
+  backend-integration:
+    name: Backend integration (fresh Postgres)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        # PostGIS: the schema uses geography columns.
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vazhi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NODE_ENV: test
+      INTEGRATION: '1'
+      TEST_DB_HOST: localhost
+      TEST_DB_PORT: '5432'
+      TEST_DB_USERNAME: postgres
+      TEST_DB_PASSWORD: postgres
+      TEST_DB_DATABASE: vazhi_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Runs the FULL migration chain on an empty database — the M-2
+      # regression guard: a non-idempotent migration fails this job.
+      - name: Integration tests (real Postgres, fresh schema)
+        run: npm run test:integration
+
   frontend:
     name: Frontend CI (lint, typecheck)
     runs-on: ubuntu-latest
@@ -47,7 +102,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -59,3 +114,6 @@ jobs:
 
       - name: Typecheck
         run: npx tsc --noEmit
+
+      - name: Unit tests (pure helpers)
+        run: npm test -- --ci
