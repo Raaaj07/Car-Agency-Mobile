@@ -8,7 +8,7 @@ import { Avatar } from '../../components/primitives/Avatar';
 import { RealMapView } from '../../components/primitives/RealMapView';
 import { MapRecenterButtons } from '../../components/primitives/MapRecenterButtons';
 import { useRideStore } from '../../store/rideStore';
-import { useRideSocket } from '../../hooks/useSocket';
+import { useResyncOnForeground, useRideSocket } from '../../hooks/useSocket';
 import { useDriverRoute } from '../../hooks/useDriverRoute';
 import { ridesApi } from '../../api/rides';
 import { formatDistance } from '../../utils/distance';
@@ -171,6 +171,9 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
       }
     },
   });
+
+  // Back from the background (or socket reconnected): catch up immediately.
+  useResyncOnForeground(() => void checkRideStatus());
 
   // Polling fallback to catch status changes in case of socket reconnection.
   // Keeps polling through in_progress (waiting for completion) and stops

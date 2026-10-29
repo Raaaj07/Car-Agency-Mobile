@@ -19,12 +19,14 @@ export type AuditAction =
   // Task 12: Admin promo CRUD auditing
   | 'promo_create'
   | 'promo_update'
-  | 'promo_delete';
+  | 'promo_delete'
+  // Admin changed a runtime setting (driver search radius).
+  | 'settings_update';
 
 // Pass-4 (task 12): account deletion targets the USER row (targetId = userId);
 // driver-specific effects are recorded in `meta.driverId`.
 // Task 12: promo target type added for admin promo management audit trail.
-export type AuditTargetType = 'driver' | 'ride' | 'user' | 'promo';
+export type AuditTargetType = 'driver' | 'ride' | 'user' | 'promo' | 'setting';
 
 @Entity('admin_audit_logs')
 @Index(['targetType', 'targetId'])

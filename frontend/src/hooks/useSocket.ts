@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { Socket } from 'socket.io-client';
 import { subscribeSocket } from '../lib/socket';
 
@@ -12,6 +13,38 @@ export function useSocket(): Socket | null {
   }, []);
 
   return socket;
+}
+
+/**
+ * Run `resync` the moment the app returns to the foreground and whenever the
+ * realtime socket (re)connects. While the app is backgrounded the OS freezes
+ * JS timers and drops the websocket, so a `ride:status` event (e.g. the driver
+ * finished the ride) is missed and the 3 s polls stop; without this the rider
+ * stays on the old screen until the next poll tick (or forever if the socket
+ * never delivers). `resync` should fetch the ride and navigate on change.
+ */
+export function useResyncOnForeground(resync: () => void): void {
+  const resyncRef = useRef(resync);
+  useEffect(() => {
+    resyncRef.current = resync;
+  });
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') resyncRef.current();
+    });
+    return () => sub.remove();
+  }, []);
+
+  const socket = useSocket();
+  useEffect(() => {
+    if (!socket) return;
+    const onConnect = () => resyncRef.current();
+    socket.on('connect', onConnect);
+    return () => {
+      socket.off('connect', onConnect);
+    };
+  }, [socket]);
 }
 
 export interface DriverLocationEvent {

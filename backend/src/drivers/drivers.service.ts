@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, MoreThan, Repository } from 'typeorm';
@@ -10,6 +10,7 @@ import { StorageService } from './storage.service';
 import { ApplicationEventsService } from '../common/events/application-events.service';
 import { haversineKm } from '../common/geo-utils';
 import { appTimezone, zonedStartOfDay } from '../common/timezone';
+import { MAX_RADIUS_M, SettingsService } from '../settings/settings.service';
 
 // D-1: the payee VPA must look like `name@bank` (kept in sync with the
 // SetUpiVpaDto validator — service-level check too, since scripts call it).
@@ -54,6 +55,9 @@ export class DriversService {
       private readonly config: ConfigService,
       private readonly storage: StorageService,
       private readonly events: ApplicationEventsService,
+      // Admin-editable driver search radius. Optional so unit tests (and a
+      // missing module) fall back to the env default below.
+      @Optional() private readonly settings?: SettingsService,
     ) {
       this.defaultRadiusMeters = this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000;
     }
@@ -383,8 +387,10 @@ export class DriversService {
     if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
       throw new BadRequestException('lat/lng out of range');
     }
-    // Cap radius to prevent full-table GEOSEARCH/PostGIS scans.
-    const radius = Math.min(radiusMeters ?? this.defaultRadiusMeters, 20000);
+    // No explicit radius -> the admin-configured one. Cap it to prevent
+    // full-table GEOSEARCH/PostGIS scans.
+    const wanted = radiusMeters ?? (await this.resolveSearchRadius());
+    const radius = Math.min(wanted, MAX_RADIUS_M);
     const ninetySecAgo = new Date(Date.now() - 90 * 1000);
 
     let results: NearbyDriverResult[] = [];
@@ -432,7 +438,11 @@ export class DriversService {
   ): Promise<
     NearbyPublicDriver[] | { drivers: NearbyPublicDriver[]; countsByType: Record<string, { count: number; bestEtaMinutes: number | null }> }
   > {
-    const found = await this.findNearby(lat, lng, radiusMeters, vehicleType, groupByType);
+    // The rider-facing view ALWAYS uses the admin-configured radius: a client
+    // supplied `radiusMeters` is ignored, so riders only ever see drivers
+    // inside the operator's radius (the same radius ride matching uses).
+    void radiusMeters;
+    const found = await this.findNearby(lat, lng, undefined, vehicleType, groupByType);
     const redact = (list: NearbyDriverResult[]): NearbyPublicDriver[] =>
       list.map((d) => ({
         lat: d.lat,
@@ -446,6 +456,11 @@ export class DriversService {
     return { drivers: redact(found.drivers), countsByType: found.countsByType };
   }
   
+  /** The radius (metres) riders see drivers in and ride matching offers within. */
+  async resolveSearchRadius(): Promise<number> {
+    return this.settings ? this.settings.getSearchRadiusMeters() : this.defaultRadiusMeters;
+  }
+
   private async hydrateFromRedis(hits: NearbyDriverHit[], minUpdatedAt: Date): Promise<NearbyDriverResult[]> {
     const ids = [...new Set(hits.map((h) => h.driverId))].slice(0, 20);
     if (ids.length === 0) return [];

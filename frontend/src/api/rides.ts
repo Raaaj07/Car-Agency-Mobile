@@ -52,6 +52,13 @@ export const ridesApi = {
     (await api.get<{ items: Ride[]; total: number }>('/rides', { params: { page, limit, ...(as ? { as } : {}) } })).data,
   get: async (rideId: string) => (await api.get<Ride>(`/rides/${rideId}`)).data,
   getActive: async () => (await api.get<Ride | null>('/rides/active')).data,
+  // Latest finished trip the rider has not rated yet (or null) - used to reopen
+  // the review screen after the app was killed. Nest serialises `null` as an
+  // empty body, which axios surfaces as '' - normalise to null.
+  getUnreviewed: async (): Promise<Ride | null> => {
+    const { data } = await api.get<Ride | null | ''>('/rides/unreviewed');
+    return data && typeof data === 'object' ? data : null;
+  },
   // Driver's in-flight trip (or null) — used to resume after a restart.
   // Nest serialises `null` as an empty body, which axios surfaces as '' —
   // normalise so callers can just test for null.

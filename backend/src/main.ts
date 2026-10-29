@@ -36,6 +36,9 @@ const REQUIRED_SCHEMA: Record<string, string[]> = {
   drivers: ['approvedAt', 'upiVpa', 'status'],
   promos: ['code', 'discountAmount', 'redemptionCount'],
   admin_audit_logs: ['action', 'targetId'],
+  // Admin-editable driver search radius (reads fall back to 10 km without it,
+  // but saving the setting needs the table).
+  app_settings: ['key', 'value'],
   // SEC-2b: updateMe/googleSignIn write and read it — a drifted DB without
   // it 500s on PATCH /auth/me and on every Google sign-in.
   users: ['emailVerified', 'emergencyContactPhone', 'pushEnabled'],

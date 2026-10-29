@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles, RolesGuard } from '../common/guards/roles.guard';
@@ -13,6 +13,7 @@ import { ListApplicationsQueryDto } from './dto/list-applications-query.dto';
 import { ListRidesQueryDto } from './dto/list-rides-query.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { AuditQueryDto } from './dto/audit-query.dto';
+import { UpdateDriverRadiusDto } from './dto/update-driver-radius.dto';
 
 // Authentication is global (SEC-1 default-deny); only the admin-role check
 // stays.
@@ -26,6 +27,19 @@ export class AdminController {
   @Get('overview')
   overview() {
     return this.admin.overview();
+  }
+
+  // Runtime settings. The driver search radius is used by the rider's
+  // nearby-drivers view AND by ride matching (nearest driver first, inside it).
+  @Get('settings')
+  getSettings() {
+    return this.admin.getSettings();
+  }
+
+  @Put('settings/driver-radius')
+  @HttpCode(HttpStatus.OK)
+  updateDriverRadius(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateDriverRadiusDto) {
+    return this.admin.updateDriverRadius(user.userId, dto.radiusKm);
   }
 
   // Task 9: user management list (name/phone/email search, role filter).

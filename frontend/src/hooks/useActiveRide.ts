@@ -90,6 +90,20 @@ export function clearRestoredRiderRide(): void {
 }
 
 /**
+ * Fetch the rider's finished-but-unrated trip (null when none, or offline).
+ * Read-only: the caller decides whether to put it in the store and navigate,
+ * because by then the rider may already have started something else.
+ */
+export async function fetchUnreviewedRide(): Promise<Ride | null> {
+  try {
+    const ride = await ridesApi.getUnreviewed();
+    return ride && ride.status === 'completed' && ride.rating == null ? ride : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Restore the rider's active ride from the server into the store.
  * Returns the ride or null. Failures are swallowed silently (offline first
  * launch must not break the app).

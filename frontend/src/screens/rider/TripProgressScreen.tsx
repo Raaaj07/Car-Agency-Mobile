@@ -28,7 +28,7 @@ import {
 import { Button } from '../../components/primitives/Button';
 import { RealMapView } from '../../components/primitives/RealMapView';
 import { MapRecenterButtons } from '../../components/primitives/MapRecenterButtons';
-import { useRideSocket } from '../../hooks/useSocket';
+import { useResyncOnForeground, useRideSocket } from '../../hooks/useSocket';
 import { useDriverRoute } from '../../hooks/useDriverRoute';
 import { useRideStore } from '../../store/rideStore';
 import { ridesApi } from '../../api/rides';
@@ -170,6 +170,10 @@ export const TripProgressScreen: React.FC<Props> = ({
       }
     },
   });
+
+  // Back from the background (or socket reconnected): the ride may have been
+  // completed/cancelled meanwhile — check right now instead of waiting.
+  useResyncOnForeground(() => void checkTerminalStatus());
 
   // 3s polling fallback for terminal states (socket may be reconnecting).
   // Stops itself after the first terminal state.

@@ -20,6 +20,7 @@ import { PlacesModule } from './places/places.module';
 import { PromosModule } from './promos/promos.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -81,6 +82,8 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
     }),
     // Global bridge for cross-module events (admin application notifications).
     CommonModule,
+    // Admin-editable runtime settings (driver search radius).
+    SettingsModule,
     RedisModule,
     AuthModule,
     DriversModule,

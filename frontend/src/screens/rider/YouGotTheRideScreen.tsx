@@ -8,7 +8,7 @@ import { Card } from '../../components/primitives/Card';
 import { Avatar } from '../../components/primitives/Avatar';
 import { RealMapView, LatLng } from '../../components/primitives/RealMapView';
 import { useRideStore } from '../../store/rideStore';
-import { useRideSocket } from '../../hooks/useSocket';
+import { useResyncOnForeground, useRideSocket } from '../../hooks/useSocket';
 import { ridesApi } from '../../api/rides';
 import { getRoute } from '../../api/mapbox';
 import { haversineKm } from '../../utils/distance';
@@ -87,6 +87,20 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
     onRideCancelledRef.current = onRideCancelled;
   });
   const cancelledRef = useRef(false);
+  // The ride moved past "matched" (trip started / finished) while the rider sat
+  // on this screen — hand over to the live-trip chain exactly once.
+  const onTrackDriverRef = useRef(onTrackDriver);
+  useEffect(() => {
+    onTrackDriverRef.current = onTrackDriver;
+  });
+  const advancedRef = useRef(false);
+  const advancePastMatched = useCallback(() => {
+    if (advancedRef.current || cancelledRef.current) return;
+    advancedRef.current = true;
+    // DriverEnRoute re-checks the ride on mount and forwards to TripProgress /
+    // ReviewRide as needed, so one hop is enough for in_progress and completed.
+    onTrackDriverRef.current();
+  }, []);
 
   const handleDriverPos = useCallback((lat: number, lng: number) => {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
@@ -100,39 +114,46 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
       if (event.status === 'cancelled' && !cancelledRef.current) {
         cancelledRef.current = true;
         onRideCancelledRef.current?.(event.cancellationReason ?? undefined);
+      } else if (event.status === 'in_progress' || event.status === 'completed') {
+        advancePastMatched();
       }
     },
   });
 
   // REST fallback: refreshes the driver's last known position (and catches a
   // cancel the socket missed). Mirrors FindingDriver / DriverEnRoute polling.
+  const pollRide = useCallback(async () => {
+    if (!rideId) return;
+    try {
+      const ride = await ridesApi.get(rideId);
+      if (!mountedRef.current) return;
+      if (ride.status === 'cancelled') {
+        if (!cancelledRef.current) {
+          cancelledRef.current = true;
+          setActiveRide(ride);
+          onRideCancelledRef.current?.(ride.cancellationReason ?? undefined);
+        }
+        return;
+      }
+      setActiveRide(ride);
+      if (ride.status === 'in_progress' || ride.status === 'completed') {
+        advancePastMatched();
+        return;
+      }
+      if (ride.driver?.location) handleDriverPos(ride.driver.location.lat, ride.driver.location.lng);
+    } catch {
+      // Transient network error — the next tick retries.
+    }
+  }, [rideId, setActiveRide, handleDriverPos, advancePastMatched]);
+
   useEffect(() => {
     if (!rideId) return;
-    let stopped = false;
-    const poll = async () => {
-      try {
-        const ride = await ridesApi.get(rideId);
-        if (stopped || !mountedRef.current) return;
-        if (ride.status === 'cancelled') {
-          if (!cancelledRef.current) {
-            cancelledRef.current = true;
-            setActiveRide(ride);
-            onRideCancelledRef.current?.(ride.cancellationReason ?? undefined);
-          }
-          return;
-        }
-        setActiveRide(ride);
-        if (ride.driver?.location) handleDriverPos(ride.driver.location.lat, ride.driver.location.lng);
-      } catch {
-        // Transient network error — the next tick retries.
-      }
-    };
-    const timer = setInterval(() => void poll(), POLL_MS);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [rideId, setActiveRide, handleDriverPos]);
+    const timer = setInterval(() => void pollRide(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [rideId, pollRide]);
+
+  // Back from the background (or socket reconnected): catch up immediately.
+  useResyncOnForeground(() => void pollRide());
 
   // Real road route + ETA from the driver to the pickup point (Mapbox
   // Directions). Throttled by distance moved / age.

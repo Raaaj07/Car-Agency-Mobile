@@ -38,6 +38,7 @@ import { RouteDistanceService } from './route-distance.service';
 import { RidesGateway } from './gateway/rides.gateway';
 import { PromosService } from '../promos/promos.service';
 import { PushService } from '../notifications/push.service';
+import { SettingsService } from '../settings/settings.service';
 
 
 
@@ -54,7 +55,16 @@ export const RIDE_TIMERS_KEY = 'ride:timers';
 // Every instance polls the set every 5 s and claims due entries with an
 // atomic ZREM: exactly one instance wins a given timer, and the handlers are
 // idempotent (conditional updates / row locks), so nothing can double-fire.
-export const TIMER_SWEEP_MS = 5_000;
+// 2 s (was 5 s): an unanswered offer is passed to the next nearest driver
+// within ~2 s of its deadline instead of up to 5 s late.
+export const TIMER_SWEEP_MS = 2_000;
+const DEFAULT_MAX_OFFER_ATTEMPTS = 10;
+// While Redis is unreachable the 2 s timer sweep fails on every tick; log the
+// failure at most this often (and once more when it recovers).
+export const TIMER_SWEEP_FAIL_LOG_EVERY_MS = 30_000;
+// A finished trip the rider never rated is offered back on the review screen
+// (after the app was killed) for this long after completion.
+export const UNREVIEWED_RESUME_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 // Pass-4 (task 6): hard trip-fraud limits — block only absurd input.
 const DEFAULT_MAX_TRIP_KM = 150;
@@ -98,10 +108,15 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly serviceAreaBbox: ServiceAreaBbox | null;
   // R-1: max time a ride may sit in `requested` with nobody offering.
   private readonly searchTimeoutSeconds: number;
+  private readonly maxOfferAttempts: number;
   private readonly logger = new Logger(RidesService.name);
   private staleSweepTimer: NodeJS.Timeout | null = null;
   // R-5: polls the shared `ride:timers` zset (see RIDE_TIMERS_KEY).
   private timerSweepTimer: NodeJS.Timeout | null = null;
+  // Redis-down log throttle for sweepDueTimers(): set while the sweep is failing.
+  private timerSweepFailingSince: number | null = null;
+  private timerSweepLastFailLogAt = 0;
+  private timerSweepFailedTicks = 0;
 
   constructor(
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
@@ -114,12 +129,25 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     // Optional so unit tests (and a missing module) never block the ride flow.
     @Optional() private readonly push?: PushService,
+    // Admin-editable driver search radius (falls back to config when absent).
+    @Optional() private readonly settings?: SettingsService,
   ) {
     this.requestTimeoutSeconds = this.config.get<number>('RIDE_REQUEST_TIMEOUT_SECONDS') ?? 15;
     this.searchTimeoutSeconds = this.config.get<number>('RIDE_SEARCH_TIMEOUT_SECONDS') ?? 90;
+    // How many drivers are offered one ride (decline / no response) before the
+    // search gives up. Was a hard-coded 3; with a radius-based search the
+    // nearest drivers are tried one after another until the radius is exhausted.
+    const attempts = Number(this.config.get<string>('RIDE_MAX_OFFER_ATTEMPTS'));
+    this.maxOfferAttempts = Number.isInteger(attempts) && attempts >= 1 ? attempts : DEFAULT_MAX_OFFER_ATTEMPTS;
     const maxTripKm = Number(this.config.get<string>('MAX_TRIP_KM'));
     this.maxTripKm = Number.isFinite(maxTripKm) && maxTripKm > 0 ? maxTripKm : DEFAULT_MAX_TRIP_KM;
     this.serviceAreaBbox = parseServiceAreaBbox(this.config.get<string>('SERVICE_AREA_BBOX'));
+  }
+
+  /** Hard radius (metres) for offering a ride — the admin setting, else config. */
+  private async searchRadiusMeters(): Promise<number> {
+    if (this.settings) return this.settings.getSearchRadiusMeters();
+    return this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 10_000;
   }
 
   // Startup sweep: recover from server restarts so no drivers are permanently reserved
@@ -148,7 +176,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
             const declined = expiredDriverId
               ? [...(ride.declinedDriverIds || []), expiredDriverId]
               : ride.declinedDriverIds || [];
-            const giveUp = declined.length >= 3;
+            const giveUp = declined.length >= this.maxOfferAttempts;
             const result = await manager.update(
               RideEntity,
               { id: ride.id, status: 'requested', driverId: ride.driverId },
@@ -317,6 +345,21 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     return ride ? this.toRiderView(ride) : null;
   }
 
+  // GET /rides/unreviewed - the rider's most recent trip that finished within
+  // UNREVIEWED_RESUME_WINDOW_MS and has no rating yet, or null. Lets the app
+  // reopen on the review screen after it was killed at the end of a trip.
+  // Separate from findActiveForRider on purpose: ACTIVE_RIDE_STATUSES also
+  // drives the one-active-ride unique index and the booking pre-check.
+  async findUnreviewedForRider(userId: string): Promise<any | null> {
+    const since = new Date(Date.now() - UNREVIEWED_RESUME_WINDOW_MS);
+    const ride = await this.rides.findOne({
+      where: { riderId: userId, status: 'completed', rating: IsNull(), completedAt: MoreThan(since) },
+      order: { completedAt: 'DESC' },
+      relations: ['rider', 'driver', 'driver.user'],
+    });
+    return ride ? this.toRiderView(ride) : null;
+  }
+
   // GET /rides/driver/active — the driver's in-flight trip, or null, so the
   // driver app can re-enter it after a restart / back-navigation / reconnect.
   // Covers matched, driver_en_route and in_progress, plus a trip completed in
@@ -397,9 +440,10 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     try {
       due = await this.redis.zrangebyscore(RIDE_TIMERS_KEY, 0, nowMs);
     } catch (err) {
-      this.logger.error(`Timer sweep failed: ${(err as Error).message}`);
+      this.noteTimerSweepFailure(err as Error);
       return 0;
     }
+    this.noteTimerSweepRecovered();
     let fired = 0;
     for (const member of due) {
       try {
@@ -419,6 +463,39 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       }
     }
     return fired;
+  }
+
+  /**
+   * Redis is down: the sweep fails every TIMER_SWEEP_MS. Log the first failure
+   * immediately, then at most once per TIMER_SWEEP_FAIL_LOG_EVERY_MS with the
+   * number of ticks skipped, so the log stays readable during an outage.
+   */
+  private noteTimerSweepFailure(err: Error, now = Date.now()): void {
+    this.timerSweepFailedTicks += 1;
+    if (this.timerSweepFailingSince === null) {
+      this.timerSweepFailingSince = now;
+      this.timerSweepLastFailLogAt = now;
+      this.logger.error(`Timer sweep failed (Redis unreachable?): ${err.message}`);
+      this.timerSweepFailedTicks = 0;
+      return;
+    }
+    if (now - this.timerSweepLastFailLogAt >= TIMER_SWEEP_FAIL_LOG_EVERY_MS) {
+      this.logger.error(
+        `Timer sweep still failing since ${new Date(this.timerSweepFailingSince).toISOString()} ` +
+          `(${this.timerSweepFailedTicks} ticks): ${err.message}`,
+      );
+      this.timerSweepLastFailLogAt = now;
+      this.timerSweepFailedTicks = 0;
+    }
+  }
+
+  /** First successful sweep after a failure run: say so once. */
+  private noteTimerSweepRecovered(now = Date.now()): void {
+    if (this.timerSweepFailingSince === null) return;
+    const downMs = now - this.timerSweepFailingSince;
+    this.timerSweepFailingSince = null;
+    this.timerSweepFailedTicks = 0;
+    this.logger.log(`Timer sweep recovered after ${Math.round(downMs / 1000)}s`);
   }
 
   // R-1: without this, a "no drivers nearby" ride stays `requested` forever —
@@ -479,7 +556,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         if (ride.status !== 'requested' || !ride.driverId) return null;
         const driverId = ride.driverId;
         const declined = [...(ride.declinedDriverIds || []), driverId];
-        const giveUp = declined.length >= 3;
+        const giveUp = declined.length >= this.maxOfferAttempts;
         // Only the timer's own fields, re-validated against the locked row.
         const result = await manager.update(
           RideEntity,
@@ -513,7 +590,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       if (!ride) return;
       if (outcome.giveUp) {
         this.pushStatus(ride);
-        this.logger.warn(`Ride ${rideId} cancelled after 3 failed/expired driver offers`);
+        this.logger.warn(
+          `Ride ${rideId} cancelled after ${this.maxOfferAttempts} failed/expired driver offers`,
+        );
       } else if (ride.status === 'requested' && !ride.driverId) {
         // rematch() re-reads the ride under the lock before offering again.
         try {
@@ -827,26 +906,19 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     let candidates: any[] = [];
     let matchedStrategy = 'exact_radius';
 
-    // Strategy 1: Exact vehicleType within default radius (5 km)
+    // ONE radius, set by the admin (Settings), is the hard limit for who can
+    // be offered this ride — the same radius the rider's nearby-drivers view
+    // uses. Drivers outside it are never contacted.
+    const radius = await this.searchRadiusMeters();
+
+    // Strategy 1: the requested vehicle type inside the radius.
     const exactHits = await this.drivers.findNearby(
       ride.pickup.lat,
       ride.pickup.lng,
-      this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000,
+      radius,
       ride.vehicleType,
     );
     candidates = (exactHits as any[]).filter(notSelf);
-
-    // Strategy 2: Retry with radius x 2 (10 km)
-    if (candidates.length === 0) {
-      matchedStrategy = 'radius_x2';
-      const wideHits = await this.drivers.findNearby(
-        ride.pickup.lat,
-        ride.pickup.lng,
-        (this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000) * 2,
-        ride.vehicleType,
-      );
-      candidates = (wideHits as any[]).filter(notSelf);
-    }
 
     // Strategy 3: Compatible larger vehicle types if allowed
     if (candidates.length === 0 && allowUpgrade) {
@@ -861,7 +933,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         const upgradeHits = await this.drivers.findNearby(
           ride.pickup.lat,
           ride.pickup.lng,
-          this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000,
+          radius,
           nextType,
         );
         const filtered = (upgradeHits as any[]).filter(notSelf);
@@ -873,10 +945,18 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       }
     }
 
-    this.logger.log(`Ride ${ride.id} matching strategy: ${matchedStrategy}, candidates: ${candidates.length}`);
+    // Nearest first. findNearby already returns nearest-first; sorting again
+    // makes the order explicit (stable, so ties keep their order). Declined or
+    // timed-out drivers are excluded above, so each re-match moves on to the
+    // next nearest driver still inside the radius.
+    candidates.sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0));
+
+    this.logger.log(
+      `Ride ${ride.id} matching strategy: ${matchedStrategy}, radius ${radius} m, candidates: ${candidates.length}`,
+    );
 
     if (candidates.length === 0) {
-      if ((ride.declinedDriverIds?.length ?? 0) >= 3) {
+      if ((ride.declinedDriverIds?.length ?? 0) >= this.maxOfferAttempts) {
         ride.status = 'cancelled';
         ride.cancellationReason = 'no_drivers_available';
         ride.cancelledBy = 'system';

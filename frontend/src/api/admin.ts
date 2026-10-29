@@ -14,7 +14,8 @@ export type AuditAction =
   | 'reinstate'
   | 'ride_cancel'
   | 'payment_resolve'
-  | 'upi_update';
+  | 'upi_update'
+  | 'settings_update';
 
 export interface ApplicationSummary {
   id: string;
@@ -62,7 +63,7 @@ export interface AuditEntry {
   actorUserId: string | null;
   actorName: string | null;
   action: AuditAction;
-  targetType: 'driver' | 'ride';
+  targetType: 'driver' | 'ride' | 'setting';
   targetId: string;
   /** Driver's name or the ride's rider name; null for deleted targets. */
   targetName: string | null;
@@ -212,7 +213,7 @@ export interface ListRidesParams {
 
 export interface AuditParams {
   action?: string;
-  targetType?: 'driver' | 'ride';
+  targetType?: 'driver' | 'ride' | 'setting';
   targetId?: string;
   actorUserId?: string;
   page?: number;
@@ -267,6 +268,15 @@ export interface AdminPromoInput {
   validFrom?: string | null;
   validTo?: string | null;
   maxRedemptions?: number | null;
+}
+
+/** GET/PUT /admin/settings — the nearby-driver radius riders see and offers use. */
+export interface AdminSettings {
+  driverSearchRadiusKm: number;
+  minKm: number;
+  maxKm: number;
+  updatedAt: string | null;
+  updatedBy: string | null;
 }
 
 export const adminApi = {
@@ -367,6 +377,11 @@ export const adminApi = {
         `/admin/driver-applications/${applicationId}/documents`,
       )
     ).data,
+
+  // ── Settings ──
+  getSettings: async () => (await api.get<AdminSettings>('/admin/settings')).data,
+  updateDriverRadius: async (radiusKm: number) =>
+    (await api.put<AdminSettings>('/admin/settings/driver-radius', { radiusKm })).data,
 
   // ── Promo codes (PR-1) ──
   listPromos: async () => (await api.get<AdminPromo[]>('/admin/promos')).data,

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, AppState } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Navigation, KeyRound } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
@@ -120,11 +120,16 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
 
     void checkRide();
     timerId = setInterval(() => void checkRide(), 3000);
+    // Timers are frozen while backgrounded: re-check the moment we return.
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void checkRide();
+    });
 
     return () => {
       isMounted = false;
       hasResolved = true;
       stopPolling();
+      appStateSub.remove();
     };
   }, [activeRide?.id, setActiveRide]);
 

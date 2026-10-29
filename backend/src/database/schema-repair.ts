@@ -167,6 +167,14 @@ export const SCHEMA_REPAIR_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS "IDX_admin_audit_logs_target" ON "admin_audit_logs" ("targetType", "targetId")`,
   `CREATE INDEX IF NOT EXISTS "IDX_admin_audit_logs_created" ON "admin_audit_logs" ("createdAt" DESC)`,
 
+  // ── runtime settings (admin-editable driver search radius) ─────────────
+  `CREATE TABLE IF NOT EXISTS "app_settings" (
+     "key" varchar(64) PRIMARY KEY,
+     "value" varchar(255) NOT NULL,
+     "updatedBy" varchar(36),
+     "updatedAt" timestamptz NOT NULL DEFAULT now()
+   )`,
+
   // ── promos (PR-1) — previously had NO migration ─────────────────────────
   `CREATE TABLE IF NOT EXISTS "promos" (
      "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),

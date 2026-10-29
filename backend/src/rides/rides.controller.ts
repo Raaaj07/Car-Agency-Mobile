@@ -68,6 +68,13 @@ export class RidesController {
     return this.rides.findActiveForDriver(user.userId);
   }
 
+  // Rider's latest finished-but-unrated trip (app-restart restore of the review
+  // screen). Declared BEFORE ':id' so 'unreviewed' is not treated as an id.
+  @Get('unreviewed')
+  getUnreviewed(@CurrentUser() user: AuthenticatedUser) {
+    return this.rides.findUnreviewedForRider(user.userId);
+  }
+
   @Get(':id')
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.rides.findById(id, user.userId);

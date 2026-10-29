@@ -12,6 +12,7 @@ import { GeoService } from '../drivers/geo.service';
 import { RidesGateway } from './gateway/rides.gateway';
 import { PromosService } from '../promos/promos.service';
 import { RouteDistanceService } from './route-distance.service';
+import { SettingsService } from '../settings/settings.service';
 
 /**
  * Phase-1 regression tests:
@@ -62,7 +63,11 @@ describe('RidesService phase-1 fixes', () => {
   // FakeRedis to model multiple backend processes (R-5).
   let fake: FakeRedis;
 
-  const buildService = (configValues: Record<string, unknown> = {}, routedKm = 5): RidesService =>
+  const buildService = (
+    configValues: Record<string, unknown> = {},
+    routedKm = 5,
+    settings?: Pick<SettingsService, 'getSearchRadiusMeters'>,
+  ): RidesService =>
     new RidesService(
       rides as unknown as Repository<RideEntity>,
       drivers as unknown as DriversService,
@@ -73,6 +78,8 @@ describe('RidesService phase-1 fixes', () => {
       // R-7: routed distance — tests use a fixed estimate (no HTTP).
       { routedKm: jest.fn().mockResolvedValue(routedKm) } as unknown as RouteDistanceService,
       fake as unknown as Redis,
+      undefined, // push
+      settings as unknown as SettingsService | undefined,
     );
 
   const requestedRide = (overrides: Record<string, unknown> = {}) => ({
@@ -347,6 +354,91 @@ describe('RidesService phase-1 fixes', () => {
     });
   });
 
+  // Admin-configured radius: ONE radius limits who is offered a ride, the
+  // nearest driver inside it is offered first, and each decline / timeout
+  // moves on to the next nearest until the radius is exhausted.
+  describe('radius-based nearest-first matching', () => {
+    const hit = (driverId: string, distanceMeters: number) => ({
+      driverId,
+      userId: `u-${driverId}`,
+      distanceMeters,
+    });
+
+    it('searches with the admin radius, once, for the requested vehicle type', async () => {
+      const settings = { getSearchRadiusMeters: jest.fn().mockResolvedValue(7_000) };
+      service = buildService({}, 5, settings);
+      internals = service as unknown as RidesInternals;
+      const ride = requestedRide();
+      drivers.findNearby.mockResolvedValue([]);
+
+      await internals.matchNearestDriver(ride as unknown as RideEntity);
+
+      expect(drivers.findNearby).toHaveBeenCalledTimes(1); // no 2x widening
+      expect(drivers.findNearby).toHaveBeenCalledWith(12.9, 77.6, 7_000, 'auto');
+    });
+
+    it('offers the NEAREST driver first and skips drivers who already declined', async () => {
+      const ride = requestedRide({ declinedDriverIds: ['declined'] });
+      drivers.findNearby.mockResolvedValue([
+        hit('far', 900),
+        hit('near', 200),
+        hit('declined', 50), // closest, but already declined/timed out
+      ]);
+      drivers.findById.mockResolvedValue({ id: 'near', userId: 'u-near' });
+      rides.findOne.mockResolvedValue(ride);
+
+      const result = await internals.matchNearestDriver(ride as unknown as RideEntity);
+
+      expect(result).toEqual({ status: 'offered', candidates: 2 });
+      expect(ride.driverId).toBe('near');
+      expect(drivers.setAvailability).toHaveBeenCalledWith('near', false);
+      // Only that one driver is contacted.
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledTimes(1);
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledWith(
+        'u-near',
+        expect.objectContaining({ rideId: 'r1' }),
+      );
+      // The offer timer is armed so an unanswered offer passes to the next one.
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
+    });
+
+    it('an unanswered offer moves on to the next nearest driver', async () => {
+      const ride = requestedRide({ driverId: 'near' });
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      applyLockUpdates(ride);
+      rides.findOne.mockResolvedValue(ride);
+      // After the timeout the nearest is in the declined list; only `next` is left.
+      drivers.findNearby.mockResolvedValue([hit('near', 200), hit('next', 600)]);
+      drivers.findById.mockResolvedValue({ id: 'next', userId: 'u-next' });
+      // rematch() reads the ride under the row lock again.
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+
+      await internals.scheduleOfferTimeout('r1', 15_000);
+      await internals.sweepDueTimers(Date.now() + 16_000);
+
+      expect(ride.declinedDriverIds).toContain('near');
+      expect(drivers.setAvailability).toHaveBeenCalledWith('near', true); // freed
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledWith(
+        'u-next',
+        expect.objectContaining({ rideId: 'r1' }),
+      );
+    });
+
+    it('keeps trying until the attempt limit, then cancels with no_drivers_available', async () => {
+      drivers.findNearby.mockResolvedValue([]); // radius exhausted
+
+      const nine = requestedRide({ declinedDriverIds: Array.from({ length: 9 }, (_, i) => `d${i}`) });
+      await internals.matchNearestDriver(nine as unknown as RideEntity);
+      expect(nine.status).toBe('requested'); // still searching (search window armed)
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).not.toBeNull();
+
+      const ten = requestedRide({ declinedDriverIds: Array.from({ length: 10 }, (_, i) => `d${i}`) });
+      await internals.matchNearestDriver(ten as unknown as RideEntity);
+      expect(ten.status).toBe('cancelled');
+      expect(ten.cancellationReason).toBe('no_drivers_available');
+    });
+  });
+
   describe('SEC-3: no free rides by cancelling mid-trip', () => {
     const inProgressRide = (overrides: Record<string, unknown> = {}) =>
       requestedRide({
@@ -549,8 +641,11 @@ describe('RidesService phase-1 fixes', () => {
       );
     });
 
-    it('rematch() cancelling a thrice-declined ride also commits in-txn', async () => {
-      const locked = requestedRide({ declinedDriverIds: ['d1', 'd2', 'd3'] });
+    it('rematch() cancelling a ride whose offer attempts are used up also commits in-txn', async () => {
+      // Default RIDE_MAX_OFFER_ATTEMPTS is 10 (was a hard-coded 3).
+      const locked = requestedRide({
+        declinedDriverIds: ['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9', 'd10'],
+      });
       queryRunner.manager.findOne.mockResolvedValue(locked);
       rides.findOne.mockResolvedValue(locked); // response reload after commit
       drivers.findNearby.mockResolvedValue([]);

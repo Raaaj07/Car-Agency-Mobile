@@ -12,4 +12,5 @@ export const AUDIT_ACTION_LABEL: Record<AuditAction, string> = {
   ride_cancel: 'Cancelled ride',
   payment_resolve: 'Resolved payment',
   upi_update: 'Updated payee UPI ID',
+  settings_update: 'Changed driver search radius',
 };

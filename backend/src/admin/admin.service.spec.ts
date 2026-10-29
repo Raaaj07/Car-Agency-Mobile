@@ -380,6 +380,66 @@ describe('AdminService status machine (A-2, A-3)', () => {
     });
   });
 
+  describe('driver search radius setting', () => {
+    const withSettings = (current: number) => {
+      const settings = {
+        getSearchRadiusMeters: jest.fn().mockResolvedValue(current),
+        getDriverRadius: jest.fn().mockResolvedValue({ radiusMeters: current, updatedAt: null, updatedBy: null }),
+        setSearchRadiusMeters: jest.fn(async (m: number, by: string) => {
+          settings.getDriverRadius.mockResolvedValue({ radiusMeters: m, updatedAt: new Date(), updatedBy: by });
+          return { radiusMeters: m, updatedAt: new Date(), updatedBy: by };
+        }),
+      };
+      const svc = new AdminService(
+        {} as unknown as Repository<UserEntity>,
+        drivers as unknown as Repository<DriverEntity>,
+        rides as unknown as Repository<RideEntity>,
+        payments as unknown as Repository<PaymentEntity>,
+        geo as unknown as GeoService,
+        {} as unknown as StorageService,
+        gateway as unknown as RidesGateway,
+        { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+        audit as unknown as AdminAuditService,
+        ridesSvc as unknown as RidesService,
+        routes as unknown as RouteDistanceService,
+        settings as any,
+      );
+      return { svc, settings };
+    };
+
+    it('reports the radius in km with its bounds', async () => {
+      const { svc } = withSettings(10_000);
+      await expect(svc.getSettings()).resolves.toMatchObject({
+        driverSearchRadiusKm: 10,
+        minKm: 1,
+        maxKm: 50,
+      });
+    });
+
+    it('saves the new radius in metres and writes an audit row', async () => {
+      const { svc, settings } = withSettings(10_000);
+
+      const result = await svc.updateDriverRadius('admin-1', 7.5);
+
+      expect(settings.setSearchRadiusMeters).toHaveBeenCalledWith(7_500, 'admin-1');
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: 'admin-1',
+          action: 'settings_update',
+          targetType: 'setting',
+          targetId: 'driver_search_radius',
+          meta: { previousKm: 10, nextKm: 7.5 },
+        }),
+      );
+      expect(result.driverSearchRadiusKm).toBe(7.5);
+    });
+
+    it('answers 503 instead of crashing when settings are unavailable', async () => {
+      await expect(service.getSettings()).rejects.toThrow();
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+  });
+
   // R-7: the outlier flag is based on the ROUTED distance (Mapbox via
   // RouteDistanceService, straight-line x1.3 fallback), not straight-line.
   describe('ride detail distance outlier (R-7)', () => {

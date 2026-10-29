@@ -1,7 +1,7 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import Constants from 'expo-constants';
-import { ChevronRight, LogOut, ShieldCheck, Ticket } from 'lucide-react-native';
+import { ChevronRight, LogOut, MapPin, Minus, Plus, ShieldCheck, Ticket } from 'lucide-react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { AdminAccountStackParamList } from '../../navigation/types';
 import { AdminHeader } from '../../components/admin/AdminHeader';
@@ -11,6 +11,7 @@ import { Card } from '../../components/primitives/Card';
 import { Pill } from '../../components/primitives/Pill';
 import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import { confirmAction } from '../../components/admin/ConfirmDialog';
+import { adminApi } from '../../api/admin';
 import { useAuthStore } from '../../store/authStore';
 import { useAdminStore } from '../../store/adminStore';
 import { useRideStore } from '../../store/rideStore';
@@ -26,6 +27,150 @@ function InfoRow({ label, value }: { label: string; value: string }) {
         {value}
       </Text>
     </View>
+  );
+}
+
+const RADIUS_PRESETS = [3, 5, 10, 15, 20];
+
+/**
+ * Admin-configurable nearby-driver radius. Riders only see drivers inside it
+ * and ride offers go only to drivers inside it, nearest first.
+ */
+function DriverRadiusCard() {
+  const [saved, setSaved] = useState<number | null>(null);
+  const [draft, setDraft] = useState(10);
+  const [bounds, setBounds] = useState({ min: 1, max: 50 });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Used by the Retry button (state resets happen in an event handler).
+  const retry = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const s = await adminApi.getSettings();
+      setSaved(s.driverSearchRadiusKm);
+      setDraft(s.driverSearchRadiusKm);
+      setBounds({ min: s.minKm, max: s.maxKm });
+    } catch {
+      setError('Could not load the current radius.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // First load: state is only set after the request resolves.
+  useEffect(() => {
+    let cancelled = false;
+    adminApi
+      .getSettings()
+      .then((s) => {
+        if (cancelled) return;
+        setSaved(s.driverSearchRadiusKm);
+        setDraft(s.driverSearchRadiusKm);
+        setBounds({ min: s.minKm, max: s.maxKm });
+      })
+      .catch(() => {
+        if (!cancelled) setError('Could not load the current radius.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const clamp = (n: number) => Math.min(bounds.max, Math.max(bounds.min, Math.round(n * 10) / 10));
+  const dirty = saved !== null && draft !== saved;
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const s = await adminApi.updateDriverRadius(draft);
+      setSaved(s.driverSearchRadiusKm);
+      setDraft(s.driverSearchRadiusKm);
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message;
+      setError((Array.isArray(msg) ? msg[0] : msg) || 'Could not save. Try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card style={styles.card}>
+      <View style={styles.navRow}>
+        <View style={styles.navIcon}>
+          <MapPin size={18} color={colors.accent} />
+        </View>
+        <View style={styles.navText}>
+          <Text style={styles.navTitle}>Driver search radius</Text>
+          <Text style={styles.navSub}>
+            Riders see, and are matched with, drivers within this distance
+          </Text>
+        </View>
+      </View>
+
+      {loading ? (
+        <ActivityIndicator style={styles.radiusLoading} color={colors.accent} />
+      ) : (
+        <>
+          <View style={styles.stepper}>
+            <TouchableOpacity
+              style={styles.stepBtn}
+              onPress={() => setDraft((d) => clamp(d - 1))}
+              disabled={draft <= bounds.min}
+              accessibilityRole="button"
+              accessibilityLabel="Decrease radius"
+            >
+              <Minus size={18} color={draft <= bounds.min ? colors.textMuted : colors.textPrimary} />
+            </TouchableOpacity>
+            <Text style={styles.radiusValue}>{draft} km</Text>
+            <TouchableOpacity
+              style={styles.stepBtn}
+              onPress={() => setDraft((d) => clamp(d + 1))}
+              disabled={draft >= bounds.max}
+              accessibilityRole="button"
+              accessibilityLabel="Increase radius"
+            >
+              <Plus size={18} color={draft >= bounds.max ? colors.textMuted : colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.chipRow}>
+            {RADIUS_PRESETS.map((km) => (
+              <TouchableOpacity
+                key={km}
+                onPress={() => setDraft(km)}
+                style={[styles.chip, draft === km && styles.chipActive]}
+                accessibilityRole="button"
+                accessibilityLabel={`${km} kilometres`}
+              >
+                <Text style={[styles.chipText, draft === km && styles.chipTextActive]}>{km} km</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={styles.navSub}>
+            Allowed {bounds.min}–{bounds.max} km. Offers go to the nearest driver first, then the next.
+          </Text>
+          {error ? <Text style={styles.radiusError}>{error}</Text> : null}
+          <Button
+            title={dirty ? 'Save radius' : 'Saved'}
+            disabled={!dirty || saving}
+            loading={saving}
+            style={styles.radiusSave}
+            onPress={save}
+          />
+        </>
+      )}
+      {!loading && saved === null ? (
+        <Button title="Retry" variant="outline" style={styles.radiusSave} onPress={retry} />
+      ) : null}
+    </Card>
   );
 }
 
@@ -95,6 +240,8 @@ export const AdminAccountScreen: React.FC<Props> = ({ navigation }) => {
             <ChevronRight size={18} color={colors.textMuted} />
           </TouchableOpacity>
         </Card>
+
+        <DriverRadiusCard />
 
         <Card style={styles.card}>
           <InfoRow label="App version" value={`v${version}`} />
@@ -200,6 +347,67 @@ const styles = StyleSheet.create({
     ...typography.meta,
     color: colors.textMuted,
     marginTop: 2,
+  },
+  radiusLoading: {
+    marginVertical: 20,
+  },
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 20,
+    marginTop: 16,
+  },
+  stepBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radiusValue: {
+    ...typography.cardTitle,
+    fontSize: 28,
+    minWidth: 110,
+    textAlign: 'center',
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 8,
+    marginVertical: 14,
+  },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  chipActive: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  chipText: {
+    ...typography.meta,
+    color: colors.textSecondary,
+  },
+  chipTextActive: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  radiusError: {
+    ...typography.meta,
+    color: colors.danger,
+    marginTop: 8,
+  },
+  radiusSave: {
+    marginTop: 12,
   },
   footnote: {
     ...typography.meta,

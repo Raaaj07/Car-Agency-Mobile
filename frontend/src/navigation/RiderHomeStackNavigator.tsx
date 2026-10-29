@@ -1,10 +1,10 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Alert } from 'react-native';
 import { createNativeStackNavigator, NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { MainTabParamList, RiderHomeStackParamList, RootStackParamList } from './types';
 import { CommonActions, useNavigation } from '@react-navigation/native';
-import { goToRideCancelled, resetRiderHomeStack } from './navHelpers';
+import { enterRiderHome, goToRideCancelled, resetRiderHomeStack } from './navHelpers';
 
 import { HomeDashboardScreen } from '../screens/rider/HomeDashboardScreen';
 import { DestinationSearchScreen } from '../screens/rider/DestinationSearchScreen';
@@ -20,7 +20,7 @@ import { RideCompletedScreen } from '../screens/rider/RideCompletedScreen';
 import { useRideStore } from '../store/rideStore';
 import { ridesApi } from '../api/rides';
 import { getApiError } from '../api/client';
-import { applyRideToStore, beginBooking, endBooking, screenForStatus } from '../hooks/useActiveRide';
+import { applyRideToStore, beginBooking, endBooking, fetchUnreviewedRide, screenForStatus } from '../hooks/useActiveRide';
 
 const Stack = createNativeStackNavigator<RiderHomeStackParamList>();
 
@@ -32,6 +32,28 @@ export const RiderHomeStackNavigator: React.FC = () => {
   const resetRide = useRideStore((state) => state.resetRide);
   const setActiveRide = useRideStore((state) => state.setActiveRide);
   const setMatchResult = useRideStore((state) => state.setMatchResult);
+  // This component renders inside the Home tab, so useNavigation() here is the
+  // tab navigator (needed by enterRiderHome).
+  const tabNavigation = useNavigation<BottomTabNavigationProp<MainTabParamList>>();
+
+  // Cold start after the app was killed at the end of a trip: if the last trip
+  // finished but was never rated, reopen on the review screen instead of Home.
+  // Runs once per mount of the rider tree; does nothing when the rider already
+  // has a ride in the store (they are mid-flow) or the server has no such trip.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (useRideStore.getState().activeRide) return;
+      const ride = await fetchUnreviewedRide();
+      // Re-check after the await: a booking or another restore may have started.
+      if (cancelled || !ride || useRideStore.getState().activeRide) return;
+      applyRideToStore(ride);
+      enterRiderHome(tabNavigation, 'ReviewRide');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tabNavigation]);
 
   return (
     <Stack.Navigator

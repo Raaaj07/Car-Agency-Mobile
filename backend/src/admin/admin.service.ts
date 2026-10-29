@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnApplicationBootstrap, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
@@ -16,6 +16,7 @@ import { RouteDistanceService } from '../rides/route-distance.service';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminAuditLogEntity } from './entities/admin-audit-log.entity';
 import { toCsv } from './csv';
+import { MAX_RADIUS_M, MIN_RADIUS_M, SettingsService } from '../settings/settings.service';
 
 type AppStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 
@@ -93,7 +94,41 @@ export class AdminService implements OnApplicationBootstrap {
     private readonly audit: AdminAuditService,
     private readonly ridesSvc: RidesService,
     private readonly routes: RouteDistanceService,
+    // Optional so existing unit tests that build AdminService by hand keep working.
+    @Optional() private readonly settings?: SettingsService,
   ) {}
+
+  /**
+   * GET /admin/settings — current runtime settings. `driverSearchRadiusKm` is
+   * the one radius BOTH the rider's nearby-drivers view and ride matching use.
+   */
+  async getSettings() {
+    if (!this.settings) throw new ServiceUnavailableException('Settings are not available');
+    const r = await this.settings.getDriverRadius();
+    return {
+      driverSearchRadiusKm: r.radiusMeters / 1000,
+      minKm: MIN_RADIUS_M / 1000,
+      maxKm: MAX_RADIUS_M / 1000,
+      updatedAt: r.updatedAt,
+      updatedBy: r.updatedBy,
+    };
+  }
+
+  /** PUT /admin/settings/driver-radius — audited; takes effect immediately. */
+  async updateDriverRadius(actorUserId: string, radiusKm: number) {
+    if (!this.settings) throw new ServiceUnavailableException('Settings are not available');
+    const previous = await this.settings.getSearchRadiusMeters();
+    const saved = await this.settings.setSearchRadiusMeters(Math.round(radiusKm * 1000), actorUserId);
+    await this.audit.log({
+      actorUserId,
+      action: 'settings_update',
+      targetType: 'setting',
+      targetId: 'driver_search_radius',
+      reason: `Driver search radius ${previous / 1000} km → ${saved.radiusMeters / 1000} km`,
+      meta: { previousKm: previous / 1000, nextKm: saved.radiusMeters / 1000 },
+    });
+    return this.getSettings();
+  }
 
   // First admin(s) come from env, never from a public endpoint.
   // Matches on trailing-10-digit forms so "+91..." entries still match.

@@ -146,6 +146,58 @@ describe('DriversService.setStatus (R-3)', () => {
     });
   });
 
+  // Admin-configured radius: the rider's nearby view and matching share it,
+  // and a client-supplied radius can never widen what a rider sees.
+  describe('findNearby radius (admin setting)', () => {
+    const withSettings = (radiusMeters: number) =>
+      new DriversService(
+        drivers as unknown as Repository<DriverEntity>,
+        rides as unknown as Repository<RideEntity>,
+        audit as unknown as Repository<AdminAuditLogEntity>,
+        geo as unknown as GeoService,
+        { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+        {} as unknown as StorageService,
+        { emitApplicationNew: jest.fn() } as unknown as ApplicationEventsService,
+        { getSearchRadiusMeters: jest.fn().mockResolvedValue(radiusMeters) } as any,
+      );
+
+    beforeEach(() => {
+      geo.searchNearby = jest.fn().mockResolvedValue([]);
+      drivers.find = jest.fn().mockResolvedValue([]);
+      (drivers as any).createQueryBuilder = jest.fn(() => {
+        const qb: any = {
+          leftJoinAndSelect: () => qb,
+          addSelect: () => qb,
+          where: () => qb,
+          andWhere: () => qb,
+          setParameters: () => qb,
+          orderBy: () => qb,
+          limit: () => qb,
+          getRawAndEntities: async () => ({ entities: [], raw: [] }),
+        };
+        return qb;
+      });
+    });
+
+    it('rider view uses the admin radius', async () => {
+      const svc = withSettings(8_000);
+      await svc.findNearbyPublic(11.66, 78.14);
+      expect(geo.searchNearby).toHaveBeenCalledWith(11.66, 78.14, 8_000, undefined);
+    });
+
+    it('ignores a larger radius requested by the client', async () => {
+      const svc = withSettings(8_000);
+      await svc.findNearbyPublic(11.66, 78.14, 50_000);
+      expect(geo.searchNearby).toHaveBeenCalledWith(11.66, 78.14, 8_000, undefined);
+    });
+
+    it('matching (internal findNearby) defaults to the admin radius too', async () => {
+      const svc = withSettings(12_000);
+      await svc.findNearby(11.66, 78.14, undefined, 'auto');
+      expect(geo.searchNearby).toHaveBeenCalledWith(11.66, 78.14, 12_000, 'auto');
+    });
+  });
+
   // Pass-4 (task 6): soft fraud flag — an implied speed over 200 km/h
   // between consecutive pings (GPS spoofing / a location jump). Never blocks
   // the ping; at most one `location_jump` row per driver per hour.
