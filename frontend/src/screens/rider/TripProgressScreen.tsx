@@ -36,6 +36,7 @@ import { safetyApi } from '../../api/safety';
 import { getApiError } from '../../api/client';
 import { formatDistance } from '../../utils/distance';
 import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
+import { nextRideAction } from '../../navigation/rideTransition';
 
 /** No `driver:location` for this long ⇒ the car position is stale. */
 const DRIVER_STALE_MS = 20_000;
@@ -138,11 +139,13 @@ export const TripProgressScreen: React.FC<Props> = ({
     try {
       const ride = await ridesApi.get(rideId);
       if (terminalRef.current) return;
-      if (ride.status === 'completed') {
+      // The decision lives in navigation/rideTransition (pure, unit-tested).
+      const action = nextRideAction('TripProgress', ride.status);
+      if (action === 'complete') {
         terminalRef.current = true;
         setActiveRide(ride);
         onCompleteRef.current();
-      } else if (ride.status === 'cancelled') {
+      } else if (action === 'cancel') {
         terminalRef.current = true;
         setActiveRide(ride);
         onRideCancelledRef.current?.(ride.cancellationReason ?? undefined);
@@ -165,7 +168,7 @@ export const TripProgressScreen: React.FC<Props> = ({
       setDriverStale(false);
     },
     onStatus: (event) => {
-      if (event.status === 'completed' || event.status === 'cancelled') {
+      if (nextRideAction('TripProgress', event.status) !== 'none') {
         void checkTerminalStatus();
       }
     },

@@ -13,6 +13,7 @@ import { useDriverRoute } from '../../hooks/useDriverRoute';
 import { ridesApi } from '../../api/rides';
 import { formatDistance } from '../../utils/distance';
 import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
+import { nextRideAction } from '../../navigation/rideTransition';
 
 /** No `driver:location` for this long ⇒ the car position is stale. */
 const DRIVER_STALE_MS = 20_000;
@@ -133,13 +134,15 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
     if (!rideId) return;
     try {
       const current = await ridesApi.get(rideId);
-      if (current.status === 'in_progress') {
+      // The decision lives in navigation/rideTransition (pure, unit-tested).
+      const action = nextRideAction('DriverEnRoute', current.status);
+      if (action === 'advance') {
         safeStartTrip();
-      } else if (!terminalRef.current && current.status === 'cancelled') {
+      } else if (!terminalRef.current && action === 'cancel') {
         terminalRef.current = true;
         setActiveRide(current);
         onRideCancelledRef.current?.(current.cancellationReason ?? undefined);
-      } else if (!terminalRef.current && current.status === 'completed') {
+      } else if (!terminalRef.current && action === 'complete') {
         terminalRef.current = true;
         setActiveRide(current);
         onRideCompletedRef.current?.();
@@ -162,11 +165,7 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
       setDriverStale(false);
     },
     onStatus: (event) => {
-      if (
-        event.status === 'in_progress' ||
-        event.status === 'cancelled' ||
-        event.status === 'completed'
-      ) {
+      if (nextRideAction('DriverEnRoute', event.status) !== 'none') {
         void checkRideStatus();
       }
     },

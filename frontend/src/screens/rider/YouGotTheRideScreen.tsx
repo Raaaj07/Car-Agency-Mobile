@@ -13,6 +13,7 @@ import { ridesApi } from '../../api/rides';
 import { getRoute } from '../../api/mapbox';
 import { haversineKm } from '../../utils/distance';
 import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
+import { nextRideAction } from '../../navigation/rideTransition';
 
 interface Props {
   onTrackDriver: () => void;
@@ -111,10 +112,12 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
   useRideSocket(rideId, {
     onDriverLocation: (event) => handleDriverPos(event.lat, event.lng),
     onStatus: (event) => {
-      if (event.status === 'cancelled' && !cancelledRef.current) {
+      // The decision lives in navigation/rideTransition (pure, unit-tested).
+      const action = nextRideAction('YouGotTheRide', event.status);
+      if (action === 'cancel' && !cancelledRef.current) {
         cancelledRef.current = true;
         onRideCancelledRef.current?.(event.cancellationReason ?? undefined);
-      } else if (event.status === 'in_progress' || event.status === 'completed') {
+      } else if (action === 'advance') {
         advancePastMatched();
       }
     },
@@ -127,7 +130,8 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
     try {
       const ride = await ridesApi.get(rideId);
       if (!mountedRef.current) return;
-      if (ride.status === 'cancelled') {
+      const action = nextRideAction('YouGotTheRide', ride.status);
+      if (action === 'cancel') {
         if (!cancelledRef.current) {
           cancelledRef.current = true;
           setActiveRide(ride);
@@ -136,7 +140,7 @@ export const YouGotTheRideScreen: React.FC<Props> = ({ onTrackDriver, onRideCanc
         return;
       }
       setActiveRide(ride);
-      if (ride.status === 'in_progress' || ride.status === 'completed') {
+      if (action === 'advance') {
         advancePastMatched();
         return;
       }

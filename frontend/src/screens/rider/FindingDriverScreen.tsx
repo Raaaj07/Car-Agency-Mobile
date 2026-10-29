@@ -10,6 +10,7 @@ import { driversApi, NearbyDriver } from '../../api/drivers';
 import { getRoute, RouteResult } from '../../api/mapbox';
 import { useRideStore } from '../../store/rideStore';
 import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
+import { nextRideAction } from '../../navigation/rideTransition';
 
 interface Props {
   onDriverFound: () => void;
@@ -102,11 +103,13 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
         if (!isMounted || hasResolved) return;
         setActiveRide(ride);
 
-        if (ride.status === 'matched' || ride.status === 'driver_en_route') {
+        // The decision lives in navigation/rideTransition (pure, unit-tested).
+        const action = nextRideAction('FindingDriver', ride.status);
+        if (action === 'advance') {
           hasResolved = true;
           stopPolling();
           onDriverFoundRef.current();
-        } else if (ride.status === 'cancelled') {
+        } else if (action === 'cancel') {
           hasResolved = true;
           stopPolling();
           onRideCancelledRef.current();
