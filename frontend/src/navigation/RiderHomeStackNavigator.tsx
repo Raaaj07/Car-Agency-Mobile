@@ -20,7 +20,8 @@ import { RideCompletedScreen } from '../screens/rider/RideCompletedScreen';
 import { useRideStore } from '../store/rideStore';
 import { ridesApi } from '../api/rides';
 import { getApiError } from '../api/client';
-import { applyRideToStore, beginBooking, endBooking, fetchUnreviewedRide, screenForStatus } from '../hooks/useActiveRide';
+import { applyRideToStore, beginBooking, endBooking, fetchResumableRide, screenForStatus } from '../hooks/useActiveRide';
+import { mayResumeOnLaunch, resumeScreenFor } from './resumeTarget';
 
 const Stack = createNativeStackNavigator<RiderHomeStackParamList>();
 
@@ -36,19 +37,22 @@ export const RiderHomeStackNavigator: React.FC = () => {
   // tab navigator (needed by enterRiderHome).
   const tabNavigation = useNavigation<BottomTabNavigationProp<MainTabParamList>>();
 
-  // Cold start after the app was killed at the end of a trip: if the last trip
-  // finished but was never rated, reopen on the review screen instead of Home.
-  // Runs once per mount of the rider tree; does nothing when the rider already
-  // has a ride in the store (they are mid-flow) or the server has no such trip.
+  // Cold start after the app was killed mid-ride: reopen on the screen the ride
+  // is actually at (finding driver / driver assigned / on the way / trip in
+  // progress), or on the review screen for a finished trip that was never
+  // rated - instead of an empty Home. Runs once per mount of the rider tree.
+  // The rules are in ./resumeTarget (pure, unit-tested). A ride the rider
+  // started themselves in this session always wins over a late answer.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      if (useRideStore.getState().activeRide) return;
-      const ride = await fetchUnreviewedRide();
-      // Re-check after the await: a booking or another restore may have started.
-      if (cancelled || !ride || useRideStore.getState().activeRide) return;
+      if (!mayResumeOnLaunch(useRideStore.getState().activeRide)) return;
+      const ride = await fetchResumableRide();
+      const screen = resumeScreenFor(ride);
+      // Re-check after the await: a booking may have started meanwhile.
+      if (cancelled || !ride || !screen || !mayResumeOnLaunch(useRideStore.getState().activeRide)) return;
       applyRideToStore(ride);
-      enterRiderHome(tabNavigation, 'ReviewRide');
+      enterRiderHome(tabNavigation, screen);
     })();
     return () => {
       cancelled = true;

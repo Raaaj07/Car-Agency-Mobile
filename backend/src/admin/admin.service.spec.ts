@@ -381,8 +381,16 @@ describe('AdminService status machine (A-2, A-3)', () => {
   });
 
   describe('driver search radius setting', () => {
-    const withSettings = (current: number) => {
+    const withSettings = (current: number, currentOfferSeconds = 15) => {
       const settings = {
+        getOfferTimeout: jest
+          .fn()
+          .mockResolvedValue({ seconds: currentOfferSeconds, isDefault: true, updatedAt: null, updatedBy: null }),
+        getOfferTimeoutSeconds: jest.fn().mockResolvedValue(currentOfferSeconds),
+        setOfferTimeoutSeconds: jest.fn(async (s: number, by: string) => {
+          settings.getOfferTimeout.mockResolvedValue({ seconds: s, isDefault: false, updatedAt: new Date(), updatedBy: by });
+          return { seconds: s, isDefault: false, updatedAt: new Date(), updatedBy: by };
+        }),
         getSearchRadiusMeters: jest.fn().mockResolvedValue(current),
         getDriverRadius: jest.fn().mockResolvedValue({ radiusMeters: current, updatedAt: null, updatedBy: null }),
         setSearchRadiusMeters: jest.fn(async (m: number, by: string) => {
@@ -432,6 +440,38 @@ describe('AdminService status machine (A-2, A-3)', () => {
         }),
       );
       expect(result.driverSearchRadiusKm).toBe(7.5);
+    });
+
+    it('reports the offer timeout with its bounds', async () => {
+      const { svc } = withSettings(10_000, 20);
+      await expect(svc.getSettings()).resolves.toMatchObject({
+        offerTimeoutSeconds: 20,
+        minOfferTimeoutSeconds: 10,
+        maxOfferTimeoutSeconds: 60,
+      });
+    });
+
+    it('saves the offer timeout and writes an audit row with before/after', async () => {
+      const { svc, settings } = withSettings(10_000, 15);
+
+      const result = await svc.updateOfferTimeout('admin-1', 30);
+
+      expect(settings.setOfferTimeoutSeconds).toHaveBeenCalledWith(30, 'admin-1');
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: 'admin-1',
+          action: 'settings_update',
+          targetType: 'setting',
+          targetId: 'ride_offer_timeout',
+          meta: { previousSeconds: 15, nextSeconds: 30 },
+        }),
+      );
+      expect(result.offerTimeoutSeconds).toBe(30);
+    });
+
+    it('answers 503 on the offer timeout when settings are unavailable', async () => {
+      await expect(service.updateOfferTimeout('admin-1', 30)).rejects.toThrow();
+      expect(audit.log).not.toHaveBeenCalled();
     });
 
     it('answers 503 instead of crashing when settings are unavailable', async () => {

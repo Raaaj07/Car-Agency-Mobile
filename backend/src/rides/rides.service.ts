@@ -150,6 +150,21 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     return this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 10_000;
   }
 
+  /**
+   * Seconds each driver has to answer an offer: the admin setting, else the
+   * RIDE_REQUEST_TIMEOUT_SECONDS env value. Read per offer, so a change applies
+   * to the NEXT offer made (offers already out keep the deadline they were
+   * sent with). A settings problem must never block offering - fall back.
+   */
+  private async offerTimeoutSeconds(): Promise<number> {
+    if (!this.settings) return this.requestTimeoutSeconds;
+    try {
+      return await this.settings.getOfferTimeoutSeconds(this.requestTimeoutSeconds);
+    } catch {
+      return this.requestTimeoutSeconds;
+    }
+  }
+
   // Startup sweep: recover from server restarts so no drivers are permanently reserved
   async onApplicationBootstrap(): Promise<void> {
     this.logger.log('Running startup sweep for pending requested rides...');
@@ -986,10 +1001,11 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     // A driver is being offered: the search window no longer applies — the
-    // 15 s offer timer takes over from here.
+    // offer timer (admin-set, default 15 s) takes over from here.
     await this.clearSearchTimeout(ride.id);
+    const offerSeconds = await this.offerTimeoutSeconds();
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + this.requestTimeoutSeconds * 1000);
+    const expiresAt = new Date(now.getTime() + offerSeconds * 1000);
 
     ride.driverId = nearest.driverId;
     ride.offeredAt = now;
@@ -1019,7 +1035,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       vehicleType: ride.vehicleType,
       fareBreakdown: ride.fareBreakdown,
       distanceKm: ride.distanceKm,
-      expiresInSeconds: this.requestTimeoutSeconds,
+      expiresInSeconds: offerSeconds,
       offerExpiresAt: expiresAt.toISOString(),
     });
 
@@ -1032,7 +1048,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       ride.pickup?.address,
     );
 
-    await this.scheduleOfferTimeout(ride.id, this.requestTimeoutSeconds * 1000);
+    await this.scheduleOfferTimeout(ride.id, offerSeconds * 1000);
 
     return { status: 'offered', candidates: candidates.length };
   }

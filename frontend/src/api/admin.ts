@@ -270,13 +270,18 @@ export interface AdminPromoInput {
   maxRedemptions?: number | null;
 }
 
-/** GET/PUT /admin/settings — the nearby-driver radius riders see and offers use. */
+/** GET/PUT /admin/settings — the nearby-driver radius riders see and offers use, and the offer timeout. */
 export interface AdminSettings {
   driverSearchRadiusKm: number;
   minKm: number;
   maxKm: number;
   updatedAt: string | null;
   updatedBy: string | null;
+  /** Seconds each driver has to answer a ride offer (applies to the next offer made). */
+  offerTimeoutSeconds: number;
+  minOfferTimeoutSeconds: number;
+  maxOfferTimeoutSeconds: number;
+  offerTimeoutUpdatedAt: string | null;
 }
 
 export const adminApi = {
@@ -382,6 +387,8 @@ export const adminApi = {
   getSettings: async () => (await api.get<AdminSettings>('/admin/settings')).data,
   updateDriverRadius: async (radiusKm: number) =>
     (await api.put<AdminSettings>('/admin/settings/driver-radius', { radiusKm })).data,
+  updateOfferTimeout: async (seconds: number) =>
+    (await api.put<AdminSettings>('/admin/settings/offer-timeout', { seconds })).data,
 
   // ── Promo codes (PR-1) ──
   listPromos: async () => (await api.get<AdminPromo[]>('/admin/promos')).data,

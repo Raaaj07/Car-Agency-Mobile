@@ -16,7 +16,14 @@ import { RouteDistanceService } from '../rides/route-distance.service';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminAuditLogEntity } from './entities/admin-audit-log.entity';
 import { toCsv } from './csv';
-import { MAX_RADIUS_M, MIN_RADIUS_M, SettingsService } from '../settings/settings.service';
+import {
+  MAX_OFFER_TIMEOUT_S,
+  MAX_RADIUS_M,
+  MIN_OFFER_TIMEOUT_S,
+  MIN_RADIUS_M,
+  offerTimeoutFromEnv,
+  SettingsService,
+} from '../settings/settings.service';
 
 type AppStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 
@@ -105,13 +112,41 @@ export class AdminService implements OnApplicationBootstrap {
   async getSettings() {
     if (!this.settings) throw new ServiceUnavailableException('Settings are not available');
     const r = await this.settings.getDriverRadius();
+    const offer = await this.settings.getOfferTimeout(this.offerTimeoutFallback());
     return {
       driverSearchRadiusKm: r.radiusMeters / 1000,
       minKm: MIN_RADIUS_M / 1000,
       maxKm: MAX_RADIUS_M / 1000,
       updatedAt: r.updatedAt,
       updatedBy: r.updatedBy,
+      // Seconds each driver has to answer a ride offer (admin value, else the
+      // RIDE_REQUEST_TIMEOUT_SECONDS env default).
+      offerTimeoutSeconds: offer.seconds,
+      minOfferTimeoutSeconds: MIN_OFFER_TIMEOUT_S,
+      maxOfferTimeoutSeconds: MAX_OFFER_TIMEOUT_S,
+      offerTimeoutUpdatedAt: offer.updatedAt,
     };
+  }
+
+  /** What the offer timeout is until an admin saves one: the env value, else 15 s. */
+  private offerTimeoutFallback(): number {
+    return offerTimeoutFromEnv(this.config.get('RIDE_REQUEST_TIMEOUT_SECONDS'));
+  }
+
+  /** PUT /admin/settings/offer-timeout - audited; applies to the next offer made. */
+  async updateOfferTimeout(actorUserId: string, seconds: number) {
+    if (!this.settings) throw new ServiceUnavailableException('Settings are not available');
+    const previous = await this.settings.getOfferTimeoutSeconds(this.offerTimeoutFallback());
+    const saved = await this.settings.setOfferTimeoutSeconds(seconds, actorUserId);
+    await this.audit.log({
+      actorUserId,
+      action: 'settings_update',
+      targetType: 'setting',
+      targetId: 'ride_offer_timeout',
+      reason: `Offer timeout ${previous} s → ${saved.seconds} s`,
+      meta: { previousSeconds: previous, nextSeconds: saved.seconds },
+    });
+    return this.getSettings();
   }
 
   /** PUT /admin/settings/driver-radius — audited; takes effect immediately. */

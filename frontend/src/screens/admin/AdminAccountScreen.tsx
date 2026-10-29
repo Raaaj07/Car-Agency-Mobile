@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import Constants from 'expo-constants';
-import { ChevronRight, LogOut, MapPin, Minus, Plus, ShieldCheck, Ticket } from 'lucide-react-native';
+import { ChevronRight, LogOut, MapPin, Minus, Plus, ShieldCheck, Ticket, Timer } from 'lucide-react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { AdminAccountStackParamList } from '../../navigation/types';
 import { AdminHeader } from '../../components/admin/AdminHeader';
@@ -174,6 +174,150 @@ function DriverRadiusCard() {
   );
 }
 
+const OFFER_TIMEOUT_PRESETS = [10, 15, 20, 30, 45, 60];
+const OFFER_TIMEOUT_STEP = 5;
+
+/**
+ * Admin-configurable offer timeout: how long each driver has to answer a ride
+ * offer before it moves to the next nearest driver. Applies to the next offer
+ * made; offers already out keep the deadline they were sent with.
+ */
+function OfferTimeoutCard() {
+  const [saved, setSaved] = useState<number | null>(null);
+  const [draft, setDraft] = useState(15);
+  const [bounds, setBounds] = useState({ min: 10, max: 60 });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Used by the Retry button (state resets happen in an event handler).
+  const retry = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const s = await adminApi.getSettings();
+      setSaved(s.offerTimeoutSeconds);
+      setDraft(s.offerTimeoutSeconds);
+      setBounds({ min: s.minOfferTimeoutSeconds, max: s.maxOfferTimeoutSeconds });
+    } catch {
+      setError('Could not load the current offer time.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // First load: state is only set after the request resolves.
+  useEffect(() => {
+    let cancelled = false;
+    adminApi
+      .getSettings()
+      .then((s) => {
+        if (cancelled) return;
+        setSaved(s.offerTimeoutSeconds);
+        setDraft(s.offerTimeoutSeconds);
+        setBounds({ min: s.minOfferTimeoutSeconds, max: s.maxOfferTimeoutSeconds });
+      })
+      .catch(() => {
+        if (!cancelled) setError('Could not load the current offer time.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const clamp = (n: number) => Math.min(bounds.max, Math.max(bounds.min, Math.round(n)));
+  const dirty = saved !== null && draft !== saved;
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const s = await adminApi.updateOfferTimeout(draft);
+      setSaved(s.offerTimeoutSeconds);
+      setDraft(s.offerTimeoutSeconds);
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message;
+      setError((Array.isArray(msg) ? msg[0] : msg) || 'Could not save. Try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card style={styles.card}>
+      <View style={styles.navRow}>
+        <View style={styles.navIcon}>
+          <Timer size={18} color={colors.accent} />
+        </View>
+        <View style={styles.navText}>
+          <Text style={styles.navTitle}>Offer time</Text>
+          <Text style={styles.navSub}>How long each driver has to accept a ride before the next driver is asked</Text>
+        </View>
+      </View>
+
+      {loading ? (
+        <ActivityIndicator style={styles.radiusLoading} color={colors.accent} />
+      ) : (
+        <>
+          <View style={styles.stepper}>
+            <TouchableOpacity
+              style={styles.stepBtn}
+              onPress={() => setDraft((d) => clamp(d - OFFER_TIMEOUT_STEP))}
+              disabled={draft <= bounds.min}
+              accessibilityRole="button"
+              accessibilityLabel="Decrease offer time"
+            >
+              <Minus size={18} color={draft <= bounds.min ? colors.textMuted : colors.textPrimary} />
+            </TouchableOpacity>
+            <Text style={styles.radiusValue}>{draft} s</Text>
+            <TouchableOpacity
+              style={styles.stepBtn}
+              onPress={() => setDraft((d) => clamp(d + OFFER_TIMEOUT_STEP))}
+              disabled={draft >= bounds.max}
+              accessibilityRole="button"
+              accessibilityLabel="Increase offer time"
+            >
+              <Plus size={18} color={draft >= bounds.max ? colors.textMuted : colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.chipRow}>
+            {OFFER_TIMEOUT_PRESETS.map((s) => (
+              <TouchableOpacity
+                key={s}
+                onPress={() => setDraft(s)}
+                style={[styles.chip, draft === s && styles.chipActive]}
+                accessibilityRole="button"
+                accessibilityLabel={`${s} seconds`}
+              >
+                <Text style={[styles.chipText, draft === s && styles.chipTextActive]}>{s} s</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={styles.navSub}>
+            Allowed {bounds.min}–{bounds.max} seconds. Applies to the next offer made; offers already sent keep their time.
+          </Text>
+          {error ? <Text style={styles.radiusError}>{error}</Text> : null}
+          <Button
+            title={dirty ? 'Save offer time' : 'Saved'}
+            disabled={!dirty || saving}
+            loading={saving}
+            style={styles.radiusSave}
+            onPress={save}
+          />
+        </>
+      )}
+      {!loading && saved === null ? (
+        <Button title="Retry" variant="outline" style={styles.radiusSave} onPress={retry} />
+      ) : null}
+    </Card>
+  );
+}
+
 /**
  * Admin "Account" tab (spec §3.2): identity card, app/build info and sign-out
  * (with a native confirm, mirroring the rider/driver profile screens).
@@ -242,6 +386,7 @@ export const AdminAccountScreen: React.FC<Props> = ({ navigation }) => {
         </Card>
 
         <DriverRadiusCard />
+        <OfferTimeoutCard />
 
         <Card style={styles.card}>
           <InfoRow label="App version" value={`v${version}`} />

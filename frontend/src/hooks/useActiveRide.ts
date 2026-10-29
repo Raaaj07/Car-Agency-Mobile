@@ -1,9 +1,12 @@
 import { ridesApi, Ride } from '../api/rides';
 import { ActiveRide, useRideStore } from '../store/rideStore';
+import { isActiveStatus, screenForStatus } from '../navigation/resumeTarget';
+
+// The status rules live in navigation/resumeTarget.ts (pure, unit-tested);
+// re-exported here so existing imports keep working.
+export { isActiveStatus, screenForStatus };
 
 export type ActiveRideStatus = string;
-
-const ACTIVE_STATUSES = ['requested', 'matched', 'driver_en_route', 'in_progress'] as const;
 
 // Set while POST /rides is in flight (booking request in progress) so a
 // concurrent restoreActiveRide() cannot wipe the ride being created.
@@ -15,25 +18,6 @@ export function beginBooking(): void {
 
 export function endBooking(): void {
   bookingInFlight = Math.max(0, bookingInFlight - 1);
-}
-
-export function isActiveStatus(status: string | undefined): boolean {
-  return !!status && (ACTIVE_STATUSES as readonly string[]).includes(status);
-}
-
-/** Map an active ride status to the rider booking-flow screen name. */
-export function screenForStatus(status: string): 'FindingDriver' | 'YouGotTheRide' | 'DriverEnRoute' | 'TripProgress' {
-  switch (status) {
-    case 'requested':
-      return 'FindingDriver';
-    case 'matched':
-      return 'YouGotTheRide';
-    case 'driver_en_route':
-      return 'DriverEnRoute';
-    case 'in_progress':
-    default:
-      return 'TripProgress';
-  }
 }
 
 function isRecentlyCreated(ride: { createdAt?: string }): boolean {
@@ -101,6 +85,22 @@ export async function fetchUnreviewedRide(): Promise<Ride | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * The ride the app should reopen on after a cold start: the server's active
+ * ride, else a finished-but-unrated trip, else null. Read-only - the caller
+ * decides whether to put it in the store and navigate (the rider may have
+ * started something else by the time the answer arrives). Offline -> null.
+ */
+export async function fetchResumableRide(): Promise<Ride | null> {
+  try {
+    const active = await ridesApi.getActive();
+    if (active && isActiveStatus(active.status)) return active;
+  } catch {
+    return null;
+  }
+  return fetchUnreviewedRide();
 }
 
 /**

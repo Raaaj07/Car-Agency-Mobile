@@ -14,6 +14,7 @@ import { ListRidesQueryDto } from './dto/list-rides-query.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { AuditQueryDto } from './dto/audit-query.dto';
 import { UpdateDriverRadiusDto } from './dto/update-driver-radius.dto';
+import { UpdateOfferTimeoutDto } from './dto/update-offer-timeout.dto';
 
 // Authentication is global (SEC-1 default-deny); only the admin-role check
 // stays.
@@ -40,6 +41,14 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   updateDriverRadius(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateDriverRadiusDto) {
     return this.admin.updateDriverRadius(user.userId, dto.radiusKm);
+  }
+
+  // How long each driver has to answer a ride offer (10-60 s). Applies to the
+  // NEXT offer made; offers already out keep the deadline they were sent with.
+  @Put('settings/offer-timeout')
+  @HttpCode(HttpStatus.OK)
+  updateOfferTimeout(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateOfferTimeoutDto) {
+    return this.admin.updateOfferTimeout(user.userId, dto.seconds);
   }
 
   // Task 9: user management list (name/phone/email search, role filter).
