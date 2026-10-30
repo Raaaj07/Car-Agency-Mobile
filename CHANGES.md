@@ -95,12 +95,24 @@ charged)
   application marks the account as pending at once (the Profile tab kept offering "Become a
   driver"); removed a dead conditional in the application error handling.
 
+- Choose a Ride: arrival times are real. The list asks `GET /drivers/nearby` for the drivers online
+  near the pickup (now and every 30 s) and shows the shortest ETA per vehicle type, "No drivers nearby
+  right now" when a type has none, and "Fastest" only when two or more types have drivers and one is
+  strictly quickest (`utils/vehicleEta.ts`, tested). The fixed "3 min away" and the fixed
+  "Popular"/"Fastest" badges are gone.
+- Destination search: "Add Home" / "Add Work" now save the next place you pick under that label
+  (existing `placesStore.setHomeWork`; success is confirmed against the saved list, a failure says
+  so); press and hold Home or Work to change it. The "Set location on map" button is removed (the
+  app has no map picker).
+- Audio Announcements: the choices are now kept on the phone (`lib/announcementPrefsStorage.ts`,
+  `utils/announcementPrefs.ts`, tested) and the screen says that voice announcements are not
+  available yet. There is still no voice engine in the app (no `expo-speech`, no spoken prompts):
+  building one is a feature, not a fix.
+
 **Not changed (owner decisions)**
-- Audio Announcements (Home bell, Profile "Ride preferences" / "Ride Announcements") saves nothing and
-  nothing reads it.
-- Vehicle list still shows fixed arrival times ("3 min away") and a fixed "Fastest" badge; every
-  ride adds a flat Rs 40 "toll" and Rs 28 "taxes" whatever the distance.
-- "Set location on map" and the "Add Home / Add Work" chips only focus the search box.
+- Every ride adds a flat Rs 40 "toll" and Rs 28 "taxes" whatever the distance (backend
+  `fare-catalog.ts` `computeFareBreakdown`, mirrored in `frontend/src/utils/fare.ts` and the store).
+  Waiting for the owner to decide what they should be.
 - Trips lists load the 30 latest rides only; a finished, unrated trip cannot be rated from the rider
   Trips list.
 - The Google sign-in error on the login screen prints technical detail (status code and the start of

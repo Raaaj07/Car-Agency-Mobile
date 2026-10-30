@@ -10,12 +10,14 @@ import { Header } from '../../components/primitives/Header';
 import { useRideStore, VehicleOption } from '../../store/rideStore';
 import { getRoute, RouteResult } from '../../api/mapbox';
 import { estimateFareTotal, estimateNumericPrice } from '../../utils/fare';
+import { driversApi } from '../../api/drivers';
+import { etaByVehicle, etaText, EtaStatus, fastestVehicleId } from '../../utils/vehicleEta';
 
 const vehicles: VehicleOption[] = [
-  { id: 'auto', name: 'Vazhi Auto', type: 'Affordable 3-wheeler', price: '₹110', numericPrice: 110, eta: '3 min', seats: 3, badge: 'Popular', icon: '🛺' },
-  { id: 'mini', name: 'Economy Mini', type: 'Compact hatchbacks', price: '₹180', numericPrice: 180, eta: '4 min', seats: 4, icon: '🚗' },
-  { id: 'sedan', name: 'Comfort Sedan', type: 'Spacious AC sedans', price: '₹240', numericPrice: 240, eta: '2 min', seats: 4, badge: 'Fastest', icon: '🚘' },
-  { id: 'suv', name: 'Premium SUV', type: '6-seater family rides', price: '₹350', numericPrice: 350, eta: '6 min', seats: 6, icon: '🚙' },
+  { id: 'auto', name: 'Vazhi Auto', type: 'Affordable 3-wheeler', price: '₹110', numericPrice: 110, eta: '', seats: 3, icon: '🛺' },
+  { id: 'mini', name: 'Economy Mini', type: 'Compact hatchbacks', price: '₹180', numericPrice: 180, eta: '', seats: 4, icon: '🚗' },
+  { id: 'sedan', name: 'Comfort Sedan', type: 'Spacious AC sedans', price: '₹240', numericPrice: 240, eta: '', seats: 4, icon: '🚘' },
+  { id: 'suv', name: 'Premium SUV', type: '6-seater family rides', price: '₹350', numericPrice: 350, eta: '', seats: 6, icon: '🚙' },
 ];
 
 interface Props {
@@ -49,6 +51,10 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [routeError, setRouteError] = useState(false);
   const insets = useSafeAreaInsets();
+  // Real arrival times from the drivers online near the pickup (replaces the fixed
+  // "3 min away" / "Fastest" values the list used to show).
+  const [etaStatus, setEtaStatus] = useState<EtaStatus>('loading');
+  const [etas, setEtas] = useState<Record<string, number>>({});
 
   useEffect(() => {
     if (preferredVehicleId) {
@@ -114,6 +120,34 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
       mounted = false;
     };
   }, [pickupCoords, dropoffCoords]);
+
+  // Nearby drivers: once for this pickup, then every 30 s while the screen is open.
+  const pickupLat = pickupCoords?.lat;
+  const pickupLng = pickupCoords?.lng;
+  useEffect(() => {
+    if (pickupLat == null || pickupLng == null) return;
+    let mounted = true;
+    const load = () => {
+      driversApi
+        .nearby(pickupLat, pickupLng)
+        .then((drivers) => {
+          if (!mounted) return;
+          setEtas(etaByVehicle(drivers));
+          setEtaStatus('ready');
+        })
+        .catch(() => {
+          if (mounted) setEtaStatus('error');
+        });
+    };
+    load();
+    const timer = setInterval(load, 30_000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [pickupLat, pickupLng]);
+  const effectiveEtaStatus: EtaStatus = pickupLat == null || pickupLng == null ? 'error' : etaStatus;
+  const fastestId = effectiveEtaStatus === 'ready' ? fastestVehicleId(etas) : null;
 
   const handleSelect = (v: VehicleOption) => {
     setSelectedId(v.id);
@@ -185,18 +219,16 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
                   <View style={styles.infoCol}>
                     <View style={styles.nameRow}>
                       <Text style={styles.vehicleName}>{v.name}</Text>
-                      {v.badge && (
-                        <View style={[styles.badge, { backgroundColor: v.badge === 'Fastest' ? colors.successLight : colors.accentLight }]}>
-                          <Text style={[styles.badgeText, { color: v.badge === 'Fastest' ? colors.success : colors.accent }]}>
-                            {v.badge}
-                          </Text>
+                      {fastestId === v.id && (
+                        <View style={[styles.badge, { backgroundColor: colors.successLight }]}>
+                          <Text style={[styles.badgeText, { color: colors.success }]}>Fastest</Text>
                         </View>
                       )}
                     </View>
                     <Text style={styles.vehicleType}>{v.type}</Text>
                     <View style={styles.metaRow}>
                       <Clock size={12} color={colors.textMuted} />
-                      <Text style={styles.metaText}>{v.eta} away</Text>
+                      <Text style={styles.metaText}>{etaText(effectiveEtaStatus, etas, v.id)}</Text>
                       <Text style={styles.metaDot}>•</Text>
                       <Users size={12} color={colors.textMuted} />
                       <Text style={styles.metaText}>{v.seats} seats</Text>

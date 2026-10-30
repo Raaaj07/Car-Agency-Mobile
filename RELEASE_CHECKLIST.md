@@ -88,11 +88,16 @@ Never run on real devices yet; the highest-value checks:
 9. **Outage:** with Redis down, the backend log shows one error then one line per 30 s, then a
    "recovered" line (not a line every 2 s).
 
-### Known product gap to decide before release
+### Known product gaps to decide before release
 
-- **Audio Announcements** (opened from the Home bell icon) keeps its switches in memory only and its
-  "Save Audio Preferences" button just closes the screen: nothing is saved or used. Either wire it up,
-  hide the bell, or mark the screen as coming soon.
+- **Audio Announcements** (Home bell, Profile "Ride preferences" / "Ride Announcements"): the choices
+  are saved on the phone and the screen says voice announcements are "coming soon", but the app has
+  no voice engine (`expo-speech` is not installed and nothing speaks). Decide: build voice prompts,
+  or hide these entry points for the first release.
+- **Flat toll and taxes:** every ride adds Rs 40 "toll" + Rs 28 "taxes" regardless of distance; decide
+  the real numbers (backend `fare-catalog.ts` and `frontend/src/utils/fare.ts` must change together).
+- **Choose a Ride arrival times** come from drivers online near the pickup: test with and without
+  drivers online ("No drivers nearby right now" must not block booking).
 
 ## 5. Store listing / permissions
 

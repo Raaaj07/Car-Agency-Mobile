@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Keyboard } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Home, Briefcase, Navigation, ArrowUpDown, Plus } from 'lucide-react-native';
+import { ArrowLeft, Home, Briefcase, ArrowUpDown, Plus } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { useRideStore } from '../../store/rideStore';
 import { useMergedRecents, usePlacesStore } from '../../store/placesStore';
@@ -45,6 +45,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
   const savedPlaces = usePlacesStore((state) => state.saved);
   const recordSearch = usePlacesStore((state) => state.recordSearch);
   const toggleSaved = usePlacesStore((state) => state.toggleSaved);
+  const setHomeWork = usePlacesStore((state) => state.setHomeWork);
   const homePlace = savedPlaces.find((s) => s.label === 'home');
   const workPlace = savedPlaces.find((s) => s.label === 'work');
 
@@ -56,6 +57,11 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
   const [pickupHint, setPickupHint] = useState(false);
   // True once the rider has typed in the pickup box and not yet chosen a suggestion.
   const [pickupEdited, setPickupEdited] = useState(false);
+  // "Add Home" / "Add Work" (or press-and-hold to change one): the next place the
+  // rider picks is saved under that label instead of starting a booking.
+  const [savingLabel, setSavingLabel] = useState<'home' | 'work' | null>(null);
+  const [savingBusy, setSavingBusy] = useState(false);
+  const [savedNote, setSavedNote] = useState<{ text: string; ok: boolean } | null>(null);
   const { suggestions, isSearching, runSearch, resetSearch } = useAddressSearch();
   const insets = useSafeAreaInsets();
 
@@ -80,8 +86,55 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
 
   const handleDropoffChange = (text: string) => {
     setDropoffText(text);
+    setSavedNote(null);
     setActiveField('dropoff');
     runSearch(text);
+  };
+
+  const labelName = (label: 'home' | 'work') => (label === 'home' ? 'Home' : 'Work');
+
+  const startSaving = (label: 'home' | 'work') => {
+    setSavingLabel(label);
+    setSavedNote(null);
+    setDropoffText('');
+    resetSearch();
+    setActiveField('dropoff');
+  };
+
+  const cancelSaving = () => {
+    setSavingLabel(null);
+    setDropoffText('');
+    resetSearch();
+  };
+
+  // Saves the chosen place as Home / Work. `setHomeWork` swallows request errors, so
+  // success is confirmed by looking for the place in the saved list afterwards.
+  const saveAsHomeWork = async (place: { title: string; subtitle: string; lat: number; lng: number }) => {
+    const label = savingLabel;
+    if (!label || savingBusy) return;
+    setSavingBusy(true);
+    await setHomeWork(label, {
+      id: `${label}-${place.lat.toFixed(4)},${place.lng.toFixed(4)}`,
+      title: place.title,
+      subtitle: place.subtitle,
+      lat: place.lat,
+      lng: place.lng,
+      imageUrl: null,
+    });
+    const stored = usePlacesStore
+      .getState()
+      .saved.some((s) => s.label === label && Math.abs(s.lat - place.lat) < 1e-4 && Math.abs(s.lng - place.lng) < 1e-4);
+    setSavingBusy(false);
+    if (stored) {
+      setSavingLabel(null);
+      setDropoffText('');
+      resetSearch();
+      Keyboard.dismiss();
+      setActiveField(null);
+      setSavedNote({ text: `${labelName(label)} saved`, ok: true });
+    } else {
+      setSavedNote({ text: 'Could not save. Check your connection and try again.', ok: false });
+    }
   };
 
   const applySuggestion = (result: GeocodeResult) => {
@@ -94,6 +147,10 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
       resetSearch();
       setActiveField(null);
       Keyboard.dismiss();
+      return;
+    }
+    if (savingLabel) {
+      void saveAsHomeWork({ title: shortTitle, subtitle: result.address, lat: result.lat, lng: result.lng });
       return;
     }
     if (!pickupConfirmed()) return;
@@ -116,6 +173,10 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
   };
 
   const selectPreset = (item: DestinationItem) => {
+    if (savingLabel) {
+      void saveAsHomeWork({ title: item.title, subtitle: item.subtitle, lat: item.lat, lng: item.lng });
+      return;
+    }
     if (!pickupConfirmed()) return;
     setDropoff(item.title, item.subtitle, { lat: item.lat, lng: item.lng });
     // Bumps the place to the top of the shared per-user recents list.
@@ -168,6 +229,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
         {homePlace ? (
           <TouchableOpacity
             style={styles.savedChip}
+            onLongPress={() => startSaving('home')}
             onPress={() =>
               selectPreset({ id: homePlace.id, title: homePlace.title, subtitle: homePlace.address, distance: '', lat: homePlace.lat, lng: homePlace.lng })
             }
@@ -181,7 +243,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
             </View>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity style={[styles.savedChip, styles.addChip]} onPress={() => setActiveField('dropoff')}>
+          <TouchableOpacity style={[styles.savedChip, styles.addChip]} onPress={() => startSaving('home')}>
             <View style={[styles.savedIcon, { backgroundColor: '#EEF2FF' }]}>
               <Plus size={18} color={colors.primary} />
             </View>
@@ -192,6 +254,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
         {workPlace ? (
           <TouchableOpacity
             style={styles.savedChip}
+            onLongPress={() => startSaving('work')}
             onPress={() =>
               selectPreset({ id: workPlace.id, title: workPlace.title, subtitle: workPlace.address, distance: '', lat: workPlace.lat, lng: workPlace.lng })
             }
@@ -205,7 +268,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
             </View>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity style={[styles.savedChip, styles.addChip]} onPress={() => setActiveField('dropoff')}>
+          <TouchableOpacity style={[styles.savedChip, styles.addChip]} onPress={() => startSaving('work')}>
             <View style={[styles.savedIcon, { backgroundColor: colors.accentLight }]}>
               <Plus size={18} color={colors.accent} />
             </View>
@@ -235,11 +298,9 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
         </>
       )}
 
-      {/* Set Pin on Map Button */}
-      <TouchableOpacity style={styles.mapPinBar} onPress={() => setActiveField('dropoff')}>
-        <Navigation size={20} color={colors.primary} />
-        <Text style={styles.mapPinText}>Set location on map</Text>
-      </TouchableOpacity>
+      {(homePlace || workPlace) && (
+        <Text style={styles.chipHint}>Press and hold Home or Work to change it.</Text>
+      )}
     </>
   );
 
@@ -282,7 +343,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
                 value={dropoffText}
                 onChangeText={handleDropoffChange}
                 onFocus={() => setActiveField('dropoff')}
-                placeholder="Search destination..."
+                placeholder={savingLabel ? `Search your ${labelName(savingLabel)} address...` : 'Search destination...'}
                 placeholderTextColor={colors.textMuted}
                 style={styles.inputField}
                 // The drop-off box takes focus unless the caller asked for the pickup box
@@ -299,6 +360,17 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
         </View>
         {pickupHint ? (
           <Text style={styles.hintText}>Choose your pickup from the suggestions first, then pick a destination.</Text>
+        ) : null}
+        {savingLabel ? (
+          <View style={styles.modeRow}>
+            <Text style={styles.modeText}>Search for your {labelName(savingLabel)} address</Text>
+            <TouchableOpacity onPress={cancelSaving} accessibilityRole="button" accessibilityLabel="Cancel">
+              <Text style={styles.modeCancel}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+        {savedNote ? (
+          <Text style={[styles.noteText, { color: savedNote.ok ? colors.success : colors.danger }]}>{savedNote.text}</Text>
         ) : null}
       </View>
 
@@ -390,6 +462,11 @@ const styles = StyleSheet.create({
   loadingRow: { paddingVertical: 24, alignItems: 'center' },
   emptyText: { ...typography.meta, textAlign: 'center', paddingVertical: 16 },
   hintText: { ...typography.meta, fontSize: 12, color: colors.danger, marginTop: 10 },
+  modeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 },
+  modeText: { ...typography.bodyBold, fontSize: 13, color: colors.primary, flex: 1 },
+  modeCancel: { ...typography.bodyBold, fontSize: 13, color: colors.textMuted, paddingLeft: 12 },
+  noteText: { ...typography.meta, fontSize: 12, marginTop: 10 },
+  chipHint: { ...typography.meta, fontSize: 11, color: colors.textMuted, textAlign: 'center', marginTop: 4 },
   savedRow: { flexDirection: 'row', gap: 12, marginBottom: 24 },
   savedChip: {
     flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF',
@@ -412,9 +489,4 @@ const styles = StyleSheet.create({
     ...shadows.card,
   },
   distText: { ...typography.metaBold, fontSize: 12, color: colors.primary, marginLeft: 8 },
-  mapPinBar: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF',
-    padding: 14, borderRadius: radii.button, borderWidth: 1.5, borderColor: colors.primary, gap: 8,
-  },
-  mapPinText: { ...typography.bodyBold, color: colors.primary },
 });

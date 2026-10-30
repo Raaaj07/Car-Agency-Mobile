@@ -1,11 +1,18 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Switch, TouchableOpacity } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Switch, TouchableOpacity, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Volume2, Check } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Header } from '../../components/primitives/Header';
+import { loadAnnouncementPrefs, saveAnnouncementPrefs } from '../../lib/announcementPrefsStorage';
+import {
+  ANNOUNCEMENT_LANGUAGES,
+  ANNOUNCEMENT_VOLUMES,
+  AnnouncementVolume,
+  DEFAULT_ANNOUNCEMENT_PREFS,
+} from '../../utils/announcementPrefs';
 
 interface Props {
   onBack: () => void;
@@ -13,12 +20,38 @@ interface Props {
 }
 
 export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSave }) => {
-  const [voiceAlerts, setVoiceAlerts] = useState<boolean>(true);
-  const [arrivalChime, setArrivalChime] = useState<boolean>(true);
-  const [speedAlerts, setSpeedAlerts] = useState<boolean>(false);
-  const [voiceLang, setVoiceLang] = useState<string>('English');
-  const [volume, setVolume] = useState<'Soft' | 'Normal' | 'Loud'>('Normal');
+  const [voiceAlerts, setVoiceAlerts] = useState<boolean>(DEFAULT_ANNOUNCEMENT_PREFS.voiceAlerts);
+  const [arrivalChime, setArrivalChime] = useState<boolean>(DEFAULT_ANNOUNCEMENT_PREFS.arrivalChime);
+  const [speedAlerts, setSpeedAlerts] = useState<boolean>(DEFAULT_ANNOUNCEMENT_PREFS.speedAlerts);
+  const [voiceLang, setVoiceLang] = useState<string>(DEFAULT_ANNOUNCEMENT_PREFS.voiceLang);
+  const [volume, setVolume] = useState<AnnouncementVolume>(DEFAULT_ANNOUNCEMENT_PREFS.volume);
+  const [saving, setSaving] = useState(false);
   const insets = useSafeAreaInsets();
+
+  // Show what was saved last time (these choices used to be lost on every visit).
+  useEffect(() => {
+    let cancelled = false;
+    loadAnnouncementPrefs().then((p) => {
+      if (cancelled) return;
+      setVoiceAlerts(p.voiceAlerts);
+      setArrivalChime(p.arrivalChime);
+      setSpeedAlerts(p.speedAlerts);
+      setVoiceLang(p.voiceLang);
+      setVolume(p.volume);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    const ok = await saveAnnouncementPrefs({ voiceAlerts, arrivalChime, speedAlerts, voiceLang, volume });
+    setSaving(false);
+    if (ok) onSave();
+    else Alert.alert('Could not save', 'Your preferences could not be stored on this device. Please try again.');
+  };
 
   return (
     <View style={styles.container}>
@@ -28,6 +61,14 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
         contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
         showsVerticalScrollIndicator={false}
       >
+        {/* Honest status: there is no voice engine in the app yet. */}
+        <Card style={styles.noticeCard}>
+          <Text style={styles.noticeTitle}>Voice announcements are coming soon</Text>
+          <Text style={styles.noticeText}>
+            Your choices below are saved on this phone and will apply as soon as voice announcements are available.
+          </Text>
+        </Card>
+
         {/* Main Audio Voice Prompts Card */}
         <Card style={styles.cardSection}>
           <Text style={styles.cardHeaderTitle}>AUDIO & VOICE ALERTS</Text>
@@ -80,7 +121,7 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
         <Card style={styles.cardSection}>
           <Text style={styles.cardHeaderTitle}>VOICE LANGUAGE</Text>
           <View style={styles.langGrid}>
-            {['English', 'Tamil (தமிழ்)', 'Hindi (हिंदी)'].map((lang) => {
+            {ANNOUNCEMENT_LANGUAGES.map((lang) => {
               const isSelected = voiceLang === lang;
               return (
                 <TouchableOpacity
@@ -102,7 +143,7 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
         <Card style={styles.cardSection}>
           <Text style={styles.cardHeaderTitle}>ANNOUNCEMENT VOLUME</Text>
           <View style={styles.volRow}>
-            {(['Soft', 'Normal', 'Loud'] as const).map((v) => {
+            {ANNOUNCEMENT_VOLUMES.map((v) => {
               const isSelected = volume === v;
               return (
                 <TouchableOpacity
@@ -123,7 +164,9 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
       <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Save Audio Preferences"
-          onPress={onSave}
+          onPress={handleSave}
+          loading={saving}
+          disabled={saving}
           variant="primary"
           size="large"
         />
@@ -144,6 +187,21 @@ const styles = StyleSheet.create({
   },
   cardSection: {
     padding: 18,
+  },
+  noticeCard: {
+    padding: 16,
+    backgroundColor: colors.accentLight,
+    gap: 4,
+  },
+  noticeTitle: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    color: colors.textPrimary,
+  },
+  noticeText: {
+    ...typography.meta,
+    fontSize: 12,
+    color: colors.textSecondary,
   },
   cardHeaderTitle: {
     ...typography.metaBold,
