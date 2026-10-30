@@ -1,23 +1,26 @@
-import { Inject, Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnApplicationShutdown, OnModuleInit, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import type Redis from 'ioredis';
 import { In, Repository } from 'typeorm';
 import { REDIS_CLIENT } from '../config/redis.module';
 import { DriverEntity, VehicleType } from './entities/driver.entity';
+import { presenceGraceMs } from './presence';
 
 const GEO_KEY_PREFIX = 'drivers:geo:'; // one geo-set per vehicle type, e.g. drivers:geo:sedan
 const ALL_DRIVERS_GEO_KEY = 'drivers:geo:all';
 const DRIVER_META_PREFIX = 'drivers:meta:'; // hash: vehicleType, isAvailable
 // D-3: `driver:lastseen` ZSET (member = driverId, score = last upsert epoch-ms).
-// A driver with no heartbeat for DRIVER_FRESH_MS is dropped from the geo-sets
-// by the cleanup job AND forced offline in Postgres, so a crashed process can
-// no longer leave a ghost driver behind (in Redis or in the admin UI).
+// A driver with no heartbeat for the presence grace window (default 15 min, see
+// ./presence.ts; was a fixed 90 s) is dropped from the geo-sets by the cleanup
+// job AND forced offline in Postgres, so a crashed process can no longer leave
+// a ghost driver behind (in Redis or in the admin UI). A driver who is merely
+// parked and resting stays visible inside the window.
 const LASTSEEN_KEY = 'driver:lastseen';
 // Pre-rename key from before Task 6 — deleted on boot so it can't linger.
 const LEGACY_HEARTBEAT_KEY = 'drivers:heartbeat';
-const DRIVER_FRESH_MS = 90_000; // matches the 90s locationUpdatedAt check in DriversService
-// D-3: sweep every 30 s so a ghost disappears within ~2 min of the crash
-// (90 s staleness + 30 s worst-case tick), not ~2.5 min.
+// D-3: sweep every 30 s so a ghost disappears within ~30 s of the grace window
+// ending (staleness + worst-case tick).
 const CLEANUP_INTERVAL_MS = 30_000;
 
 export interface NearbyDriverHit {
@@ -32,18 +35,24 @@ export class GeoService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(GeoService.name);
   private cleanupTimer: NodeJS.Timeout | null = null;
   private staleSweepInFlight = false;
+  // How long a driver may stay silent and still count as present (./presence.ts).
+  private readonly freshMs: number;
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @InjectRepository(DriverEntity) private readonly driversRepo: Repository<DriverEntity>,
-  ) {}
+    // Optional so unit tests (and scripts) get the default grace window.
+    @Optional() config?: ConfigService,
+  ) {
+    this.freshMs = presenceGraceMs(config?.get('DRIVER_PRESENCE_GRACE_SECONDS'));
+  }
 
   private geoKey(vehicleType: VehicleType) {
     return `${GEO_KEY_PREFIX}${vehicleType}`;
   }
 
   private freshCutoff(): number {
-    return Date.now() - DRIVER_FRESH_MS;
+    return Date.now() - this.freshMs;
   }
 
   async upsertDriverLocation(
@@ -60,7 +69,7 @@ export class GeoService implements OnModuleInit, OnApplicationShutdown {
       // Last-seen heartbeat: keeps the ghost filter honest; meta TTL dies
       // with the process (a crash can't ZREM its own member — the sweep does).
       this.redis.zadd(LASTSEEN_KEY, now, driverId),
-      this.redis.expire(`${DRIVER_META_PREFIX}${driverId}`, Math.ceil(DRIVER_FRESH_MS / 1000)),
+      this.redis.expire(`${DRIVER_META_PREFIX}${driverId}`, Math.ceil(this.freshMs / 1000)),
     ]);
   }
 

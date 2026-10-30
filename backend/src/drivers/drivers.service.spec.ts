@@ -146,6 +146,97 @@ describe('DriversService.setStatus (R-3)', () => {
     });
   });
 
+  // A parked driver (resting in a car park, phone locked, no GPS fix) sends no
+  // new location, but is still online: he must stay visible inside the radius for
+  // the presence window (default 15 min) instead of vanishing after 90 s.
+  describe('presence grace: an online driver who is parked stays visible', () => {
+    const hit = { driverId: 'd1', distanceMeters: 600, lat: 11.6643, lng: 78.146 };
+    const silentFor = (minutes: number) =>
+      driverFixture({
+        isOnline: true,
+        isAvailable: true,
+        locationUpdatedAt: new Date(Date.now() - minutes * 60_000),
+        user: { name: 'Priya' },
+      });
+
+    const withGrace = (seconds?: number) =>
+      new DriversService(
+        drivers as unknown as Repository<DriverEntity>,
+        rides as unknown as Repository<RideEntity>,
+        audit as unknown as Repository<AdminAuditLogEntity>,
+        geo as unknown as GeoService,
+        {
+          get: jest.fn((key: string) => (key === 'DRIVER_PRESENCE_GRACE_SECONDS' ? seconds : undefined)),
+        } as unknown as ConfigService,
+        {} as unknown as StorageService,
+        { emitApplicationNew: jest.fn() } as unknown as ApplicationEventsService,
+      );
+
+    beforeEach(() => {
+      geo.searchNearby = jest.fn().mockResolvedValue([hit]);
+      // PostGIS fallback (used when Redis finds nobody): empty.
+      (drivers as any).createQueryBuilder = jest.fn(() => {
+        const qb: any = {
+          leftJoinAndSelect: () => qb,
+          addSelect: () => qb,
+          where: () => qb,
+          andWhere: () => qb,
+          setParameters: () => qb,
+          orderBy: () => qb,
+          limit: () => qb,
+          getRawAndEntities: async () => ({ entities: [], raw: [] }),
+        };
+        return qb;
+      });
+    });
+
+    it('finds a driver whose last ping is 10 minutes old (default window)', async () => {
+      drivers.find = jest.fn().mockResolvedValue([silentFor(10)]);
+
+      const list = (await service.findNearby(11.6643, 78.146, undefined, 'auto')) as unknown[];
+
+      expect(list).toHaveLength(1);
+    });
+
+    it('offers the same parked driver to a ride search (matching uses findNearby)', async () => {
+      drivers.find = jest.fn().mockResolvedValue([silentFor(10)]);
+
+      const list = (await service.findNearby(11.6643, 78.146, 5_000, 'auto')) as Array<{ driverId: string }>;
+
+      expect(list.map((d) => d.driverId)).toEqual(['d1']);
+    });
+
+    it('stops showing a driver who has been silent longer than the window (20 minutes)', async () => {
+      drivers.find = jest.fn().mockResolvedValue([silentFor(20)]);
+
+      const list = (await service.findNearby(11.6643, 78.146, undefined, 'auto')) as unknown[];
+
+      expect(list).toHaveLength(0);
+    });
+
+    it('DRIVER_PRESENCE_GRACE_SECONDS=90 restores the old strict window', async () => {
+      drivers.find = jest.fn().mockResolvedValue([silentFor(10)]);
+
+      const strict = withGrace(90);
+      expect(await strict.findNearby(11.6643, 78.146, undefined, 'auto')).toHaveLength(0);
+
+      drivers.find = jest.fn().mockResolvedValue([silentFor(1)]);
+      expect(await strict.findNearby(11.6643, 78.146, undefined, 'auto')).toHaveLength(1);
+    });
+
+    it('still hides a driver who is offline or busy, however recent the ping', async () => {
+      drivers.find = jest.fn().mockResolvedValue([
+        driverFixture({ isOnline: false, isAvailable: false, locationUpdatedAt: new Date(), user: { name: 'A' } }),
+      ]);
+      expect(await service.findNearby(11.6643, 78.146, undefined, 'auto')).toHaveLength(0);
+
+      drivers.find = jest.fn().mockResolvedValue([
+        driverFixture({ isOnline: true, isAvailable: false, locationUpdatedAt: new Date(), user: { name: 'B' } }),
+      ]);
+      expect(await service.findNearby(11.6643, 78.146, undefined, 'auto')).toHaveLength(0);
+    });
+  });
+
   // Admin-configured radius: the rider's nearby view and matching share it,
   // and a client-supplied radius can never widen what a rider sees.
   describe('findNearby radius (admin setting)', () => {

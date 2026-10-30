@@ -1,4 +1,5 @@
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import type Redis from 'ioredis';
 import { FakeRedis } from '../test/fake-redis';
 import { DriverEntity } from './entities/driver.entity';
@@ -29,6 +30,9 @@ describe('GeoService driver last-seen sweep (D-3)', () => {
     geo = new GeoService(
       fake as unknown as Redis,
       repo as unknown as Repository<DriverEntity>,
+      // These D-3 tests pin the strict 90 s window; the default (15 min) is
+      // covered by the presence-grace tests at the end of this file.
+      { get: jest.fn().mockReturnValue(90) } as unknown as ConfigService,
     );
     internals = geo as unknown as GeoInternals;
   });
@@ -137,5 +141,66 @@ describe('GeoService driver last-seen sweep (D-3)', () => {
 
     release([]);
     await first;
+  });
+});
+
+// A parked, resting driver sends no new GPS fix for a while but is still online:
+// by default he stays on the map for 15 minutes of silence (DRIVER_PRESENCE_GRACE_SECONDS).
+describe('GeoService presence grace window (parked driver)', () => {
+  let fake: FakeRedis;
+  let repo: { update: jest.Mock };
+
+  const build = (graceSeconds?: number) =>
+    new GeoService(
+      fake as unknown as Redis,
+      repo as unknown as Repository<DriverEntity>,
+      { get: jest.fn().mockReturnValue(graceSeconds) } as unknown as ConfigService,
+    ) as unknown as GeoInternals & Pick<GeoService, 'upsertDriverLocation'>;
+
+  beforeEach(() => {
+    fake = new FakeRedis();
+    repo = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
+  });
+
+  it('by default (no setting) keeps a driver who was silent for 10 minutes', async () => {
+    const geo = build();
+    await geo.upsertDriverLocation('drv-parked', 'sedan', 12.9, 77.6);
+    await fake.zadd('driver:lastseen', Date.now() - 10 * 60_000, 'drv-parked');
+
+    await geo.sweepStaleDrivers();
+
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(await fake.zscore('driver:lastseen', 'drv-parked')).not.toBeNull();
+    expect(await fake.geopos('drivers:geo:all', 'drv-parked')).not.toBeNull();
+  });
+
+  it('by default removes a driver silent for 16 minutes (a crashed app is not kept forever)', async () => {
+    const geo = build();
+    await geo.upsertDriverLocation('drv-gone', 'sedan', 12.9, 77.6);
+    await fake.zadd('driver:lastseen', Date.now() - 16 * 60_000, 'drv-gone');
+
+    await geo.sweepStaleDrivers();
+
+    expect(await fake.zscore('driver:lastseen', 'drv-gone')).toBeNull();
+    expect(await fake.geopos('drivers:geo:all', 'drv-gone')).toBeNull();
+    expect(repo.update).toHaveBeenCalledTimes(2); // forced offline in Postgres too
+  });
+
+  it('DRIVER_PRESENCE_GRACE_SECONDS changes the window (e.g. 5 minutes)', async () => {
+    const geo = build(300);
+    await geo.upsertDriverLocation('drv-a', 'auto', 12.9, 77.6);
+    await geo.upsertDriverLocation('drv-b', 'auto', 12.9, 77.6);
+    await fake.zadd('driver:lastseen', Date.now() - 4 * 60_000, 'drv-a'); // within 5 min
+    await fake.zadd('driver:lastseen', Date.now() - 6 * 60_000, 'drv-b'); // past 5 min
+
+    await geo.sweepStaleDrivers();
+
+    expect(await fake.zscore('driver:lastseen', 'drv-a')).not.toBeNull();
+    expect(await fake.zscore('driver:lastseen', 'drv-b')).toBeNull();
+  });
+
+  it('the meta hash lives as long as the window (default 15 minutes)', async () => {
+    await build().upsertDriverLocation('drv-1', 'sedan', 12.9, 77.6);
+    expect(await fake.ttl('drivers:meta:drv-1')).toBe(900);
   });
 });

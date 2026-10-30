@@ -11,6 +11,7 @@ import { ApplicationEventsService } from '../common/events/application-events.se
 import { haversineKm } from '../common/geo-utils';
 import { appTimezone, zonedStartOfDay } from '../common/timezone';
 import { MAX_RADIUS_M, SettingsService } from '../settings/settings.service';
+import { presenceGraceMs } from './presence';
 
 // D-1: the payee VPA must look like `name@bank` (kept in sync with the
 // SetUpiVpaDto validator — service-level check too, since scripts call it).
@@ -45,6 +46,9 @@ export interface NearbyPublicDriver {
 @Injectable()
 export class DriversService {
   private readonly defaultRadiusMeters: number;
+  // How long an online driver may go without a location ping and still be
+  // found by riders / ride matching (see ./presence.ts; default 15 min).
+  private readonly presenceMs: number;
   private readonly logger = new Logger(DriversService.name);
 
     constructor(
@@ -60,6 +64,7 @@ export class DriversService {
       @Optional() private readonly settings?: SettingsService,
     ) {
       this.defaultRadiusMeters = this.config.get<number>('DRIVER_SEARCH_RADIUS_METERS') ?? 5000;
+      this.presenceMs = presenceGraceMs(this.config.get('DRIVER_PRESENCE_GRACE_SECONDS'));
     }
 
 
@@ -415,17 +420,20 @@ export class DriversService {
     // full-table GEOSEARCH/PostGIS scans.
     const wanted = radiusMeters ?? (await this.resolveSearchRadius());
     const radius = Math.min(wanted, MAX_RADIUS_M);
-    const ninetySecAgo = new Date(Date.now() - 90 * 1000);
+    // An ONLINE driver is found while they have been heard from within the
+    // presence window, so one who is parked and resting (no new GPS fix) stays
+    // visible inside the admin radius at their last known position.
+    const freshSince = new Date(Date.now() - this.presenceMs);
 
     let results: NearbyDriverResult[] = [];
     const redisHits = await this.geo.searchNearby(lat, lng, radius, vehicleType);
     if (redisHits.length > 0) {
-      results = await this.hydrateFromRedis(redisHits, ninetySecAgo);
+      results = await this.hydrateFromRedis(redisHits, freshSince);
     }
 
     // Fall back to PostGIS if Redis returned 0 results or all were filtered out
     if (results.length === 0) {
-      results = await this.findNearbyViaPostgis(lat, lng, radius, vehicleType, ninetySecAgo);
+      results = await this.findNearbyViaPostgis(lat, lng, radius, vehicleType, freshSince);
     }
 
     if (groupByType) {
@@ -517,7 +525,7 @@ export class DriversService {
     vehicleType?: VehicleType,
     minUpdatedAt?: Date,
   ): Promise<NearbyDriverResult[]> {
-    const ninetySecAgo = minUpdatedAt ?? new Date(Date.now() - 90 * 1000);
+    const freshSince = minUpdatedAt ?? new Date(Date.now() - this.presenceMs);
     const qb = this.drivers
       .createQueryBuilder('d')
       .leftJoinAndSelect('d.user', 'user')
@@ -528,11 +536,11 @@ export class DriversService {
       .where('d.isOnline = true')
       .andWhere('d.isAvailable = true')
       .andWhere('d.location IS NOT NULL')
-      .andWhere('d.locationUpdatedAt >= :ninetySecAgo', { ninetySecAgo })
+      .andWhere('d.locationUpdatedAt >= :freshSince', { freshSince })
       .andWhere(
         `ST_DWithin(d.location::geography, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, :radius)`,
       )
-      .setParameters({ lat, lng, radius: radiusMeters, ninetySecAgo })
+      .setParameters({ lat, lng, radius: radiusMeters, freshSince })
       .orderBy('distance_meters', 'ASC')
       .limit(20);
 
