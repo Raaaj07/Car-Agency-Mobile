@@ -102,7 +102,8 @@ export const PaymentQrScreen: React.FC<Props> = ({ onBack }) => {
             </>
           ) : (
             <>
-              {!upiSaved && (
+              {/* On a load error we do not know whether an ID is saved: do not claim it is missing. */}
+              {!upiSaved && !loadError && (
                 <Text style={styles.upiWarning}>
                   Add your UPI ID, or the payment QR can&apos;t be generated after a trip.
                 </Text>

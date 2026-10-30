@@ -5,6 +5,121 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Resume + admin offer-time pass (2026-10-29 / 30)
+
+On `fix/local-changes`, after the hardening pass below. Owner-verified at the time: backend
+`tsc` clean, 36 suites / 462 tests; frontend `tsc` + `eslint` clean.
+
+**Backend**
+- Redis-down log flood stopped: the 2 s timer sweep logs the first failure, then at most once per
+  30 s with the number of skipped ticks, then one "recovered after Ns" line
+  (`TIMER_SWEEP_FAIL_LOG_EVERY_MS`). Sweep behaviour is unchanged (returns 0, retries every tick).
+- `GET /rides/unreviewed` + `RidesService.findUnreviewedForRider()`: the rider's latest completed,
+  unrated trip from the last 2 h (`UNREVIEWED_RESUME_WINDOW_MS`), or null. Separate from the
+  active-ride lookup on purpose: `ACTIVE_RIDE_STATUSES` also drives the one-active-ride unique
+  index and the booking pre-check.
+- Admin-editable offer timeout (how long each driver has to answer a ride offer):
+  - `SettingsService` now caches per key (radius behaviour unchanged) and adds the
+    `ride_offer_timeout_s` setting, bounds 10-60 s. No migration: it uses `app_settings`.
+  - Until an admin saves a value, `RIDE_REQUEST_TIMEOUT_SECONDS` (else 15 s) still applies.
+  - `RidesService` reads it per offer (expiry, `expiresInSeconds` to the driver, Redis timer);
+    any settings error falls back to the env value so offers never block. A change applies to
+    the NEXT offer; offers already sent keep their deadline.
+  - `PUT /admin/settings/offer-timeout` (`{ seconds }`, whole seconds 10-60), audited as
+    `settings_update` (`targetId: ride_offer_timeout`, meta before/after). `GET /admin/settings`
+    also returns `offerTimeoutSeconds`, `minOfferTimeoutSeconds`, `maxOfferTimeoutSeconds`,
+    `offerTimeoutUpdatedAt`.
+  - Tests: 8 in `settings.service.spec.ts`, 3 in `admin.service.spec.ts`.
+
+**Frontend**
+- Admin > Account: new "Offer time" card under the driver radius (+/- 5 s stepper, chips
+  10/15/20/30/45/60, Save). The driver's offer screen needed no change: it already counts down
+  from the server's `expiresInSeconds`.
+- Cold-start resume. Before this, `restoreActiveRide()` only filled the store and nothing
+  navigated, so a rider whose app was killed mid-ride landed on Home. Now
+  `RiderHomeStackNavigator` reopens on the ride's live screen (finding driver / driver assigned /
+  on the way / trip in progress) or on the review screen for a finished, unrated trip.
+  - Rules live in `navigation/resumeTarget.ts` (pure, no React imports): `resumeScreenFor`,
+    `screenForStatus`, `isActiveStatus`, `mayResumeOnLaunch` (a ride the rider started this
+    session always wins over a late answer). `hooks/useActiveRide.ts` re-exports the status
+    helpers and adds `fetchResumableRide()` / `fetchUnreviewedRide()`.
+- Foreground resync decisions: `navigation/rideTransition.ts` `nextRideAction(screen, status)` is
+  the single place that decides none / advance / complete / cancel for FindingDriver,
+  YouGotTheRide, DriverEnRoute and TripProgress. The socket event, the 3 s poll and
+  `useResyncOnForeground` all ask it, so "completed or cancelled while backgrounded" behaves the
+  same from every source. Each screen still guards firing once with its own ref.
+- Small tested helpers: `utils/tripTime.ts` (trip length from start to completion, null when
+  unusable) and `utils/vehicle.ts` (vehicle display name from the ride record, not the booking
+  form default).
+- Frontend Jest (node environment, `*.test.ts` only) now also covers `resumeTarget`,
+  `rideTransition`, `tripTime` and `vehicle`.
+
+**Screen review fixes (2026-10-30)** (frontend only; owner decisions: no cancellation fee is ever
+charged)
+- Fare preview matched nothing the server charges: the vehicle list showed fixed prices
+  (e.g. sedan 240, summary 284) for any distance, while the server prices by route distance. New
+  `utils/fare.ts` mirrors `backend/src/rides/fare-catalog.ts`; the vehicle list and the ride summary
+  now show the estimate for the real route (labelled "Estimated") and the store gets the vehicle
+  priced for this trip. If a rate in the backend catalog changes, change `utils/fare.ts` too
+  (`fare.test.ts` pins the numbers).
+- Cancel screens: removed the invented cancel reason, the "within 2 minutes" and "multiple cars
+  nearby" claims and the stale-reason store fallback; machine reasons are shown in plain words
+  (`utils/cancellation.ts`); "no cancellation fee" is now accurate. The chosen reason is stored
+  only after a successful cancel (it was saved before the request).
+- Driver Trips: reloads on every focus (a finished trip was missing until a manual refresh);
+  payment badge on completed trips with a confirmed "Amount Received" action for older unpaid trips
+  (`utils/paymentState.ts`; server rules unchanged: completed-only, idempotent, audited, refused
+  when disputed); cancelled trips no longer show a fare like earnings; Try-again state; no crash on
+  a ride without fare data.
+- Rider Trips: Try-again state, centred empty state, no "Cancel ride" on a trip in progress (the
+  server answers 409), no crash on a ride without fare data.
+- Destination search: Services now really focuses the pickup box (two `autoFocus` fields let the
+  drop-off win); swap no longer blanks the pickup box when the drop-off is empty; choosing a
+  destination after typing a pickup without choosing a suggestion is stopped with a hint (the ride
+  was booked from the old pickup).
+- Driver payment screen: first tap on "Save UPI ID" works with the keyboard open. Payment & QR: no
+  false "add your UPI ID" warning when the profile failed to load. My Vehicle: no endless
+  "Loading vehicle..." for a driver without a profile.
+- Help & support: contacts come from `EXPO_PUBLIC_SUPPORT_PHONE` / `EXPO_PUBLIC_SUPPORT_EMAIL`;
+  placeholders only in development (a release build shows none rather than a made-up number).
+- Profile: a rider whose ride is still searching can no longer switch to driver mode; the driver
+  Help row no longer promises "chat"; Ride Details no longer claims a "24/7 Safety Helpline" or
+  "Cash on Delivery".
+
+**Not changed (owner decisions)**
+- Audio Announcements (Home bell, Profile "Ride preferences" / "Ride Announcements") saves nothing and
+  nothing reads it.
+- Vehicle list still shows fixed arrival times ("3 min away") and a fixed "Fastest" badge; every
+  ride adds a flat Rs 40 "toll" and Rs 28 "taxes" whatever the distance.
+- "Set location on map" and the "Add Home / Add Work" chips only focus the search box.
+- Trips lists load the 30 latest rides only; a finished, unrated trip cannot be rated from the rider
+  Trips list.
+- Not reviewed yet: onboarding / login screens and the driver application (`BecomeDriverScreen`).
+
+**Owner steps**
+- Run pending migrations once before deploying (`cd backend && npm run migration:run`):
+  `1791900000000-AddAppSettings`, `1792000000000-AddActiveRidePerDriverIndex`,
+  `1792100000000-AddHotPathIndexes`. See `RELEASE_CHECKLIST.md`.
+- Phone-test (not yet done on real devices): cold-start resume in each ride state, a rider app
+  backgrounded while the driver finishes or cancels, the radius setting, the offer-time setting,
+  driver background / online-offline.
+
+**Known gaps**
+- Skipping the review with Back is not remembered: killing the app again within 2 h reopens it.
+  A rated-but-unpaid trip is not resumed.
+- The per-instance 15 s settings cache means a change can take up to 15 s on other instances.
+- No rendered-screen frontend tests (`jest-expo` not set up); only the pure decision logic is
+  covered.
+- Frontend `npm audit` (2026-10-30): 14 findings (11 low, 3 high), all in build/test tooling:
+  `deepmerge` (prototype poisoning) reached through `@expo/config` / `@expo/cli` /
+  `@expo/metro-config` / `@expo/prebuild-config` and `jest-config` / `ts-jest`, and `zod` (memory
+  exhaustion on oversized input) inside `expo/node_modules/@expo/cli`. None of it ships in the app
+  bundle. The only offered fix is `npm audit fix --force`, which installs `expo@51` (a downgrade
+  from SDK 57) and must NOT be run. Accepted until Expo publishes patched tooling; re-check after
+  each Expo SDK bump. `npm audit --omit=dev` shows the runtime-only view.
+
+---
+
 ## Post-review hardening pass (2026-10-29)
 
 Follow-up to the full-project review, on `fix/local-changes`.

@@ -31,6 +31,7 @@ export interface NearbyDriverHit {
 export class GeoService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(GeoService.name);
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private staleSweepInFlight = false;
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
@@ -150,6 +151,8 @@ export class GeoService implements OnModuleInit, OnApplicationShutdown {
    * next 30 s tick.
    */
   private async sweepStaleDrivers(): Promise<void> {
+    if (this.staleSweepInFlight) return;
+    this.staleSweepInFlight = true;
     try {
       const stale = await this.redis.zrangebyscore(LASTSEEN_KEY, '-inf', this.freshCutoff());
       if (stale.length === 0) return;
@@ -184,6 +187,8 @@ export class GeoService implements OnModuleInit, OnApplicationShutdown {
       }
     } catch (err) {
       this.logger.warn(`Geo sweep failed: ${(err as Error).message}`);
+    } finally {
+      this.staleSweepInFlight = false;
     }
   }
 }

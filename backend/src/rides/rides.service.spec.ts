@@ -1305,4 +1305,20 @@ describe('RidesService phase-1 fixes', () => {
       expect(service.toDriverView(neverStarted).startedAt).toBeNull();
     });
   });
+
+  it('skips an overlapping timer sweep while Redis is still resolving the prior sweep', async () => {
+    let release!: (members: string[]) => void;
+    const pending = new Promise<string[]>((resolve) => {
+      release = resolve;
+    });
+    fake.zrangebyscore = jest.fn().mockReturnValue(pending);
+
+    const first = internals.sweepDueTimers();
+    await Promise.resolve();
+    await expect(internals.sweepDueTimers()).resolves.toBe(0);
+    expect(fake.zrangebyscore).toHaveBeenCalledTimes(1);
+
+    release([]);
+    await expect(first).resolves.toBe(0);
+  });
 });

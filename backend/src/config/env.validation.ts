@@ -58,11 +58,21 @@ class EnvironmentVariables {
   @IsBooleanString()
   DB_SSL?: string;
 
+  @IsOptional()
   @IsString()
-  REDIS_HOST!: string;
+  REDIS_URL?: string;
 
+  @IsOptional()
+  @IsString()
+  REDIS_HOST?: string;
+
+  @IsOptional()
   @IsNumberString()
-  REDIS_PORT!: string;
+  REDIS_PORT?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  REDIS_DB?: string;
 
   @IsOptional()
   @IsString()
@@ -273,6 +283,21 @@ export function validateEnv(config: Record<string, unknown>) {
         .map((e: any) => Object.values(e.constraints ?? {}).join(', '))
         .join('\n')}`,
     );
+  }
+
+  const redis = validated as unknown as Record<string, unknown>;
+  if (!redis.REDIS_URL && (!redis.REDIS_HOST || !redis.REDIS_PORT)) {
+    throw new Error('Invalid environment configuration:\nREDIS_URL or both REDIS_HOST and REDIS_PORT are required');
+  }
+  if (typeof redis.REDIS_URL === 'string' && redis.REDIS_URL.trim()) {
+    try {
+      const protocol = new URL(redis.REDIS_URL).protocol;
+      if (protocol !== 'redis:' && protocol !== 'rediss:') {
+        throw new Error('unsupported scheme');
+      }
+    } catch {
+      throw new Error('Invalid environment configuration:\nREDIS_URL must use redis:// or rediss://');
+    }
   }
 
   // Fail fast on placeholder secrets — they are committed in .env.example only.

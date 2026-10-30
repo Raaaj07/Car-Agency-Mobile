@@ -1,13 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { MapPin } from 'lucide-react-native';
 import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import { colors, typography } from '../../theme/theme';
 import { Card } from '../../components/primitives/Card';
 import { Pill } from '../../components/primitives/Pill';
+import { Button } from '../../components/primitives/Button';
 import { ridesApi, Ride } from '../../api/rides';
 import { getApiError } from '../../api/client';
+import { driverPaymentBadge } from '../../utils/paymentState';
 
 const STATUS_VARIANT: Record<string, 'success' | 'danger' | 'warning' | 'primary' | 'muted'> = {
   completed: 'success',
@@ -31,6 +34,8 @@ export const DriverTripsScreen: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  // The trip whose "Amount Received" request is in flight (one at a time).
+  const [markingId, setMarkingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -45,12 +50,48 @@ export const DriverTripsScreen: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => {
-    // Async boundary: load() clears the error synchronously before its first
-    // await, which trips react-hooks/set-state-in-effect — a microtask
-    // deferral keeps the initial-fetch timing visually identical.
-    Promise.resolve().then(load);
-  }, [load]);
+  // Reload every time the tab is focused: a trip the driver just finished must
+  // be there when they open Trips (the tab stays mounted, so a mount-only
+  // fetch left the list stale until a manual pull-to-refresh).
+  useFocusEffect(
+    useCallback(() => {
+      // Async boundary: load() clears the error synchronously before its first
+      // await, which trips react-hooks/set-state-in-effect — a microtask
+      // deferral keeps the fetch timing visually identical.
+      void Promise.resolve().then(load);
+    }, [load]),
+  );
+
+  // A trip whose payment was never confirmed on the payment screen (the driver
+  // chose "Continue without confirming", or a newer trip took its place) can be
+  // settled here. The server re-checks everything: it refuses a disputed ride,
+  // treats a second tap as a no-op and records the confirmation for admin.
+  const markReceived = async (ride: Ride) => {
+    if (markingId) return;
+    setMarkingId(ride.id);
+    try {
+      const updated = await ridesApi.markPaymentReceived(ride.id);
+      setRides((current) =>
+        current.map((r) => (r.id === ride.id ? { ...r, paymentStatus: updated.paymentStatus } : r)),
+      );
+    } catch (err) {
+      Alert.alert('Unable to update payment', getApiError(err));
+    } finally {
+      setMarkingId(null);
+    }
+  };
+
+  const confirmReceived = (ride: Ride) => {
+    const amount = Number(ride.fareBreakdown?.total ?? 0) + Number(ride.tipAmount ?? 0);
+    Alert.alert(
+      'Amount received?',
+      `Confirm the rider paid ₹${amount.toFixed(2)} for this trip. It is recorded for admin.`,
+      [
+        { text: 'Not yet', style: 'cancel' },
+        { text: 'Yes, received', onPress: () => void markReceived(ride) },
+      ],
+    );
+  };
 
   if (loading) {
     return (
@@ -65,8 +106,15 @@ export const DriverTripsScreen: React.FC = () => {
       <Text style={[styles.header, { paddingTop: insets.top + 16 }]}>Trip History</Text>
       <FlatList
         data={rides}
+        // Rows read `markingId` (the button's loading state): tell the list to re-render them.
+        extraData={markingId}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={[styles.listContent, { paddingBottom: tabBarSpace + 16 }]}
+        contentContainerStyle={[
+          styles.listContent,
+          // Let the empty / error state centre itself instead of collapsing to the top.
+          rides.length === 0 && styles.listEmpty,
+          { paddingBottom: tabBarSpace + 16 },
+        ]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -80,7 +128,21 @@ export const DriverTripsScreen: React.FC = () => {
         ListEmptyComponent={
           <View style={styles.centered}>
             <Text style={styles.emptyTitle}>{error ?? 'No trips yet'}</Text>
-            <Text style={styles.emptySub}>Rides you complete will show up here.</Text>
+            <Text style={styles.emptySub}>
+              {error ? 'Check your connection and try again.' : 'Rides you complete will show up here.'}
+            </Text>
+            {error ? (
+              <Button
+                title="Try again"
+                variant="outline"
+                size="medium"
+                style={styles.retryBtn}
+                onPress={() => {
+                  setLoading(true);
+                  void load();
+                }}
+              />
+            ) : null}
           </View>
         }
         renderItem={({ item }) => (
@@ -98,9 +160,34 @@ export const DriverTripsScreen: React.FC = () => {
               <Text style={styles.routeText} numberOfLines={1}>{item.dropoff?.address}</Text>
             </View>
             <View style={styles.rideFooter}>
-              <Text style={styles.fareText}>₹{item.fareBreakdown.total.toFixed(2)}</Text>
-              {!!item.tipAmount && <Text style={styles.tipText}>+₹{item.tipAmount} tip</Text>}
+              {/* Only a completed trip earned money: a cancelled ride's estimate must not read like earnings. */}
+              <Text style={styles.fareText}>
+                {item.status === 'completed' && item.fareBreakdown?.total != null
+                  ? `₹${item.fareBreakdown.total.toFixed(2)}`
+                  : '—'}
+              </Text>
+              {item.status === 'completed' && !!item.tipAmount && (
+                <Text style={styles.tipText}>+₹{item.tipAmount} tip</Text>
+              )}
             </View>
+            {item.status === 'completed' ? (
+              <View style={styles.payRow}>
+                <Pill
+                  label={driverPaymentBadge(item.paymentStatus).label}
+                  variant={driverPaymentBadge(item.paymentStatus).variant}
+                />
+                {driverPaymentBadge(item.paymentStatus).canMarkReceived ? (
+                  <Button
+                    title="Amount Received"
+                    variant="outline"
+                    size="small"
+                    loading={markingId === item.id}
+                    disabled={markingId !== null}
+                    onPress={() => confirmReceived(item)}
+                  />
+                ) : null}
+              </View>
+            ) : null}
           </Card>
         )}
       />
@@ -113,6 +200,8 @@ const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
   header: { ...typography.heading, fontSize: 22, paddingHorizontal: 20, paddingTop: 56, paddingBottom: 12 },
   listContent: { paddingHorizontal: 20, paddingBottom: 100, gap: 12 },
+  listEmpty: { flexGrow: 1 },
+  retryBtn: { marginTop: 16, alignSelf: 'center' },
   emptyTitle: { ...typography.bodyBold, marginBottom: 6, textAlign: 'center' },
   emptySub: { ...typography.meta, textAlign: 'center' },
   rideCard: { gap: 8 },
@@ -123,4 +212,5 @@ const styles = StyleSheet.create({
   rideFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.borderLight },
   fareText: { ...typography.cardTitle, fontSize: 16, color: colors.primary },
   tipText: { ...typography.metaBold, fontSize: 12, color: colors.success },
+  payRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
 });

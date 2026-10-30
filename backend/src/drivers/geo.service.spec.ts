@@ -121,4 +121,21 @@ describe('GeoService driver last-seen sweep (D-3)', () => {
     await expect((svc as unknown as GeoInternals).sweepStaleDrivers()).resolves.toBeUndefined();
     expect(repo.update).not.toHaveBeenCalled();
   });
+
+  it('skips an overlapping stale-driver sweep while Redis is still resolving the prior sweep', async () => {
+    let release!: (members: string[]) => void;
+    const pending = new Promise<string[]>((resolve) => {
+      release = resolve;
+    });
+    const slow = { zrangebyscore: jest.fn().mockReturnValue(pending) } as unknown as Redis;
+    const svc = new GeoService(slow, repo as unknown as Repository<DriverEntity>);
+
+    const first = (svc as unknown as GeoInternals).sweepStaleDrivers();
+    await Promise.resolve();
+    await (svc as unknown as GeoInternals).sweepStaleDrivers();
+    expect((slow.zrangebyscore as jest.Mock)).toHaveBeenCalledTimes(1);
+
+    release([]);
+    await first;
+  });
 });

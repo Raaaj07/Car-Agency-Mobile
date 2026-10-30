@@ -1,10 +1,12 @@
 import 'dotenv/config';
 import 'reflect-metadata';
 import Redis from 'ioredis';
+import { ConfigService } from '@nestjs/config';
 import { DataSource, In } from 'typeorm';
 import { UserEntity } from '../../auth/entities/user.entity';
 import { DriverEntity } from '../../drivers/entities/driver.entity';
 import { dataSourceOptions } from '../../config/typeorm.datasource';
+import { redisConnectionConfig } from '../../config/redis.module';
 import { assertSafeForScript } from '../../config/db-guard';
 import {
   LASTSEEN_PIN_MS,
@@ -41,11 +43,12 @@ async function seed() {
   const dataSource = new DataSource(dataSourceOptions);
   await dataSource.initialize();
 
-  const redis = new Redis({
-    host: process.env.REDIS_HOST ?? 'localhost',
-    port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
-    password: process.env.REDIS_PASSWORD || undefined,
-  });
+  const redisSettings = redisConnectionConfig({
+    get: <T = string>(key: string) => process.env[key] as T | undefined,
+  } as ConfigService);
+  const redis = redisSettings.url
+    ? new Redis(redisSettings.url, redisSettings.options)
+    : new Redis(redisSettings.options);
 
   const userRepo = dataSource.getRepository(UserEntity);
   const driverRepo = dataSource.getRepository(DriverEntity);

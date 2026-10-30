@@ -4,6 +4,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import Redis from 'ioredis';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { redisConnectionConfig } from '../../config/redis.module';
 
 /**
  * Task 6: Redis adapter for Socket.IO multi-instance scaling.
@@ -25,35 +26,21 @@ export class RedisIoAdapter extends IoAdapter {
     // The app configures Redis with REDIS_HOST / REDIS_PORT / REDIS_PASSWORD /
     // REDIS_TLS (see RedisModule); this adapter must read the SAME settings or
     // it silently never turns on. REDIS_URL is honoured too when someone sets it.
-    const redisUrl = config.get<string>('REDIS_URL');
-    const host = config.get<string>('REDIS_HOST');
-    if (!redisUrl && !host) {
+    const connection = redisConnectionConfig(config);
+    if (!connection.url && !connection.options.host) {
       this.redisLogger.warn('No Redis configured — Socket.IO using single-instance in-memory adapter');
       return;
     }
 
     const options = {
+      ...connection.options,
       connectTimeout: 5000,
-      maxRetriesPerRequest: 3,
       lazyConnect: true,
-      // Subscriber connections must not give up; the pub client may.
-      retryStrategy: (times: number) => Math.min(times * 200, 5000),
     };
     let pubClient: Redis | undefined;
     let subClient: Redis | undefined;
     try {
-      if (redisUrl) {
-        pubClient = new Redis(redisUrl, options);
-      } else {
-        const useTls = (config.get<string>('REDIS_TLS') ?? 'false') === 'true';
-        pubClient = new Redis({
-          host,
-          port: Number(config.get<string>('REDIS_PORT') ?? 6379),
-          password: config.get<string>('REDIS_PASSWORD') || undefined,
-          ...options,
-          ...(useTls ? { tls: {} } : {}),
-        });
-      }
+      pubClient = connection.url ? new Redis(connection.url, options) : new Redis(options);
       subClient = pubClient.duplicate();
       // Handlers first: an error during connect() must never be unhandled.
       pubClient.on('error', (err) => {

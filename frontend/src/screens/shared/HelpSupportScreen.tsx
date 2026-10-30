@@ -6,10 +6,12 @@ import { colors, radii, typography } from '../../theme/theme';
 import { Header } from '../../components/primitives/Header';
 import { Card } from '../../components/primitives/Card';
 
-// Owner: replace these two placeholders with the real support contacts
-// before release (they are the only contact data in the app).
-const SUPPORT_PHONE = '+91 98765 43210';
-const SUPPORT_EMAIL = 'support@vazhi.app';
+// The real support contacts come from the build environment
+// (EXPO_PUBLIC_SUPPORT_PHONE / EXPO_PUBLIC_SUPPORT_EMAIL, see .env.example).
+// The placeholders below are used only in development, so a release build can
+// never show a made-up number: with nothing configured, no contact is shown.
+const SUPPORT_PHONE = process.env.EXPO_PUBLIC_SUPPORT_PHONE?.trim() || (__DEV__ ? '+91 98765 43210' : '');
+const SUPPORT_EMAIL = process.env.EXPO_PUBLIC_SUPPORT_EMAIL?.trim() || (__DEV__ ? 'support@vazhi.app' : '');
 
 interface Props {
   onBack: () => void;
@@ -40,37 +42,45 @@ export const HelpSupportScreen: React.FC<Props> = ({ onBack }) => {
         </Card>
 
         <Card style={styles.card}>
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => openLink(`tel:${SUPPORT_PHONE.replace(/\s/g, '')}`, 'dialer')}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-          >
-            <View style={styles.rowIcon}>
-              <Phone size={18} color={colors.primary} />
-            </View>
-            <View style={styles.rowTexts}>
-              <Text style={styles.rowTitle}>Call support</Text>
-              <Text style={styles.rowSub}>{SUPPORT_PHONE}</Text>
-            </View>
-          </TouchableOpacity>
+          {SUPPORT_PHONE ? (
+            <TouchableOpacity
+              style={styles.row}
+              onPress={() => openLink(`tel:${SUPPORT_PHONE.replace(/\s/g, '')}`, 'dialer')}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              <View style={styles.rowIcon}>
+                <Phone size={18} color={colors.primary} />
+              </View>
+              <View style={styles.rowTexts}>
+                <Text style={styles.rowTitle}>Call support</Text>
+                <Text style={styles.rowSub}>{SUPPORT_PHONE}</Text>
+              </View>
+            </TouchableOpacity>
+          ) : null}
 
-          <View style={styles.divider} />
+          {SUPPORT_PHONE && SUPPORT_EMAIL ? <View style={styles.divider} /> : null}
 
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => openLink(`mailto:${SUPPORT_EMAIL}`, 'email')}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-          >
-            <View style={styles.rowIcon}>
-              <Mail size={18} color={colors.primary} />
-            </View>
-            <View style={styles.rowTexts}>
-              <Text style={styles.rowTitle}>Email us</Text>
-              <Text style={styles.rowSub}>{SUPPORT_EMAIL}</Text>
-            </View>
-          </TouchableOpacity>
+          {SUPPORT_EMAIL ? (
+            <TouchableOpacity
+              style={styles.row}
+              onPress={() => openLink(`mailto:${SUPPORT_EMAIL}`, 'email')}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              <View style={styles.rowIcon}>
+                <Mail size={18} color={colors.primary} />
+              </View>
+              <View style={styles.rowTexts}>
+                <Text style={styles.rowTitle}>Email us</Text>
+                <Text style={styles.rowSub}>{SUPPORT_EMAIL}</Text>
+              </View>
+            </TouchableOpacity>
+          ) : null}
+
+          {!SUPPORT_PHONE && !SUPPORT_EMAIL ? (
+            <Text style={styles.body}>Support contact details are not available right now.</Text>
+          ) : null}
         </Card>
 
         <Text style={styles.hint}>

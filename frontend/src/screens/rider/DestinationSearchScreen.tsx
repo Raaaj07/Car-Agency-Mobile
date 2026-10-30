@@ -51,11 +51,29 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
   const [pickupText, setPickupText] = useState(storePickupAddress || '');
   const [dropoffText, setDropoffText] = useState('');
   const [activeField, setActiveField] = useState<ActiveField>(focus ?? 'dropoff');
+  // True after the rider tried to pick a destination while the pickup box holds
+  // text they typed but never chose from the suggestions.
+  const [pickupHint, setPickupHint] = useState(false);
+  // True once the rider has typed in the pickup box and not yet chosen a suggestion.
+  const [pickupEdited, setPickupEdited] = useState(false);
   const { suggestions, isSearching, runSearch, resetSearch } = useAddressSearch();
   const insets = useSafeAreaInsets();
 
+  // The booking uses the pickup held in the ride store, not the text box. If the
+  // rider edited the box and never picked a suggestion, the screen would show one
+  // place and the driver would be sent to another - so stop and ask them to choose.
+  // Only typing counts as an edit: a pickup that merely arrived later (GPS) is fine.
+  const pickupConfirmed = (): boolean => {
+    if (!pickupEdited) return true;
+    setPickupHint(true);
+    setActiveField('pickup');
+    return false;
+  };
+
   const handlePickupChange = (text: string) => {
     setPickupText(text);
+    setPickupEdited(true);
+    setPickupHint(false);
     setActiveField('pickup');
     runSearch(text);
   };
@@ -71,11 +89,14 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
     if (activeField === 'pickup') {
       setPickupText(result.address);
       setPickup(shortTitle, result.address, { lat: result.lat, lng: result.lng });
+      setPickupEdited(false);
+      setPickupHint(false);
       resetSearch();
       setActiveField(null);
       Keyboard.dismiss();
       return;
     }
+    if (!pickupConfirmed()) return;
     // Picking a dropoff is the terminal action on this screen, same as
     // tapping a preset below — move straight on to vehicle selection.
     setDropoffText(result.address);
@@ -95,6 +116,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
   };
 
   const selectPreset = (item: DestinationItem) => {
+    if (!pickupConfirmed()) return;
     setDropoff(item.title, item.subtitle, { lat: item.lat, lng: item.lng });
     // Bumps the place to the top of the shared per-user recents list.
     recordSearch({
@@ -112,9 +134,14 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
     const prevPickupText = pickupText;
     const prevPickupCoords = useRideStore.getState().pickupCoords;
     const prevDropoffCoords = useRideStore.getState().dropoffCoords;
+    // Swap only when BOTH ends are real chosen places. With a blank or typed-only
+    // drop-off it used to blank the pickup box while the store kept the old pickup.
+    if (!prevPickupCoords || !prevDropoffCoords || !dropoffText.trim() || !prevPickupText.trim()) return;
 
     setPickupText(dropoffText);
     setDropoffText(prevPickupText);
+    setPickupEdited(false);
+    setPickupHint(false);
 
     if (prevDropoffCoords) {
       setPickup(dropoffText.split(',')[0] || dropoffText, dropoffText, prevDropoffCoords);
@@ -244,6 +271,7 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
                 placeholder="Current location"
                 placeholderTextColor={colors.textMuted}
                 style={styles.inputField}
+                autoFocus={focus === 'pickup'}
                 returnKeyType="search"
               />
             </View>
@@ -257,16 +285,21 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
                 placeholder="Search destination..."
                 placeholderTextColor={colors.textMuted}
                 style={styles.inputField}
-                autoFocus
+                // The drop-off box takes focus unless the caller asked for the pickup box
+                // (Services does): two autoFocus fields would let this one win.
+                autoFocus={focus !== 'pickup'}
                 returnKeyType="search"
               />
             </View>
           </View>
 
-          <TouchableOpacity style={styles.swapBtn} onPress={handleSwap}>
+          <TouchableOpacity style={styles.swapBtn} onPress={handleSwap} accessibilityRole="button" accessibilityLabel="Swap pickup and drop-off">
             <ArrowUpDown size={18} color={colors.primary} />
           </TouchableOpacity>
         </View>
+        {pickupHint ? (
+          <Text style={styles.hintText}>Choose your pickup from the suggestions first, then pick a destination.</Text>
+        ) : null}
       </View>
 
       {showSuggestionsPanel ? (
@@ -356,6 +389,7 @@ const styles = StyleSheet.create({
   scrollContent: { padding: 20 },
   loadingRow: { paddingVertical: 24, alignItems: 'center' },
   emptyText: { ...typography.meta, textAlign: 'center', paddingVertical: 16 },
+  hintText: { ...typography.meta, fontSize: 12, color: colors.danger, marginTop: 10 },
   savedRow: { flexDirection: 'row', gap: 12, marginBottom: 24 },
   savedChip: {
     flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF',

@@ -75,8 +75,8 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
               <CreditCard size={20} color={colors.primary} />
             </View>
             <View style={styles.paymentInfo}>
-              <Text style={styles.paymentName}>UPI / Cash on Delivery</Text>
-              <Text style={styles.paymentSub}>Pay driver directly after ride</Text>
+              <Text style={styles.paymentName}>UPI QR / Cash</Text>
+              <Text style={styles.paymentSub}>Pay the driver directly after the ride</Text>
             </View>
           </View>
         </Card>
@@ -100,7 +100,7 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
         <View style={styles.safetyBox}>
           <ShieldCheck size={20} color={colors.success} />
           <Text style={styles.safetyText}>
-            All Vazhi rides are protected with 24/7 Safety Helpline & Live Ride Tracking.
+            During your ride you can share your live trip and send an SOS to the Vazhi team from the trip screen.
           </Text>
         </View>
       </ScrollView>
@@ -109,9 +109,9 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
       {onConfirmRide && (
         <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
           <View style={styles.fareRow}>
-            <View>
-              <Text style={styles.fareLabel}>Total Fare</Text>
-              <Text style={styles.fareSub}>Includes taxes & fees</Text>
+            <View style={styles.fareTextWrap}>
+              <Text style={styles.fareLabel}>Estimated Fare</Text>
+              <Text style={styles.fareSub}>Includes taxes & fees. Final fare follows the distance driven.</Text>
             </View>
             <Text style={styles.fareAmount}>₹{breakdown.total}</Text>
           </View>
@@ -290,6 +290,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  // The note under the label is long: let it wrap instead of squeezing the amount.
+  fareTextWrap: {
+    flex: 1,
+    paddingRight: 12,
   },
   fareLabel: {
     ...typography.bodyBold,

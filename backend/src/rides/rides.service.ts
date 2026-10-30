@@ -117,6 +117,7 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   private timerSweepFailingSince: number | null = null;
   private timerSweepLastFailLogAt = 0;
   private timerSweepFailedTicks = 0;
+  private timerSweepInFlight = false;
 
   constructor(
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
@@ -451,6 +452,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
    * `sweepStaleRides()` remains the safety net for anything a timer misses.
    */
   async sweepDueTimers(nowMs = Date.now()): Promise<number> {
+    if (this.timerSweepInFlight) return 0;
+    this.timerSweepInFlight = true;
+    try {
     let due: string[] = [];
     try {
       due = await this.redis.zrangebyscore(RIDE_TIMERS_KEY, 0, nowMs);
@@ -478,6 +482,9 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       }
     }
     return fired;
+    } finally {
+      this.timerSweepInFlight = false;
+    }
   }
 
   /**

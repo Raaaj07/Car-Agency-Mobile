@@ -19,7 +19,10 @@ export const MobileNumberScreen: React.FC<Props> = ({ onBack, onSendOTP }) => {
   const insets = useSafeAreaInsets();
 
   const handleSubmit = async () => {
-    if (phoneNumber.length < 10) {
+    // Indian mobile numbers start with 6-9. Checked before the SMS is sent (each
+    // OTP costs money); development builds keep accepting any 10 digits so test
+    // numbers still work.
+    if (!/^\d{10}$/.test(phoneNumber) || (!__DEV__ && !/^[6-9]/.test(phoneNumber))) {
       setError('Please enter a valid 10-digit mobile number');
       return;
     }
@@ -49,7 +52,7 @@ export const MobileNumberScreen: React.FC<Props> = ({ onBack, onSendOTP }) => {
 
         <Text style={styles.title}>Enter Your Mobile Number</Text>
         <Text style={styles.subtitle}>
-          We will send a 4-digit verification code to confirm your account
+          We will send a verification code to confirm your account
         </Text>
 
         <View style={styles.formSection}>

@@ -10,6 +10,7 @@ import { DocumentUploader } from '../../components/primitives/DocumentUploader';
 import { Header } from '../../components/primitives/Header';
 import { driversApi, VehicleType } from '../../api/drivers';
 import { getApiError } from '../../api/client';
+import { useAuthStore } from '../../store/authStore';
 
 const VEHICLE_TYPES: { id: VehicleType; label: string }[] = [
   { id: 'auto', label: 'Auto' },
@@ -73,12 +74,14 @@ export const BecomeDriverScreen: React.FC<Props> = ({ onBack, onDone }) => {
         },
         (pct) => setProgress(pct),
       );
+      // Reflect it at once: the Profile tab reads the driver card from this field,
+      // so without it "Become a driver" kept showing until the next refresh.
+      useAuthStore.getState().updateUser({ driverStatus: 'pending' });
       Alert.alert('Application submitted', 'Our team will review your documents. You will be notified once approved.');
       onDone();
     } catch (err) {
-      const msg = getApiError(err);
-      // Surface size/type failures plainly (server validates magic bytes + 5 MB).
-      setError(msg.includes('exceeds') || msg.includes('only JPEG') || msg.includes('does not match') ? msg : msg);
+      // The server's message already says what is wrong (size, type, duplicates).
+      setError(getApiError(err));
     } finally {
       setIsSaving(false);
       setProgress(null);

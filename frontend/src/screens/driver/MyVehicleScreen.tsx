@@ -25,6 +25,9 @@ export const MyVehicleScreen: React.FC<Props> = ({ onBack }) => {
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [application, setApplication] = useState<DriverApplication | null>(null);
   const [error, setError] = useState<string | undefined>();
+  // True once the profile request has answered (with a profile, nothing, or an
+  // error) - without it a driver with no profile sat on "Loading vehicle..." forever.
+  const [loaded, setLoaded] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -32,10 +35,15 @@ export const MyVehicleScreen: React.FC<Props> = ({ onBack }) => {
       driversApi
         .getMyProfile()
         .then((p) => {
-          if (!cancelled) setProfile(p);
+          if (cancelled) return;
+          setProfile(p);
+          setError(undefined);
+          setLoaded(true);
         })
         .catch((err) => {
-          if (!cancelled) setError(getApiError(err));
+          if (cancelled) return;
+          setError(getApiError(err));
+          setLoaded(true);
         });
       driversApi
         .application()
@@ -89,8 +97,12 @@ export const MyVehicleScreen: React.FC<Props> = ({ onBack }) => {
               </View>
             ) : null}
           </Card>
-        ) : !error ? (
+        ) : !loaded ? (
           <Text style={styles.metaText}>Loading vehicle…</Text>
+        ) : !error ? (
+          <Text style={styles.metaText}>
+            No vehicle is on file yet. It appears here once your driver application is submitted.
+          </Text>
         ) : null}
 
         {application ? (

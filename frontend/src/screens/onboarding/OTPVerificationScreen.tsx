@@ -32,6 +32,8 @@ export const OTPVerificationScreen: React.FC<Props> = ({
   const [timer, setTimer] = useState<number>(30);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Blocks a second tap while a resend is in flight (each one sends an SMS).
+  const [isResending, setIsResending] = useState(false);
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -44,6 +46,8 @@ export const OTPVerificationScreen: React.FC<Props> = ({
   const isComplete = code.join('').length === length;
 
   const handleResend = async () => {
+    if (isResending) return;
+    setIsResending(true);
     try {
       const next = await onResend?.();
       // A resend can report a different width — resize the boxes with it.
@@ -53,6 +57,8 @@ export const OTPVerificationScreen: React.FC<Props> = ({
       setError('');
     } catch (resendError) {
       setError(resendError instanceof Error ? resendError.message : 'Unable to resend OTP');
+    } finally {
+      setIsResending(false);
     }
   };
 

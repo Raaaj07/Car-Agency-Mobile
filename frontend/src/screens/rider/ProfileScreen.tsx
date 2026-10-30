@@ -322,14 +322,21 @@ export const ProfileScreen: React.FC = () => {
     );
   };
 
-  // Active trip blocks any mode switch (both directions) — the trip has to
-  // be completed or cancelled first.
+  // An active ride blocks any mode switch (both directions) — it has to be
+  // completed or cancelled first. That includes a ride that is still searching
+  // for a driver (`requested`): switching then would drop the rider's local
+  // ride while the server keeps matching it. (Only in rider mode: in driver mode a
+  // `requested` ride in the store is just a pending job OFFER, not the user's own ride.)
   const tripInProgress = () => {
     const current = useRideStore.getState().activeRide;
-    if (current && ['matched', 'driver_en_route', 'in_progress'].includes(current.status)) {
+    const blocking =
+      activeMode === 'rider'
+        ? ['requested', 'matched', 'driver_en_route', 'in_progress']
+        : ['matched', 'driver_en_route', 'in_progress'];
+    if (current && blocking.includes(current.status)) {
       Alert.alert(
-        'Trip in progress',
-        'You cannot switch modes while a trip is active. Complete or cancel it first.',
+        'Ride in progress',
+        'You cannot switch modes while a ride is active. Complete or cancel it first.',
       );
       return true;
     }
@@ -474,7 +481,7 @@ export const ProfileScreen: React.FC = () => {
             <MenuRow
               icon={<HelpCircle size={20} color={colors.primary} />}
               title="Help & support"
-              subtitle="Chat with the Vazhi team"
+              subtitle="Call or email the Vazhi team"
               onPress={() => navigation.navigate('HelpSupport')}
               last
             />

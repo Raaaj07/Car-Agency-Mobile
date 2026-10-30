@@ -183,6 +183,9 @@ export const DriverPaymentScreen: React.FC<Props> = ({ onDone }) => {
           { paddingTop: 16 + insets.top, paddingBottom: 190 + insets.bottom },
         ]}
         showsVerticalScrollIndicator={false}
+        // With the UPI field focused, the first tap on "Save UPI ID" must press the
+        // button, not just dismiss the keyboard.
+        keyboardShouldPersistTaps="handled"
       >
         {/* Amount header */}
         <View style={styles.headerBox}>

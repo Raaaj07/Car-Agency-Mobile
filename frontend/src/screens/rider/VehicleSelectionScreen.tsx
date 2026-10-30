@@ -9,6 +9,7 @@ import { RealMapView } from '../../components/primitives/RealMapView';
 import { Header } from '../../components/primitives/Header';
 import { useRideStore, VehicleOption } from '../../store/rideStore';
 import { getRoute, RouteResult } from '../../api/mapbox';
+import { estimateFareTotal, estimateNumericPrice } from '../../utils/fare';
 
 const vehicles: VehicleOption[] = [
   { id: 'auto', name: 'Vazhi Auto', type: 'Affordable 3-wheeler', price: '₹110', numericPrice: 110, eta: '3 min', seats: 3, badge: 'Popular', icon: '🛺' },
@@ -65,6 +66,20 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
 
   const selectedVehicle = vehicles.find((v) => v.id === selectedId) || vehicles[2];
 
+  // Fares follow the route distance (same formula as the server). Until the route
+  // is known, a typical 5 km trip is shown and labelled as such.
+  const distanceKm = route ? route.distanceMeters / 1000 : null;
+  const priceFor = (v: VehicleOption) => {
+    const numericPrice = estimateNumericPrice(v.id, distanceKm) ?? v.numericPrice;
+    return { numericPrice, total: estimateFareTotal(numericPrice) };
+  };
+  // The vehicle as it goes into the store: priced for THIS trip, so the ride
+  // summary's total matches what is shown here.
+  const pricedVehicle = (v: VehicleOption): VehicleOption => {
+    const { numericPrice, total } = priceFor(v);
+    return { ...v, numericPrice, price: `₹${total}` };
+  };
+
   // Fetch the real road-following route (and distance/ETA) once both ends
   // of the trip are known.
   useEffect(() => {
@@ -102,13 +117,14 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
 
   const handleSelect = (v: VehicleOption) => {
     setSelectedId(v.id);
-    setSelectedVehicleStore(v);
+    setSelectedVehicleStore(pricedVehicle(v));
   };
 
   const handleConfirm = () => {
-    setSelectedVehicleStore(selectedVehicle);
+    const priced = pricedVehicle(selectedVehicle);
+    setSelectedVehicleStore(priced);
     if (onConfirmVehicle) {
-      onConfirmVehicle(selectedVehicle);
+      onConfirmVehicle(priced);
     }
   };
 
@@ -147,6 +163,13 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
       <View style={styles.bottomSheet}>
         <View style={styles.dragHandle} />
         <Text style={styles.sheetTitle}>Choose a Ride</Text>
+        <Text style={styles.sheetSub}>
+          {distanceKm != null
+            ? 'Estimated fares for this route, including taxes and fees'
+            : isLoadingRoute
+              ? 'Calculating fares for your route…'
+              : 'Fares shown for a typical 5 km trip'}
+        </Text>
 
         <ScrollView
           contentContainerStyle={[styles.list, { paddingBottom: 150 + insets.bottom }]}
@@ -181,7 +204,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
                   </View>
 
                   <View style={styles.priceCol}>
-                    <Text style={[styles.priceText, isSelected && styles.priceTextActive]}>{v.price}</Text>
+                    <Text style={[styles.priceText, isSelected && styles.priceTextActive]}>₹{priceFor(v).total}</Text>
                   </View>
                 </View>
               </Card>
@@ -229,7 +252,8 @@ const styles = StyleSheet.create({
     marginTop: -20, paddingTop: 12, paddingHorizontal: 20, ...shadows.modal,
   },
   dragHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: colors.border, alignSelf: 'center', marginBottom: 12 },
-  sheetTitle: { ...typography.subheading, fontSize: 18, marginBottom: 14 },
+  sheetTitle: { ...typography.subheading, fontSize: 18, marginBottom: 4 },
+  sheetSub: { ...typography.meta, fontSize: 12, marginBottom: 12 },
   list: { gap: 12, paddingBottom: 100 },
   vehicleCard: { padding: 14 },
   vehicleRow: { flexDirection: 'row', alignItems: 'center' },

@@ -5,7 +5,7 @@ import { XCircle, RefreshCw, ShieldCheck } from 'lucide-react-native';
 import { colors, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
-import { useRideStore } from '../../store/rideStore';
+import { cancellationReasonText } from '../../utils/cancellation';
 
 interface Props {
   reason?: string;
@@ -18,8 +18,9 @@ export const RideCancelledScreen: React.FC<Props> = ({
   onBookNew,
   onGoHome,
 }) => {
-  const storeReason = useRideStore((state) => state.cancellationReason);
-  const displayReason = propReason || storeReason || 'Driver is taking too long to arrive';
+  // Only what the server / the rider actually gave. No store fallback (it could
+  // hold a reason from an earlier, failed cancel) and no invented default.
+  const displayReason = cancellationReasonText(propReason) ?? 'No reason was given';
   const insets = useSafeAreaInsets();
 
   return (
@@ -36,7 +37,7 @@ export const RideCancelledScreen: React.FC<Props> = ({
             </View>
           </View>
           <Text style={styles.title}>Ride Cancelled</Text>
-          <Text style={styles.subtitle}>Your ride request has been cancelled successfully</Text>
+          <Text style={styles.subtitle}>This ride has been cancelled</Text>
         </View>
 
         {/* Cancellation Details Card */}
@@ -58,8 +59,8 @@ export const RideCancelledScreen: React.FC<Props> = ({
 
         {/* Alternative Suggestion Banner */}
         <Card style={styles.suggestCard}>
-          <Text style={styles.suggestTitle}>Need another ride right away?</Text>
-          <Text style={styles.suggestSub}>Multiple cars are available nearby in your area.</Text>
+          <Text style={styles.suggestTitle}>Need another ride?</Text>
+          <Text style={styles.suggestSub}>You can book a new ride any time.</Text>
         </Card>
       </ScrollView>
 

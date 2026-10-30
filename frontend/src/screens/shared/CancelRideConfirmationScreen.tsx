@@ -24,7 +24,6 @@ const reasons = [
 
 export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfirmCancel }) => {
   const storeReason = useRideStore((state) => state.cancellationReason);
-  const setCancellationReason = useRideStore((state) => state.setCancellationReason);
   const activeRide = useRideStore((state) => state.activeRide);
   const [selectedReason, setSelectedReason] = useState<string>(storeReason || reasons[0]);
   // True while the cancel request is in flight: locks the confirm button (no
@@ -34,7 +33,9 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
 
   const handleConfirm = async () => {
     if (cancelling) return;
-    setCancellationReason(selectedReason);
+    // The reason is stored by the caller only AFTER the cancel succeeded (see
+    // AppNavigator): saving it here first left a stale reason behind whenever
+    // the request failed.
     if (!onConfirmCancel) return;
     setCancelling(true);
     try {
@@ -59,7 +60,7 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
         ? 'Your driver is already on the way.'
         : status === 'in_progress'
           ? 'Your trip has already started. Cancelling now ends the trip.'
-          : 'Your driver is already en route to your location.';
+          : 'This will cancel your ride.';
   const showPolicy = status !== 'in_progress';
 
   return (
@@ -116,7 +117,7 @@ export const CancelRideConfirmationScreen: React.FC<Props> = ({ onBack, onConfir
           <View style={styles.policyBox}>
             <ShieldAlert size={16} color={colors.textSecondary} />
             <Text style={styles.policyText}>
-              No cancellation fee will be charged for this trip (Cancelled within 2 minutes).
+              There is no cancellation fee.
             </Text>
           </View>
         )}

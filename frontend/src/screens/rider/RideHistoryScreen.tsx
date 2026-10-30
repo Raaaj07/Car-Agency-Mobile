@@ -105,7 +105,12 @@ export const RideHistoryScreen: React.FC = () => {
       <FlatList
         data={pastRides}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={[styles.listContent, { paddingBottom: tabBarSpace + 16 }]}
+        contentContainerStyle={[
+          styles.listContent,
+          // Let the empty / error state centre itself instead of collapsing to the top.
+          nothingToShow && styles.listEmpty,
+          { paddingBottom: tabBarSpace + 16 },
+        ]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -136,7 +141,10 @@ export const RideHistoryScreen: React.FC = () => {
                   </View>
                   <View style={styles.activeBtnRow}>
                     <Button title="Resume" onPress={() => handleResume(ride)} variant="primary" size="medium" style={styles.resumeBtn} />
-                    <Button title="Cancel ride" onPress={() => handleCancel(ride)} variant="outline" size="medium" style={styles.cancelBtn} />
+                    {/* A rider cannot cancel a trip that is already running (the server answers 409). */}
+                    {ride.status !== 'in_progress' && (
+                      <Button title="Cancel ride" onPress={() => handleCancel(ride)} variant="outline" size="medium" style={styles.cancelBtn} />
+                    )}
                   </View>
                 </Card>
               ))}
@@ -147,7 +155,21 @@ export const RideHistoryScreen: React.FC = () => {
           nothingToShow ? (
             <View style={styles.centered}>
               <Text style={styles.emptyTitle}>{error ?? 'No bookings yet'}</Text>
-              <Text style={styles.emptySub}>Rides you book will show up here.</Text>
+              <Text style={styles.emptySub}>
+                {error ? 'Check your connection and try again.' : 'Rides you book will show up here.'}
+              </Text>
+              {error ? (
+                <Button
+                  title="Try again"
+                  variant="outline"
+                  size="medium"
+                  style={styles.retryBtn}
+                  onPress={() => {
+                    setLoading(true);
+                    void load();
+                  }}
+                />
+              ) : null}
             </View>
           ) : null
         }
@@ -168,7 +190,9 @@ export const RideHistoryScreen: React.FC = () => {
             </View>
 
             <View style={styles.rideFooter}>
-              <Text style={styles.fareText}>₹{item.fareBreakdown.total.toFixed(2)}</Text>
+              <Text style={styles.fareText}>
+                {item.fareBreakdown?.total != null ? `₹${item.fareBreakdown.total.toFixed(2)}` : '—'}
+              </Text>
               {item.rating != null && (
                 <View style={styles.ratingRow}>
                   <Star size={14} color={colors.accent} fill={colors.accent} />
@@ -188,6 +212,8 @@ const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
   header: { ...typography.heading, fontSize: 22, paddingHorizontal: 20, paddingTop: 56, paddingBottom: 8 },
   listContent: { paddingHorizontal: 20, paddingBottom: 100, gap: 12 },
+  listEmpty: { flexGrow: 1 },
+  retryBtn: { marginTop: 16, alignSelf: 'center' },
   emptyTitle: { ...typography.bodyBold, marginBottom: 6, textAlign: 'center' },
   emptySub: { ...typography.meta, textAlign: 'center' },
   activeSection: { gap: 12, marginBottom: 4 },

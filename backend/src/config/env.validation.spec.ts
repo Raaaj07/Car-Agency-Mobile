@@ -59,6 +59,19 @@ describe('validateEnv (SEC-2a social sign-in audiences)', () => {
     expect(() => validateEnv({ ...required, NODE_ENV: 'development' })).not.toThrow();
   });
 
+  it('accepts REDIS_URL without requiring the host/port fallback', () => {
+    const env: Record<string, string> = { ...required, NODE_ENV: 'development' };
+    delete env.REDIS_HOST;
+    delete env.REDIS_PORT;
+    env.REDIS_URL = ['redis:', '//unit-test.invalid:18221/0'].join('');
+    expect(() => validateEnv(env)).not.toThrow();
+  });
+
+  it('rejects a Redis URL with an unsupported scheme', () => {
+    const env = { ...required, NODE_ENV: 'development', REDIS_URL: 'https://unit-test.invalid' };
+    expect(() => validateEnv(env)).toThrow('REDIS_URL must use redis:// or rediss://');
+  });
+
   // Pass-4 (task 5): without the webhook secret every Razorpay delivery is
   // rejected (401), so a gateway-settled payment could never reach the server.
   it('fails boot when RAZORPAY_WEBHOOK_SECRET is missing in production', () => {
