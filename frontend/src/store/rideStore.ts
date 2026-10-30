@@ -64,6 +64,8 @@ export interface ActiveRide {
   /** Rider's profile photo (driver-side offer/trip cards). */
   riderAvatar?: string | null;
   pickupOtp?: string | null;
+  /** Set once a driver has been offered / assigned (the rider view sends it). */
+  driverId?: string | null;
   fareBreakdown: FareBreakdown;
   /** P-1: pending → rider_claimed → paid | disputed (+ failed). */
   paymentStatus: 'pending' | 'rider_claimed' | 'paid' | 'disputed' | 'failed';

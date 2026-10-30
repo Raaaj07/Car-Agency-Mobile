@@ -1288,6 +1288,100 @@ describe('RidesService phase-1 fixes', () => {
     });
   });
 
+  // A rider who booked while NOBODY was online keeps waiting; when a driver
+  // comes online later, the periodic matchWaitingRides() offers the ride to them.
+  describe('rides waiting for a driver are matched when a driver comes online', () => {
+    const hit = (driverId: string, distanceMeters: number) => ({
+      driverId,
+      userId: `u-${driverId}`,
+      distanceMeters,
+    });
+
+    it('does nothing (no lock, no offer) while nobody is online, then offers the ride once a driver is', async () => {
+      const ride = requestedRide();
+      rides.find.mockResolvedValue([ride]);
+      rides.findOne.mockResolvedValue(ride);
+      queryRunner.manager.findOne.mockResolvedValue(ride); // the row, read under the lock
+      await fake.zadd(RIDE_TIMERS_KEY, Date.now() + 90_000, 'search:r1'); // the search window
+
+      // Tick 1: no driver online.
+      drivers.findNearby.mockResolvedValue([]);
+      expect(await service.matchWaitingRides()).toBe(0);
+      expect(queryRunner.startTransaction).not.toHaveBeenCalled();
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+
+      // Tick 2: a driver came online near the pickup.
+      drivers.findNearby.mockResolvedValue([hit('near', 300)]);
+      drivers.findById.mockResolvedValue({ id: 'near', userId: 'u-near' });
+      expect(await service.matchWaitingRides()).toBe(1);
+
+      expect(ride.driverId).toBe('near');
+      expect(drivers.claimAvailability).toHaveBeenCalledWith('near', queryRunner.manager);
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledTimes(1);
+      expect(gateway.emitRideRequestToDriver).toHaveBeenCalledWith(
+        'u-near',
+        expect.objectContaining({ rideId: 'r1' }),
+      );
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      // The offer replaces the search window: the offer timer is armed.
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).toBeNull();
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'offer:r1')).not.toBeNull();
+    });
+
+    it('does not restart the search window while it keeps looking', async () => {
+      const ride = requestedRide();
+      rides.find.mockResolvedValue([ride]);
+      queryRunner.manager.findOne.mockResolvedValue(ride);
+      await fake.zadd(RIDE_TIMERS_KEY, Date.now() + 40_000, 'search:r1');
+      const before = await fake.zscore(RIDE_TIMERS_KEY, 'search:r1');
+      // Someone is listed nearby, but another booking claims them first.
+      drivers.findNearby.mockResolvedValue([hit('near', 300)]);
+      drivers.claimAvailability.mockResolvedValue(false);
+
+      expect(await service.matchWaitingRides()).toBe(0);
+
+      expect(ride.driverId).toBeNull();
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+      // A retry must never push the deadline back, or the ride would never time out.
+      expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).toEqual(before);
+    });
+
+    it('skips drivers who already declined this ride and the rider\u2019s own driver profile', async () => {
+      const ride = requestedRide({ declinedDriverIds: ['declined'] });
+      rides.find.mockResolvedValue([ride]);
+      drivers.findNearby.mockResolvedValue([hit('declined', 100), { driverId: 'self', userId: 'u1', distanceMeters: 50 }]);
+
+      expect(await service.matchWaitingRides()).toBe(0);
+
+      expect(queryRunner.startTransaction).not.toHaveBeenCalled();
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+    });
+
+    it('leaves a ride alone that was cancelled or taken by the time the lock is held', async () => {
+      rides.find.mockResolvedValue([requestedRide()]);
+      drivers.findNearby.mockResolvedValue([hit('near', 300)]);
+      queryRunner.manager.findOne.mockResolvedValue(requestedRide({ status: 'cancelled' }));
+
+      expect(await service.matchWaitingRides()).toBe(0);
+
+      expect(drivers.claimAvailability).not.toHaveBeenCalled();
+      expect(gateway.emitRideRequestToDriver).not.toHaveBeenCalled();
+
+      queryRunner.manager.findOne.mockResolvedValue(requestedRide({ driverId: 'someone-else' }));
+      expect(await service.matchWaitingRides()).toBe(0);
+      expect(drivers.claimAvailability).not.toHaveBeenCalled();
+    });
+
+    it('never throws when the lookup or one ride fails (Redis / database down)', async () => {
+      rides.find.mockRejectedValueOnce(new Error('db down'));
+      await expect(service.matchWaitingRides()).resolves.toBe(0);
+
+      rides.find.mockResolvedValue([requestedRide()]);
+      drivers.findNearby.mockRejectedValue(new Error('redis down'));
+      await expect(service.matchWaitingRides()).resolves.toBe(0);
+    });
+  });
+
   // The rider's "trip duration" is startedAt -> completedAt, so both views
   // must carry startedAt (null when the trip never started).
   describe('ride views expose startedAt', () => {

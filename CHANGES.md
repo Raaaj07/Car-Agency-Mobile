@@ -5,6 +5,26 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Rides waiting for a driver are matched when a driver comes online (2026-10-30)
+
+Bug: a rider who booked while no driver was online stayed in "Searching" and was never offered to a
+driver who came online afterwards (matching only ran at booking, on a decline/timeout, or on the
+rider's Retry tap).
+
+- Backend `RidesService.matchWaitingRides()` runs every 3 s (`WAITING_RIDES_SWEEP_MS`) on every
+  instance: for each `requested` ride with no driver (max 25 per tick) it checks, without any lock,
+  whether a free driver is now in the admin radius (not declined, not the rider's own profile); only
+  then it re-checks the ride under its row lock and offers it to the nearest driver (atomic claim,
+  same path as Retry). The search window is not restarted by these retries (`matchNearestDriver`
+  option `retry`), so a ride nobody takes still times out; empty ticks log nothing; failures are
+  logged at most once per 30 s. 5 tests added to `rides.service.spec.ts`.
+- Frontend `FindingDriverScreen`: the "No drivers nearby" state ends as soon as the ride carries a
+  driverId (new optional `ActiveRide.driverId`), shows "A nearby driver was notified" while the
+  driver decides, and says that the search continues. Driver side unchanged: the offer arrives over
+  the socket (and the 4 s offer poll) exactly like any other offer.
+
+---
+
 ## Fares without flat toll/taxes + voice announcements (2026-10-30)
 
 Owner decisions: remove the flat Rs 40 toll and the flat Rs 28 taxes; build the voice announcements.

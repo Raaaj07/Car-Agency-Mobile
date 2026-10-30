@@ -61,7 +61,10 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
   // R-1: the search came back empty — be honest about it instead of spinning
   // at 90% forever. (If nobody is found at all, the server auto-cancels the
   // ride after its search window and the poll below routes to the outcome.)
-  const isNoDrivers = activeRide?.status === 'requested' && matchResult === 'no_drivers';
+  // The server keeps looking while the ride waits: when a driver comes online it
+  // offers them the ride, the ride then carries a driverId and this state ends.
+  const driverOffered = !!activeRide?.driverId;
+  const isNoDrivers = activeRide?.status === 'requested' && matchResult === 'no_drivers' && !driverOffered;
 
   const retrySearch = async () => {
     if (!activeRide || retrying) return;
@@ -208,10 +211,12 @@ export const FindingDriverScreen: React.FC<Props> = ({ onDriverFound, onCancelPr
             </Text>
             <Text style={styles.searchingSub}>
               {isNoDrivers
-                ? 'Retry, or cancel and try again in a few minutes'
-                : nearbyDrivers.length > 0
-                  ? `${nearbyDrivers.length} driver${nearbyDrivers.length === 1 ? '' : 's'} nearby`
-                  : 'Looking for nearby drivers'}
+                ? 'We keep looking and will connect you as soon as a driver comes online. You can also retry now or cancel.'
+                : driverOffered
+                  ? 'A nearby driver was notified. Waiting for them to accept...'
+                  : nearbyDrivers.length > 0
+                    ? `${nearbyDrivers.length} driver${nearbyDrivers.length === 1 ? '' : 's'} nearby`
+                    : 'Looking for nearby drivers'}
             </Text>
           </View>
         </View>

@@ -62,6 +62,14 @@ const DEFAULT_MAX_OFFER_ATTEMPTS = 10;
 // While Redis is unreachable the 2 s timer sweep fails on every tick; log the
 // failure at most this often (and once more when it recovers).
 export const TIMER_SWEEP_FAIL_LOG_EVERY_MS = 30_000;
+// A rider who booked while no driver was online keeps waiting (the ride stays
+// `requested`). Every few seconds the rides still waiting are matched again,
+// so a driver who comes online - or becomes free - is offered the ride within
+// seconds instead of the rider having to tap Retry.
+export const WAITING_RIDES_SWEEP_MS = 3_000;
+// Upper bound of waiting rides handled per tick (they are few: each one ends
+// within the search window).
+const WAITING_RIDES_PER_TICK = 25;
 // A finished trip the rider never rated is offered back on the review screen
 // (after the app was killed) for this long after completion.
 export const UNREVIEWED_RESUME_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -118,6 +126,11 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
   private timerSweepLastFailLogAt = 0;
   private timerSweepFailedTicks = 0;
   private timerSweepInFlight = false;
+  // Waiting-rides sweep (see matchWaitingRides): its own timer, overlap guard and
+  // failure-log throttle (Redis/DB down must not log a line every tick).
+  private waitingSweepTimer: NodeJS.Timeout | null = null;
+  private waitingSweepInFlight = false;
+  private waitingSweepLastFailLogAt = 0;
 
   constructor(
     @InjectRepository(RideEntity) private readonly rides: Repository<RideEntity>,
@@ -275,6 +288,17 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (typeof this.timerSweepTimer.unref === 'function') {
       this.timerSweepTimer.unref();
     }
+
+    // Rides waiting for a driver are matched again every few seconds, so a
+    // driver who comes online is offered them without the rider doing anything.
+    this.waitingSweepTimer = setInterval(() => {
+      this.matchWaitingRides().catch((err) => {
+        this.logger.error('Waiting-rides sweep failed', err as Error);
+      });
+    }, WAITING_RIDES_SWEEP_MS);
+    if (typeof this.waitingSweepTimer.unref === 'function') {
+      this.waitingSweepTimer.unref();
+    }
   }
 
   onModuleDestroy(): void {
@@ -285,6 +309,10 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (this.timerSweepTimer) {
       clearInterval(this.timerSweepTimer);
       this.timerSweepTimer = null;
+    }
+    if (this.waitingSweepTimer) {
+      clearInterval(this.waitingSweepTimer);
+      this.waitingSweepTimer = null;
     }
     // Redis timers are intentionally NOT deleted: they belong to the shared
     // `ride:timers` set (other instances still need them; a restart re-arms).
@@ -349,6 +377,76 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       }
     }
     return cancelled;
+  }
+
+  /**
+   * Rides still waiting for a driver (status `requested`, nobody offered) are
+   * matched again: a driver who came online - or became free - after the rider
+   * booked is offered the ride within seconds. Before, matching only ran at
+   * booking, on a decline/timeout, or when the rider tapped Retry, so a ride
+   * booked while nobody was online just sat there until its search window ended.
+   *
+   * Safe to run on every instance at once: each attempt re-validates the ride
+   * under its row lock and the driver is claimed atomically, so two instances
+   * can never offer the same ride (or driver) twice. The search window is NOT
+   * restarted by these retries, so a ride nobody takes still times out on time.
+   * Returns how many rides were offered to a driver this tick.
+   */
+  async matchWaitingRides(): Promise<number> {
+    if (this.waitingSweepInFlight) return 0;
+    this.waitingSweepInFlight = true;
+    try {
+      const waiting = await this.rides.find({
+        where: { status: 'requested', driverId: IsNull() },
+        order: { createdAt: 'ASC' },
+        take: WAITING_RIDES_PER_TICK,
+      });
+      let offered = 0;
+      for (const ride of waiting) {
+        try {
+          if (await this.retryWaitingRide(ride)) offered += 1;
+        } catch (err) {
+          this.noteWaitingSweepFailure(`ride ${ride.id}`, err as Error);
+        }
+      }
+      return offered;
+    } catch (err) {
+      this.noteWaitingSweepFailure('lookup', err as Error);
+      return 0;
+    } finally {
+      this.waitingSweepInFlight = false;
+    }
+  }
+
+  /** One waiting ride: offer it to the nearest free driver, if there is one. */
+  private async retryWaitingRide(ride: RideEntity): Promise<boolean> {
+    // Cheap pre-check WITHOUT a transaction: is anyone free for this ride right
+    // now? Most ticks find nobody, and those must cost no lock and no log line.
+    const radius = await this.searchRadiusMeters();
+    const declined = new Set(ride.declinedDriverIds || []);
+    const hits = (await this.drivers.findNearby(
+      ride.pickup.lat,
+      ride.pickup.lng,
+      radius,
+      ride.vehicleType,
+    )) as any[];
+    if (!hits.some((c) => !declined.has(c.driverId) && c.userId !== ride.riderId)) return false;
+
+    // Someone is free: re-check the ride under its row lock (it may have been
+    // cancelled or taken since the list above) and offer it. The offer is
+    // written through the transaction, like rematch().
+    const result = await this.withRideLock(ride.id, async (locked, manager) => {
+      if (locked.status !== 'requested' || locked.driverId) return null;
+      return this.matchNearestDriver(locked, false, manager, { retry: true });
+    });
+    return result?.status === 'offered';
+  }
+
+  /** Logs a waiting-rides failure at most once per TIMER_SWEEP_FAIL_LOG_EVERY_MS. */
+  private noteWaitingSweepFailure(what: string, err: Error, now = Date.now()): void {
+    if (now - this.waitingSweepLastFailLogAt < TIMER_SWEEP_FAIL_LOG_EVERY_MS) return;
+    this.waitingSweepLastFailLogAt = now;
+    this.logger.warn(`Waiting-rides match failed (${what}): ${err.message}`);
   }
 
   // GET /rides/active — the rider's single most recent active ride, or null.
@@ -913,6 +1011,10 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     ride: RideEntity,
     allowUpgrade = false,
     manager?: EntityManager,
+    // retry: this is a background re-try for a ride that is already searching
+    // (matchWaitingRides): stay quiet when nobody is found and do NOT restart
+    // the search window, or a ride nobody takes would never time out.
+    opts: { retry?: boolean } = {},
   ): Promise<{ status: 'offered' | 'no_drivers'; candidates: number }> {
     // SEC-4: when called under withRideLock (rematch) the ride writes must
     // join that transaction — an out-of-txn this.rides.save() would persist
@@ -973,9 +1075,11 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
     // next nearest driver still inside the radius.
     candidates.sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0));
 
-    this.logger.log(
-      `Ride ${ride.id} matching strategy: ${matchedStrategy}, radius ${radius} m, candidates: ${candidates.length}`,
-    );
+    if (!opts.retry || candidates.length > 0) {
+      this.logger.log(
+        `Ride ${ride.id} matching strategy: ${matchedStrategy}, radius ${radius} m, candidates: ${candidates.length}`,
+      );
+    }
 
     // RACE: findNearby filters on isAvailable, but two bookings can read the
     // same candidate list before either writes. Claim the nearest still-free
@@ -1001,8 +1105,11 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
         this.pushStatus(ride);
       } else {
         // R-1: nobody is nearby — arm (or re-arm) the search window so the
-        // rider isn't locked into `requested` forever.
-        await this.scheduleSearchTimeout(ride.id, this.searchTimeoutSeconds * 1000);
+        // rider isn't locked into `requested` forever. A background retry keeps
+        // the window that is already running.
+        if (!opts.retry) {
+          await this.scheduleSearchTimeout(ride.id, this.searchTimeoutSeconds * 1000);
+        }
       }
       return { status: 'no_drivers', candidates: 0 };
     }
