@@ -86,6 +86,15 @@ charged)
   Help row no longer promises "chat"; Ride Details no longer claims a "24/7 Safety Helpline" or
   "Cash on Delivery".
 
+- Login / onboarding / driver application: "Terms" and "Privacy Policy" on the sign-in screen are
+  now real links (`EXPO_PUBLIC_TERMS_URL`, `EXPO_PUBLIC_PRIVACY_URL`; plain text when unset); the
+  language picker no longer lets a rider choose a language that does nothing (only English is
+  selectable, the rest read "Coming soon"); mobile entry rejects numbers not starting with 6-9
+  in release builds (before an SMS is sent) and no longer says "4-digit" (the code length is set
+  by the server); a double tap on "Resend OTP" no longer sends two SMS; a submitted driver
+  application marks the account as pending at once (the Profile tab kept offering "Become a
+  driver"); removed a dead conditional in the application error handling.
+
 **Not changed (owner decisions)**
 - Audio Announcements (Home bell, Profile "Ride preferences" / "Ride Announcements") saves nothing and
   nothing reads it.
@@ -94,7 +103,9 @@ charged)
 - "Set location on map" and the "Add Home / Add Work" chips only focus the search box.
 - Trips lists load the 30 latest rides only; a finished, unrated trip cannot be rated from the rider
   Trips list.
-- Not reviewed yet: onboarding / login screens and the driver application (`BecomeDriverScreen`).
+- The Google sign-in error on the login screen prints technical detail (status code and the start of
+  the web client id) to riders; useful while testing, unfriendly in production.
+- All screens listed in the review have now been read once; admin screens were not part of it.
 
 **Owner steps**
 - Run pending migrations once before deploying (`cd backend && npm run migration:run`):

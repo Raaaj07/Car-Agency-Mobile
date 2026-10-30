@@ -61,7 +61,10 @@ Backend, set in the host (Render etc.):
 Frontend (EAS build env): `EXPO_PUBLIC_API_URL` (ends in `/api/v1`), `EXPO_PUBLIC_MAPBOX_TOKEN`,
 `EXPO_PUBLIC_GOOGLE_*` client ids, and the real support contacts `EXPO_PUBLIC_SUPPORT_PHONE` /
 `EXPO_PUBLIC_SUPPORT_EMAIL` (Help & support shows no contact without them in a release build; it
-only shows placeholders in development). These are inlined at build time: treat as public.
+only shows placeholders in development), and the legal pages `EXPO_PUBLIC_TERMS_URL` /
+`EXPO_PUBLIC_PRIVACY_URL` (the sign-in screen's "Terms" and "Privacy Policy" are plain text without
+them; both stores require a working privacy-policy link). These are inlined at build time: treat
+as public.
 
 ## 4. Real-device tests (2-3 phones: admin, rider, driver)
 

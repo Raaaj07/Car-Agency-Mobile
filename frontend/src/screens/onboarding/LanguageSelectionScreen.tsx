@@ -21,6 +21,11 @@ const languages: LanguageOption[] = [
   { id: 'kn', name: 'Kannada', nativeName: 'ಕನ್ನಡ' },
 ];
 
+// Only English is translated today: the other languages are listed so riders can
+// see they are planned, but cannot be chosen (the app used to accept the tap and
+// then stay in English).
+const AVAILABLE_LANGUAGE_IDS = ['en'];
+
 interface Props {
   onNext: () => void;
 }
@@ -49,19 +54,20 @@ export const LanguageSelectionScreen: React.FC<Props> = ({ onNext }) => {
         <View style={styles.grid}>
           {languages.map((lang) => {
             const isSelected = selectedLang === lang.id;
+            const available = AVAILABLE_LANGUAGE_IDS.includes(lang.id);
             return (
               <Card
                 key={lang.id}
-                onPress={() => setSelectedLang(lang.id)}
+                onPress={available ? () => setSelectedLang(lang.id) : undefined}
                 selected={isSelected}
-                style={styles.langCard}
+                style={available ? styles.langCard : [styles.langCard, styles.langCardSoon]}
               >
                 <View style={styles.langRow}>
                   <View style={styles.langTextWrap}>
                     <Text style={[styles.langNative, isSelected && styles.langNativeActive]}>
                       {lang.nativeName}
                     </Text>
-                    <Text style={styles.langName}>{lang.name}</Text>
+                    <Text style={styles.langName}>{available ? lang.name : `${lang.name} · Coming soon`}</Text>
                   </View>
                   <View style={[styles.radio, isSelected && styles.radioActive]}>
                     {isSelected && <Check size={14} color="#FFFFFF" strokeWidth={3} />}
@@ -122,6 +128,10 @@ const styles = StyleSheet.create({
   langCard: {
     paddingVertical: 18,
     paddingHorizontal: 20,
+  },
+  // Listed but not yet translated: dimmed and not tappable.
+  langCardSoon: {
+    opacity: 0.5,
   },
   langRow: {
     flexDirection: 'row',

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Phone, ShieldCheck } from 'lucide-react-native';
 import { FocusedStatusBar } from '../../components/primitives/FocusedStatusBar';
@@ -23,6 +23,15 @@ GoogleSignin.configure({
   webClientId: GOOGLE_WEB_CLIENT_ID,
   scopes: ['profile', 'email'],
 });
+
+// Legal pages (public URLs, set per build - see .env.example). Both stores require a
+// working privacy-policy link; with no URL configured the words show as plain text.
+const TERMS_URL = process.env.EXPO_PUBLIC_TERMS_URL?.trim() || '';
+const PRIVACY_URL = process.env.EXPO_PUBLIC_PRIVACY_URL?.trim() || '';
+
+const openLegal = (url: string) => {
+  void Linking.openURL(url).catch(() => {});
+};
 
 // A client ID is a public identifier (not a secret). Showing its first part in
 // the error tells us, without a debugger, which value this build baked in.
@@ -175,7 +184,22 @@ export const SignInScreen: React.FC<Props> = ({
       <View style={[styles.termsFooter, { bottom: 16 + insets.bottom }]}>
         <ShieldCheck size={16} color={colors.textMuted} />
         <Text style={styles.termsText}>
-          By continuing, you agree to Vazhi&apos;s <Text style={styles.linkText}>Terms</Text> & <Text style={styles.linkText}>Privacy Policy</Text>
+          By continuing, you agree to Vazhi&apos;s{' '}
+          <Text
+            style={TERMS_URL ? styles.linkText : undefined}
+            onPress={TERMS_URL ? () => openLegal(TERMS_URL) : undefined}
+            accessibilityRole={TERMS_URL ? 'link' : undefined}
+          >
+            Terms
+          </Text>{' '}
+          &{' '}
+          <Text
+            style={PRIVACY_URL ? styles.linkText : undefined}
+            onPress={PRIVACY_URL ? () => openLegal(PRIVACY_URL) : undefined}
+            accessibilityRole={PRIVACY_URL ? 'link' : undefined}
+          >
+            Privacy Policy
+          </Text>
         </Text>
       </View>
     </View>
