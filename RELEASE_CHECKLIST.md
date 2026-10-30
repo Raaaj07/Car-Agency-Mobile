@@ -90,12 +90,21 @@ Never run on real devices yet; the highest-value checks:
 
 ### Known product gaps to decide before release
 
-- **Audio Announcements** (Home bell, Profile "Ride preferences" / "Ride Announcements"): the choices
-  are saved on the phone and the screen says voice announcements are "coming soon", but the app has
-  no voice engine (`expo-speech` is not installed and nothing speaks). Decide: build voice prompts,
-  or hide these entry points for the first release.
-- **Flat toll and taxes:** every ride adds Rs 40 "toll" + Rs 28 "taxes" regardless of distance; decide
-  the real numbers (backend `fare-catalog.ts` and `frontend/src/utils/fare.ts` must change together).
+- **Voice announcements** (Profile > Ride preferences / Home bell > Audio Announcements): built with
+  `expo-speech` (text-to-speech on the phone). Needs `cd frontend && npx expo install expo-speech` and a
+  NEW native build (a JS-only update cannot add it; an older build shows "Voice is not available" on
+  "Play sample"). Spoken: rider = driver found, driver arriving, trip started, trip finished with the fare,
+  cancelled / no drivers; driver = new ride request, ride cancelled, over-speed warning (80 km/h, one fixed
+  limit, there is no road speed-limit data). English, Tamil, Hindi: Tamil / Hindi are spoken only if the phone
+  has that voice installed, otherwise English. It plays while the app is open (not guaranteed when the app is
+  in the background or the phone is locked). There are no spoken turn-by-turn directions: drivers navigate
+  in Google Maps. Test on a real phone in each language.
+- **Fares: no flat toll and no flat taxes** (owner decision, backend `fare-catalog.ts` `computeFareBreakdown`
+  and `frontend/src/utils/fare.ts`): the rider pays the trip price (50% base + 30% distance + 20% time) minus
+  any promo. Fares are lower than before (for example a 5 km sedan trip: Rs 240, was Rs 284) and the trip
+  price rates are unchanged. Deploy the backend and the app build together, because the app's estimate must
+  match the server's fare. Rides booked earlier keep their stored amounts. If tax (GST) must be shown to
+  riders, that needs a decision and a change in both files.
 - **Choose a Ride arrival times** come from drivers online near the pickup: test with and without
   drivers online ("No drivers nearby right now" must not block booking).
 

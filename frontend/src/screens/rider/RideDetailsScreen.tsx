@@ -111,7 +111,7 @@ export const RideDetailsScreen: React.FC<Props> = ({ onBack, onConfirmRide }) =>
           <View style={styles.fareRow}>
             <View style={styles.fareTextWrap}>
               <Text style={styles.fareLabel}>Estimated Fare</Text>
-              <Text style={styles.fareSub}>Includes taxes & fees. Final fare follows the distance driven.</Text>
+              <Text style={styles.fareSub}>Final fare follows the distance driven.</Text>
             </View>
             <Text style={styles.fareAmount}>₹{breakdown.total}</Text>
           </View>

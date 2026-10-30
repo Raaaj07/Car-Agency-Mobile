@@ -5,6 +5,34 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Fares without flat toll/taxes + voice announcements (2026-10-30)
+
+Owner decisions: remove the flat Rs 40 toll and the flat Rs 28 taxes; build the voice announcements.
+
+**Fares**
+- `computeFareBreakdown` (backend `fare-catalog.ts`) and `estimateFareBreakdown` (`frontend/src/utils/fare.ts`,
+  used by `rideStore.getFareBreakdown`): the parts are 50% base, 30% distance and the remainder as the
+  time charge, so they add up to the trip price exactly; total = trip price minus any promo, never below 0.
+  `tollFee` and `taxes` stay in the API shape, always 0 (old rides keep their stored values; the receipt
+  and the admin ride detail show those rows only when above 0). Trip price rates are unchanged, so fares
+  are lower than before (5 km sedan: Rs 240, was Rs 284). Tests: new `fare-catalog.spec.ts` (backend),
+  updated `fare.test.ts`. Deploy backend and app together.
+- Removed the "including taxes and fees" wording on the vehicle list and the ride summary.
+
+**Voice announcements** (needs `npx expo install expo-speech` + a new native build)
+- Pure rules `utils/announcements.ts` (+ tests): the sentences in English / Tamil / Hindi, language and
+  volume mapping, the settings gate, ride-change detection (first sight of a ride is silent), arrival and
+  over-speed thresholds. Speaking: `lib/announcer.ts` (expo-speech, falls back to English when the phone
+  has no Tamil/Hindi voice, never throws). `hooks/useRideAnnouncements.ts` (mounted in
+  `MainTabNavigator`) watches the ride in the store; `DriverEnRouteScreen` adds the arrival alert,
+  `TurnByTurnNavigationScreen` the over-speed warning (80 km/h), the driver navigator the cancelled-ride
+  message.
+- `RideAnnouncementsSettingsScreen`: the "coming soon" notice is gone; it now explains what is spoken,
+  has a "Play sample" button, and the sub-switches follow the master switch. There are no spoken
+  turn-by-turn directions (drivers navigate in Google Maps).
+
+---
+
 ## Resume + admin offer-time pass (2026-10-29 / 30)
 
 On `fix/local-changes`, after the hardening pass below. Owner-verified at the time: backend

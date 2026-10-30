@@ -199,7 +199,7 @@ export const VehicleSelectionScreen: React.FC<Props> = ({ onBack, onConfirmVehic
         <Text style={styles.sheetTitle}>Choose a Ride</Text>
         <Text style={styles.sheetSub}>
           {distanceKm != null
-            ? 'Estimated fares for this route, including taxes and fees'
+            ? 'Estimated fares for this route'
             : isLoadingRoute
               ? 'Calculating fares for your route…'
               : 'Fares shown for a typical 5 km trip'}

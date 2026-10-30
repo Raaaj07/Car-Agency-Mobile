@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { estimateFareBreakdown } from '../utils/fare';
 
 export interface LatLng {
   lat: number;
@@ -223,23 +224,8 @@ export const useRideStore = create<RideState>((set, get) => ({
   getFareBreakdown: () => {
     const { selectedVehicle, discountAmount, activeRide } = get();
     if (activeRide) return activeRide.fareBreakdown;
-    const base = Math.round(selectedVehicle.numericPrice * 0.5);
-    const dist = Math.round(selectedVehicle.numericPrice * 0.3);
-    const time = Math.round(selectedVehicle.numericPrice * 0.1);
-    const toll = 40;
-    const taxes = 28;
-    // Total must equal the sum of parts minus discount (matches backend).
-    const total = Math.max(base + dist + time + toll + taxes - discountAmount, 0);
-
-    return {
-      baseFare: base,
-      distanceFare: dist,
-      timeCharge: time,
-      tollFee: toll,
-      taxes,
-      discount: discountAmount,
-      total,
-    };
+    // Same split as the backend (no flat toll / taxes): see utils/fare.ts.
+    return estimateFareBreakdown(selectedVehicle.numericPrice, discountAmount);
   },
 
   // Preserve pickup/pickupAddress/pickupCoords so the home map keeps the

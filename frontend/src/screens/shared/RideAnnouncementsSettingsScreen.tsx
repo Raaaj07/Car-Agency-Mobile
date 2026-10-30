@@ -1,18 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Switch, TouchableOpacity, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Volume2, Check } from 'lucide-react-native';
+import { Volume2, Check, Play } from 'lucide-react-native';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { Button } from '../../components/primitives/Button';
 import { Card } from '../../components/primitives/Card';
 import { Header } from '../../components/primitives/Header';
 import { loadAnnouncementPrefs, saveAnnouncementPrefs } from '../../lib/announcementPrefsStorage';
+import { announce } from '../../lib/announcer';
 import {
   ANNOUNCEMENT_LANGUAGES,
   ANNOUNCEMENT_VOLUMES,
   AnnouncementVolume,
   DEFAULT_ANNOUNCEMENT_PREFS,
 } from '../../utils/announcementPrefs';
+import { SPEED_WARNING_KMH } from '../../utils/announcements';
 
 interface Props {
   onBack: () => void;
@@ -26,9 +28,10 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
   const [voiceLang, setVoiceLang] = useState<string>(DEFAULT_ANNOUNCEMENT_PREFS.voiceLang);
   const [volume, setVolume] = useState<AnnouncementVolume>(DEFAULT_ANNOUNCEMENT_PREFS.volume);
   const [saving, setSaving] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const insets = useSafeAreaInsets();
 
-  // Show what was saved last time (these choices used to be lost on every visit).
+  // Show what was saved last time.
   useEffect(() => {
     let cancelled = false;
     loadAnnouncementPrefs().then((p) => {
@@ -53,6 +56,30 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
     else Alert.alert('Could not save', 'Your preferences could not be stored on this device. Please try again.');
   };
 
+  // Plays a sample with the choices on screen (even before saving), so the
+  // language and the volume can be checked.
+  const handlePlaySample = async () => {
+    if (playing) return;
+    setPlaying(true);
+    const result = await announce(
+      'driver_found',
+      { driverName: 'Ravi' },
+      { prefs: { voiceAlerts, arrivalChime, speedAlerts, voiceLang, volume }, force: true },
+    );
+    setPlaying(false);
+    if (result === 'unavailable') {
+      Alert.alert(
+        'Voice is not available',
+        'This version of the app cannot speak yet. Install the latest build of the app and try again.',
+      );
+    } else if (result === 'fallback') {
+      Alert.alert(
+        'Voice not installed on this phone',
+        'This phone has no voice for the language you chose, so the sample was spoken in English. Install it in your phone settings (Text-to-speech) to hear it in that language.',
+      );
+    }
+  };
+
   return (
     <View style={styles.container}>
       <Header title="Audio Announcements" onBack={onBack} />
@@ -61,22 +88,22 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
         contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Honest status: there is no voice engine in the app yet. */}
         <Card style={styles.noticeCard}>
-          <Text style={styles.noticeTitle}>Voice announcements are coming soon</Text>
+          <Text style={styles.noticeTitle}>What is spoken</Text>
           <Text style={styles.noticeText}>
-            Your choices below are saved on this phone and will apply as soon as voice announcements are available.
+            Riders hear when a driver is found, when the driver is arriving, when the trip starts and ends (with the
+            fare) and if the ride is cancelled. Drivers hear new ride requests. Announcements play while the app is
+            open; there are no spoken turn-by-turn directions (use Google Maps for navigation).
           </Text>
         </Card>
 
-        {/* Main Audio Voice Prompts Card */}
         <Card style={styles.cardSection}>
           <Text style={styles.cardHeaderTitle}>AUDIO & VOICE ALERTS</Text>
 
           <View style={styles.switchRow}>
             <View style={styles.switchTextWrap}>
-              <Text style={styles.switchTitle}>Voice Navigation Prompts</Text>
-              <Text style={styles.switchSub}>Turn-by-turn spoken directions</Text>
+              <Text style={styles.switchTitle}>Voice announcements</Text>
+              <Text style={styles.switchSub}>Turns every spoken update on or off</Text>
             </View>
             <Switch
               value={voiceAlerts}
@@ -90,14 +117,15 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
 
           <View style={styles.switchRow}>
             <View style={styles.switchTextWrap}>
-              <Text style={styles.switchTitle}>Driver Arrival Audio Chime</Text>
-              <Text style={styles.switchSub}>Play loud alert when driver is 1 min away</Text>
+              <Text style={styles.switchTitle}>Driver arriving alert</Text>
+              <Text style={styles.switchSub}>Riders: speak when your driver is about to arrive</Text>
             </View>
             <Switch
               value={arrivalChime}
               onValueChange={setArrivalChime}
+              disabled={!voiceAlerts}
               trackColor={{ false: colors.border, true: colors.accentLight }}
-              thumbColor={arrivalChime ? colors.accent : '#9CA3AF'}
+              thumbColor={arrivalChime && voiceAlerts ? colors.accent : '#9CA3AF'}
             />
           </View>
 
@@ -105,19 +133,21 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
 
           <View style={styles.switchRow}>
             <View style={styles.switchTextWrap}>
-              <Text style={styles.switchTitle}>Over-Speed & Safety Warnings</Text>
-              <Text style={styles.switchSub}>Alert if vehicle exceeds speed limit</Text>
+              <Text style={styles.switchTitle}>Over-speed warning</Text>
+              <Text style={styles.switchSub}>
+                Drivers: say &quot;please slow down&quot; above {SPEED_WARNING_KMH} km/h
+              </Text>
             </View>
             <Switch
               value={speedAlerts}
               onValueChange={setSpeedAlerts}
+              disabled={!voiceAlerts}
               trackColor={{ false: colors.border, true: colors.accentLight }}
-              thumbColor={speedAlerts ? colors.accent : '#9CA3AF'}
+              thumbColor={speedAlerts && voiceAlerts ? colors.accent : '#9CA3AF'}
             />
           </View>
         </Card>
 
-        {/* Announcement Language Choice */}
         <Card style={styles.cardSection}>
           <Text style={styles.cardHeaderTitle}>VOICE LANGUAGE</Text>
           <View style={styles.langGrid}>
@@ -129,17 +159,18 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
                   style={[styles.langChip, isSelected && styles.langChipActive]}
                   onPress={() => setVoiceLang(lang)}
                 >
-                  <Text style={[styles.langChipText, isSelected && styles.langChipTextActive]}>
-                    {lang}
-                  </Text>
+                  <Text style={[styles.langChipText, isSelected && styles.langChipTextActive]}>{lang}</Text>
                   {isSelected && <Check size={14} color="#FFFFFF" />}
                 </TouchableOpacity>
               );
             })}
           </View>
+          <Text style={styles.langNote}>
+            Tamil and Hindi need that voice installed on your phone (phone settings, Text-to-speech). Without it, the
+            announcements are spoken in English.
+          </Text>
         </Card>
 
-        {/* Volume Level Options */}
         <Card style={styles.cardSection}>
           <Text style={styles.cardHeaderTitle}>ANNOUNCEMENT VOLUME</Text>
           <View style={styles.volRow}>
@@ -157,10 +188,20 @@ export const RideAnnouncementsSettingsScreen: React.FC<Props> = ({ onBack, onSav
               );
             })}
           </View>
+          <Text style={styles.langNote}>Also turn up your phone&apos;s media volume.</Text>
         </Card>
+
+        <Button
+          title="Play sample"
+          onPress={handlePlaySample}
+          loading={playing}
+          disabled={playing}
+          variant="outline"
+          size="large"
+          leftIcon={<Play size={18} color={colors.primary} />}
+        />
       </ScrollView>
 
-      {/* Footer Save Button */}
       <View style={[styles.footer, { paddingBottom: 20 + insets.bottom }]}>
         <Button
           title="Save Audio Preferences"
@@ -255,6 +296,12 @@ const styles = StyleSheet.create({
   },
   langChipTextActive: {
     color: '#FFFFFF',
+  },
+  langNote: {
+    ...typography.meta,
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginTop: 12,
   },
   volRow: {
     flexDirection: 'row',

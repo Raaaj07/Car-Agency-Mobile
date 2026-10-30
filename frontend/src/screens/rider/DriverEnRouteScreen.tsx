@@ -14,6 +14,8 @@ import { ridesApi } from '../../api/rides';
 import { formatDistance } from '../../utils/distance';
 import { usePreventBack, useRequireActiveRide } from '../../navigation/navHelpers';
 import { nextRideAction } from '../../navigation/rideTransition';
+import { announceOnce } from '../../lib/announcer';
+import { isDriverArriving } from '../../utils/announcements';
 
 /** No `driver:location` for this long ⇒ the car position is stale. */
 const DRIVER_STALE_MS = 20_000;
@@ -108,6 +110,15 @@ export const DriverEnRouteScreen: React.FC<Props> = ({
     driverStale && driverPosition
       ? 'Reconnecting to driver…'
       : etaLabel ?? 'Driver is on the way to your pickup';
+
+  // Spoken "your driver is arriving" once per ride (needs the arrival alert
+  // switched on in Audio Announcements; the rules are in utils/announcements).
+  const driverArriving = isDriverArriving(distanceMeters, etaSeconds);
+  const rideIdForAnnouncement = activeRide?.id;
+  useEffect(() => {
+    if (!driverArriving || !rideIdForAnnouncement) return;
+    announceOnce(`driver_arriving:${rideIdForAnnouncement}`, 'driver_arriving');
+  }, [driverArriving, rideIdForAnnouncement]);
 
   // Guard: ensure onStartTrip is called exactly once (socket + poll may both fire).
   const startedRef = useRef(false);

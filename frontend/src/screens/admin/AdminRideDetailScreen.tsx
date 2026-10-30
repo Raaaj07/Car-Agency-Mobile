@@ -234,7 +234,7 @@ export const AdminRideDetailScreen: React.FC<Props> = ({ navigation, route }) =>
           <FareRow label="Distance" value={inr(fare.distanceFare)} />
           <FareRow label="Time" value={inr(fare.timeCharge)} />
           {fare.tollFee > 0 ? <FareRow label="Toll" value={inr(fare.tollFee)} /> : null}
-          <FareRow label="Taxes" value={inr(fare.taxes)} />
+          {fare.taxes > 0 ? <FareRow label="Taxes" value={inr(fare.taxes)} /> : null}
           {fare.discount > 0 ? (
             <FareRow
               label={detail.promoCode ? `Promo ${detail.promoCode}` : 'Discount'}

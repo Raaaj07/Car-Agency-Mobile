@@ -1,4 +1,4 @@
-import { estimateFareTotal, estimateNumericPrice } from './fare';
+import { estimateFareBreakdown, estimateFareTotal, estimateNumericPrice } from './fare';
 
 describe('estimateNumericPrice (mirrors backend computeNumericPrice)', () => {
   it('a 5 km trip costs the reference price for every vehicle', () => {
@@ -29,14 +29,33 @@ describe('estimateNumericPrice (mirrors backend computeNumericPrice)', () => {
   });
 });
 
-describe('estimateFareTotal (mirrors backend computeFareBreakdown)', () => {
-  it('adds the fixed toll and taxes to the 50/30/10 split', () => {
-    expect(estimateFareTotal(240)).toBe(284);
-    expect(estimateFareTotal(110)).toBe(167);
+describe('estimateFareTotal / estimateFareBreakdown (mirror backend computeFareBreakdown)', () => {
+  it('charges exactly the trip price: no flat toll, no flat taxes', () => {
+    expect(estimateFareTotal(240)).toBe(240);
+    expect(estimateFareTotal(110)).toBe(110);
+    expect(estimateFareBreakdown(240)).toEqual({
+      baseFare: 120,
+      distanceFare: 72,
+      timeCharge: 48,
+      tollFee: 0,
+      taxes: 0,
+      discount: 0,
+      total: 240,
+    });
+  });
+
+  it('the parts add up to the trip price exactly (rounding goes to the time charge)', () => {
+    for (let price = 1; price <= 1000; price += 1) {
+      const fare = estimateFareBreakdown(price);
+      expect(fare.baseFare + fare.distanceFare + fare.timeCharge).toBe(price);
+      expect(fare.total).toBe(price);
+    }
+    expect(estimateFareBreakdown(111)).toMatchObject({ baseFare: 56, distanceFare: 33, timeCharge: 22 });
   });
 
   it('subtracts a promo discount but never goes below zero', () => {
-    expect(estimateFareTotal(240, 20)).toBe(264);
+    expect(estimateFareTotal(240, 20)).toBe(220);
+    expect(estimateFareBreakdown(240, 20).discount).toBe(20);
     expect(estimateFareTotal(10, 500)).toBe(0);
   });
 });

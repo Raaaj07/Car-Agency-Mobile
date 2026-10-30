@@ -11,6 +11,7 @@ import { useRideStore } from '../store/rideStore';
 import { getApiError } from '../api/client';
 import { DriverOtpEntryScreen } from '../screens/driver/DriverOtpEntryScreen';
 import { DriverPaymentScreen } from '../screens/driver/DriverPaymentScreen';
+import { announce } from '../lib/announcer';
 
 const Stack = createNativeStackNavigator<DriverDashboardStackParamList>();
 
@@ -120,6 +121,7 @@ export const DriverDashboardStackNavigator: React.FC = () => {
             phase={route.params?.phase ?? 'to_pickup'}
             isSubmitting={isSubmitting}
             onRideCancelled={() => {
+              void announce('request_cancelled');
               Alert.alert('Ride cancelled', 'This trip was cancelled.');
               useRideStore.getState().setActiveRide(null);
               navigation.reset({ index: 0, routes: [{ name: 'DriverDashboard' }] });

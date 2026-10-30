@@ -16,6 +16,7 @@ import { useAuthStore } from '../store/authStore';
 import { authApi } from '../api/auth';
 import { refreshSocketAuth, subscribeSocket } from '../lib/socket';
 import { restoreActiveRide, clearRestoredRiderRide } from '../hooks/useActiveRide';
+import { useRideAnnouncements } from '../hooks/useRideAnnouncements';
 
 const RiderTab = createBottomTabNavigator<MainTabParamList>();
 const DriverTab = createBottomTabNavigator<DriverMainTabParamList>();
@@ -37,6 +38,8 @@ export const MainTabNavigator: React.FC = () => {
   const driverStatus = useAuthStore((s) => s.user?.driverStatus);
   const isDriverMode = driverStatus === 'approved' && activeMode === 'driver';
   const rootNavigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  // Spoken ride updates (settings: Profile > Audio Announcements).
+  useRideAnnouncements(isDriverMode ? 'driver' : 'rider');
 
   // D9: the rider and driver tab trees share this one `Main` route, so the
   // nested tab state from the old tree leaks into the new one (landing on

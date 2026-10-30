@@ -12,6 +12,8 @@ import { useSocket } from '../../hooks/useSocket';
 import { driversApi } from '../../api/drivers';
 import { ridesApi } from '../../api/rides';
 import { openGoogleMapsNavigation } from '../../utils/maps';
+import { announce } from '../../lib/announcer';
+import { shouldWarnSpeed } from '../../utils/announcements';
 
 interface Props {
   phase: 'to_pickup' | 'in_progress';
@@ -33,6 +35,8 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
   // Measured bottom-sheet height so the map keeps the car above the sheet.
   const [sheetHeight, setSheetHeight] = useState(0);
   const watchSubscription = useRef<Location.LocationSubscription | null>(null);
+  // When the spoken over-speed warning was last given (it repeats at most every 30 s).
+  const lastSpeedWarnAt = useRef(0);
 
   const destinationAddress =
     (isToPickup ? activeRide?.pickup?.address : activeRide?.dropoff?.address) ??
@@ -63,11 +67,16 @@ export const TurnByTurnNavigationScreen: React.FC<Props> = ({ phase, onPrimaryAc
           setDriverPosition(next);
           setDriverHeading(heading);
           const rawSpeed = loc.coords.speed;
-          setSpeedKmh(
+          const kmh =
             typeof rawSpeed === 'number' && Number.isFinite(rawSpeed) && rawSpeed >= 0
               ? Math.round(rawSpeed * 3.6)
-              : null,
-          );
+              : null;
+          setSpeedKmh(kmh);
+          // Spoken "please slow down" (Audio Announcements > Over-speed warning).
+          if (shouldWarnSpeed(kmh, Date.now(), lastSpeedWarnAt.current)) {
+            lastSpeedWarnAt.current = Date.now();
+            void announce('slow_down');
+          }
 
           driversApi.updateLocation(next.lat, next.lng).catch(() => {});
 

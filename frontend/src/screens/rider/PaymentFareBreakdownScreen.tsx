@@ -52,8 +52,8 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
       `Base fare: ₹${Number(breakdown?.baseFare ?? 0).toFixed(2)}`,
       `Distance: ₹${Number(breakdown?.distanceFare ?? 0).toFixed(2)}`,
       `Time: ₹${Number(breakdown?.timeCharge ?? 0).toFixed(2)}`,
-      `Toll & parking fee: ₹${Number(breakdown?.tollFee ?? 0).toFixed(2)}`,
-      `Taxes: ₹${Number(breakdown?.taxes ?? 0).toFixed(2)}`,
+      Number(breakdown?.tollFee ?? 0) > 0 ? `Toll & parking fee: ₹${Number(breakdown?.tollFee).toFixed(2)}` : null,
+      Number(breakdown?.taxes ?? 0) > 0 ? `Taxes: ₹${Number(breakdown?.taxes).toFixed(2)}` : null,
       Number(breakdown?.discount ?? 0) > 0 ? `Discount: -₹${Number(breakdown?.discount).toFixed(2)}` : null,
       tip > 0 ? `Tip: ₹${tip.toFixed(2)}` : null,
       `Total: ₹${amount.toFixed(2)} (${isPaid ? 'paid' : 'unpaid'})`,
@@ -149,15 +149,20 @@ export const PaymentFareBreakdownScreen: React.FC<Props> = ({ onBack, onDone }) 
             <Text style={styles.lineValue}>₹{Number(breakdown?.timeCharge ?? 0).toFixed(2)}</Text>
           </View>
 
-          <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>Toll & Parking Fee</Text>
-            <Text style={styles.lineValue}>₹{Number(breakdown?.tollFee ?? 0).toFixed(2)}</Text>
-          </View>
+          {/* Older rides (booked before the flat toll/taxes were removed) still carry them. */}
+          {Number(breakdown?.tollFee ?? 0) > 0 && (
+            <View style={styles.lineRow}>
+              <Text style={styles.lineLabel}>Toll & Parking Fee</Text>
+              <Text style={styles.lineValue}>₹{Number(breakdown?.tollFee).toFixed(2)}</Text>
+            </View>
+          )}
 
-          <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>GST & Taxes</Text>
-            <Text style={styles.lineValue}>₹{Number(breakdown?.taxes ?? 0).toFixed(2)}</Text>
-          </View>
+          {Number(breakdown?.taxes ?? 0) > 0 && (
+            <View style={styles.lineRow}>
+              <Text style={styles.lineLabel}>GST & Taxes</Text>
+              <Text style={styles.lineValue}>₹{Number(breakdown?.taxes).toFixed(2)}</Text>
+            </View>
+          )}
 
           {Number(breakdown?.discount ?? 0) > 0 && (
             <View style={[styles.lineRow, styles.discountRow]}>

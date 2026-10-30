@@ -60,7 +60,7 @@ export const LanguageSelectionScreen: React.FC<Props> = ({ onNext }) => {
                 key={lang.id}
                 onPress={available ? () => setSelectedLang(lang.id) : undefined}
                 selected={isSelected}
-                style={available ? styles.langCard : [styles.langCard, styles.langCardSoon]}
+                style={available ? styles.langCard : StyleSheet.flatten([styles.langCard, styles.langCardSoon])}
               >
                 <View style={styles.langRow}>
                   <View style={styles.langTextWrap}>

@@ -71,16 +71,22 @@ export function computeNumericPrice(vehicleType: VehicleType, distanceKm: number
 }
 
 /**
- * Same 50/30/10 + fixed toll/tax split `getFareBreakdown()` uses in
- * rideStore.ts, applied to the real numericPrice for this trip.
- * Total includes all components minus discount so the parts always sum up.
+ * Fare split for the real numericPrice of this trip: 50% base + 30% distance,
+ * and the remainder as the time charge, so the three parts always add up to
+ * the trip price exactly. There is NO flat toll and NO flat tax any more
+ * (owner decision: the rider pays the trip price, minus any promo discount).
+ * `tollFee` and `taxes` stay in the shape, always 0, so the API contract,
+ * stored rides and old app builds keep working; rides booked before this
+ * change keep their stored breakdown (with the old values) untouched.
+ * Mirrored in frontend/src/utils/fare.ts (estimateFareBreakdown): change both
+ * together.
  */
 export function computeFareBreakdown(numericPrice: number, discountAmount: number) {
   const baseFare = Math.round(numericPrice * 0.5);
   const distanceFare = Math.round(numericPrice * 0.3);
-  const timeCharge = Math.round(numericPrice * 0.1);
-  const tollFee = 40;
-  const taxes = 28;
+  const timeCharge = Math.max(numericPrice - baseFare - distanceFare, 0);
+  const tollFee = 0;
+  const taxes = 0;
   const total = Math.max(baseFare + distanceFare + timeCharge + tollFee + taxes - discountAmount, 0);
 
   return {
