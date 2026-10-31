@@ -6,13 +6,19 @@
  * car park, battery saver) sends no new location for a while, but is still
  * online and still wants rides. Before, a driver silent for 90 s was dropped
  * from the map, forced offline, and never offered anything. Now the last known
- * position stays valid for this long (default 15 minutes). Past it the driver
+ * position stays valid for this long (default 5 minutes). Past it the driver
  * is treated as gone (crashed app, dead phone) and removed, exactly as before.
+ *
+ * Why 5 minutes: a driver whose app is alive reports every 5 s (foreground) or
+ * every 10 s (background task, with "allow all the time"), and re-sends the last
+ * known position when there is no GPS fix, so real silence for minutes means the
+ * app or phone is gone. Every offer sent to such a ghost costs the rider a full
+ * offer timeout, so the window is kept short.
  *
  * `DRIVER_PRESENCE_GRACE_SECONDS` overrides it (clamped to 90 s - 6 h); 90
  * restores the old strict behaviour.
  */
-export const DEFAULT_PRESENCE_GRACE_SECONDS = 15 * 60;
+export const DEFAULT_PRESENCE_GRACE_SECONDS = 5 * 60;
 export const MIN_PRESENCE_GRACE_SECONDS = 90;
 export const MAX_PRESENCE_GRACE_SECONDS = 6 * 60 * 60;
 

@@ -232,7 +232,7 @@ class EnvironmentVariables {
 
   // How long an ONLINE driver may go without a location ping and still be
   // visible / offered rides (parked, phone locked, no GPS indoors). Default
-  // 900 (15 min); clamped to 90 - 21600. 90 = the old strict behaviour.
+  // 300 (5 min); clamped to 90 - 21600. 90 = the old strict behaviour.
   @IsOptional()
   @IsNumberString()
   DRIVER_PRESENCE_GRACE_SECONDS?: string;

@@ -190,8 +190,8 @@ describe('DriversService.setStatus (R-3)', () => {
       });
     });
 
-    it('finds a driver whose last ping is 10 minutes old (default window)', async () => {
-      drivers.find = jest.fn().mockResolvedValue([silentFor(10)]);
+    it('finds a driver whose last ping is 3 minutes old (default window)', async () => {
+      drivers.find = jest.fn().mockResolvedValue([silentFor(3)]);
 
       const list = (await service.findNearby(11.6643, 78.146, undefined, 'auto')) as unknown[];
 
@@ -199,15 +199,15 @@ describe('DriversService.setStatus (R-3)', () => {
     });
 
     it('offers the same parked driver to a ride search (matching uses findNearby)', async () => {
-      drivers.find = jest.fn().mockResolvedValue([silentFor(10)]);
+      drivers.find = jest.fn().mockResolvedValue([silentFor(3)]);
 
       const list = (await service.findNearby(11.6643, 78.146, 5_000, 'auto')) as Array<{ driverId: string }>;
 
       expect(list.map((d) => d.driverId)).toEqual(['d1']);
     });
 
-    it('stops showing a driver who has been silent longer than the window (20 minutes)', async () => {
-      drivers.find = jest.fn().mockResolvedValue([silentFor(20)]);
+    it('stops showing a driver who has been silent longer than the window (8 minutes)', async () => {
+      drivers.find = jest.fn().mockResolvedValue([silentFor(8)]);
 
       const list = (await service.findNearby(11.6643, 78.146, undefined, 'auto')) as unknown[];
 

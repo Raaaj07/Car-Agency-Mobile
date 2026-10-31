@@ -11,6 +11,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, typography, shadows } from '../../theme/theme';
 import { DriverDashboardStackParamList, DriverMainTabParamList, RootStackParamList } from '../../navigation/types';
 import { Card } from '../../components/primitives/Card';
+import { Button } from '../../components/primitives/Button';
 import { LatLng } from '../../components/primitives/RealMapView';
 import { driversApi, DriverProfile } from '../../api/drivers';
 import { ridesApi, Ride } from '../../api/rides';
@@ -95,6 +96,11 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [isOnline, setIsOnline] = useState(false);
   const [isRegistered, setIsRegistered] = useState<boolean | null>(null); // null = still checking
+  // The profile request FAILED (network / server), as opposed to "no driver profile".
+  // Without this the online switch stayed disabled until the app was restarted.
+  const [loadFailed, setLoadFailed] = useState(false);
+  // Same flag for the focus / foreground listeners, which must not re-subscribe.
+  const loadFailedRef = useRef(false);
   // Value is never read (only the setters below trigger re-renders).
   const [, setDriverCoords] = useState<LatLng | undefined>();
   const [showWelcome, setShowWelcome] = useState(false);
@@ -141,10 +147,12 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     }
   }, []);
 
-  const loadProfile = () => {
+  const loadProfile = useCallback(() => {
     driversApi
       .getMyProfile()
       .then((p) => {
+        loadFailedRef.current = false;
+        setLoadFailed(false);
         if (!p) {
           setProfile(null);
           setIsOnline(false);
@@ -156,11 +164,21 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         setIsRegistered(true);
       })
       .catch(() => {
+        loadFailedRef.current = true;
+        setLoadFailed(true);
         setIsRegistered(false);
       });
-  };
+  }, []);
 
-  useEffect(loadProfile, []);
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
+
+  // "Try again" on the load-failed card.
+  const retryProfile = () => {
+    setIsRegistered(null);
+    loadProfile();
+  };
 
   // ── Resume an in-flight trip ───────────────────────────────────────────────
   // The store only lives in memory, so after a restart / back-navigation the
@@ -201,6 +219,11 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     // trip or pressing Back from the trip screen).
     const unsubscribe = navigation.addListener('focus', () => {
       void loadActiveTrip();
+      // The first load failed: try again now (switch, name and stats all depend on it).
+      if (loadFailedRef.current) {
+        loadProfile();
+        return;
+      }
       // Pick up a UPI ID saved on the Profile tab while this screen stayed
       // mounted (hides the "Add your UPI ID" banner without a restart).
       driversApi
@@ -211,7 +234,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
         .catch(() => {});
     });
     return unsubscribe;
-  }, [navigation, loadActiveTrip]);
+  }, [navigation, loadActiveTrip, loadProfile]);
 
   // ── Initial GPS fix ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -322,7 +345,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   // ── Background permission check ───────────────────────────────────────────
   // Without "allow all the time" the OS stops our location the moment the app
   // is backgrounded; the backend then drops the driver once he has been silent
-  // for its presence window (15 min by default) and riders see "no drivers
+  // for its presence window (5 min by default) and riders see "no drivers
   // around". Tell the driver instead of failing silently.
   const refreshBgPermission = useCallback(async () => {
     setBgPermission(await hasBackgroundLocationPermission());
@@ -360,6 +383,8 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   // the switch still shows ONLINE. Reconcile with the server, put the driver
   // back online when it is safe to, and pick up any waiting offer.
   const resumeFromBackground = useCallback(async () => {
+    // A failed first load is retried whenever the app comes back to the front.
+    if (loadFailedRef.current) loadProfile();
     try {
       const p = await driversApi.getMyProfile();
       if (!p) return;
@@ -389,7 +414,7 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
     void loadActiveTrip();
     void refreshBgPermission();
     if (isOnlineRef.current) void startDriverBackgroundLocation();
-  }, [checkPendingOffer, loadActiveTrip, refreshBgPermission]);
+  }, [checkPendingOffer, loadActiveTrip, loadProfile, refreshBgPermission]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
@@ -594,6 +619,22 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
           </View>
         </View>
 
+        {loadFailed ? (
+          <Card style={styles.statusCard}>
+            <Text style={styles.statusTitle}>Couldn&apos;t load your driver profile</Text>
+            <Text style={styles.statusSub}>
+              Check your connection. You can&apos;t go online until it loads.
+            </Text>
+            <Button
+              title="Try again"
+              variant="outline"
+              size="small"
+              style={styles.retryBtn}
+              onPress={retryProfile}
+            />
+          </Card>
+        ) : null}
+
         {status === 'pending' ? (
           <Card style={styles.statusCard}>
             <Text style={styles.statusTitle}>Application under review</Text>
@@ -775,6 +816,7 @@ const styles = StyleSheet.create({
   statusCard: { marginHorizontal: 20, marginTop: 14 },
   statusTitle: { ...typography.bodyBold, fontSize: 14 },
   statusSub: { ...typography.meta, fontSize: 12 },
+  retryBtn: { marginTop: 10, alignSelf: 'flex-start' },
   sectionTitle: { ...typography.cardTitle, fontSize: 18, paddingHorizontal: 20, marginTop: 20, marginBottom: 12 },
   rideCard: {
     backgroundColor: '#FFFFFF', borderRadius: radii.lg, padding: 16, marginHorizontal: 20,

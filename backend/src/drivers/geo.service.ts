@@ -11,7 +11,7 @@ const GEO_KEY_PREFIX = 'drivers:geo:'; // one geo-set per vehicle type, e.g. dri
 const ALL_DRIVERS_GEO_KEY = 'drivers:geo:all';
 const DRIVER_META_PREFIX = 'drivers:meta:'; // hash: vehicleType, isAvailable
 // D-3: `driver:lastseen` ZSET (member = driverId, score = last upsert epoch-ms).
-// A driver with no heartbeat for the presence grace window (default 15 min, see
+// A driver with no heartbeat for the presence grace window (default 5 min, see
 // ./presence.ts; was a fixed 90 s) is dropped from the geo-sets by the cleanup
 // job AND forced offline in Postgres, so a crashed process can no longer leave
 // a ghost driver behind (in Redis or in the admin UI). A driver who is merely

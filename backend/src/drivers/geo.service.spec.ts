@@ -30,7 +30,7 @@ describe('GeoService driver last-seen sweep (D-3)', () => {
     geo = new GeoService(
       fake as unknown as Redis,
       repo as unknown as Repository<DriverEntity>,
-      // These D-3 tests pin the strict 90 s window; the default (15 min) is
+      // These D-3 tests pin the strict 90 s window; the default (5 min) is
       // covered by the presence-grace tests at the end of this file.
       { get: jest.fn().mockReturnValue(90) } as unknown as ConfigService,
     );
@@ -145,7 +145,7 @@ describe('GeoService driver last-seen sweep (D-3)', () => {
 });
 
 // A parked, resting driver sends no new GPS fix for a while but is still online:
-// by default he stays on the map for 15 minutes of silence (DRIVER_PRESENCE_GRACE_SECONDS).
+// by default he stays on the map for 5 minutes of silence (DRIVER_PRESENCE_GRACE_SECONDS).
 describe('GeoService presence grace window (parked driver)', () => {
   let fake: FakeRedis;
   let repo: { update: jest.Mock };
@@ -162,10 +162,10 @@ describe('GeoService presence grace window (parked driver)', () => {
     repo = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
   });
 
-  it('by default (no setting) keeps a driver who was silent for 10 minutes', async () => {
+  it('by default (no setting) keeps a driver who was silent for 3 minutes', async () => {
     const geo = build();
     await geo.upsertDriverLocation('drv-parked', 'sedan', 12.9, 77.6);
-    await fake.zadd('driver:lastseen', Date.now() - 10 * 60_000, 'drv-parked');
+    await fake.zadd('driver:lastseen', Date.now() - 3 * 60_000, 'drv-parked');
 
     await geo.sweepStaleDrivers();
 
@@ -174,10 +174,10 @@ describe('GeoService presence grace window (parked driver)', () => {
     expect(await fake.geopos('drivers:geo:all', 'drv-parked')).not.toBeNull();
   });
 
-  it('by default removes a driver silent for 16 minutes (a crashed app is not kept forever)', async () => {
+  it('by default removes a driver silent for 6 minutes (a crashed app is not kept forever)', async () => {
     const geo = build();
     await geo.upsertDriverLocation('drv-gone', 'sedan', 12.9, 77.6);
-    await fake.zadd('driver:lastseen', Date.now() - 16 * 60_000, 'drv-gone');
+    await fake.zadd('driver:lastseen', Date.now() - 6 * 60_000, 'drv-gone');
 
     await geo.sweepStaleDrivers();
 
@@ -186,12 +186,12 @@ describe('GeoService presence grace window (parked driver)', () => {
     expect(repo.update).toHaveBeenCalledTimes(2); // forced offline in Postgres too
   });
 
-  it('DRIVER_PRESENCE_GRACE_SECONDS changes the window (e.g. 5 minutes)', async () => {
-    const geo = build(300);
+  it('DRIVER_PRESENCE_GRACE_SECONDS changes the window (e.g. 10 minutes)', async () => {
+    const geo = build(600);
     await geo.upsertDriverLocation('drv-a', 'auto', 12.9, 77.6);
     await geo.upsertDriverLocation('drv-b', 'auto', 12.9, 77.6);
-    await fake.zadd('driver:lastseen', Date.now() - 4 * 60_000, 'drv-a'); // within 5 min
-    await fake.zadd('driver:lastseen', Date.now() - 6 * 60_000, 'drv-b'); // past 5 min
+    await fake.zadd('driver:lastseen', Date.now() - 9 * 60_000, 'drv-a'); // within 10 min
+    await fake.zadd('driver:lastseen', Date.now() - 11 * 60_000, 'drv-b'); // past 10 min
 
     await geo.sweepStaleDrivers();
 
@@ -199,8 +199,8 @@ describe('GeoService presence grace window (parked driver)', () => {
     expect(await fake.zscore('driver:lastseen', 'drv-b')).toBeNull();
   });
 
-  it('the meta hash lives as long as the window (default 15 minutes)', async () => {
+  it('the meta hash lives as long as the window (default 5 minutes)', async () => {
     await build().upsertDriverLocation('drv-1', 'sedan', 12.9, 77.6);
-    expect(await fake.ttl('drivers:meta:drv-1')).toBe(900);
+    expect(await fake.ttl('drivers:meta:drv-1')).toBe(300);
   });
 });

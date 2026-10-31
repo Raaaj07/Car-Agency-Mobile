@@ -118,12 +118,13 @@ export async function startDriverBackgroundLocation(): Promise<boolean> {
     }
     await Location.startLocationUpdatesAsync(DRIVER_LOCATION_TASK, {
       accuracy: Location.Accuracy.Balanced,
-      // Backend freshness window is 90s (geo.service sweep); a fix every 10s
-      // keeps the driver solidly fresh without draining the battery.
+      // The backend drops a driver after its presence window of silence (5 min by
+      // default, geo.service sweep); a fix every 10s keeps the driver solidly fresh
+      // without draining the battery.
       timeInterval: 10_000,
       // MUST be 0: with a distance filter (it used to be 25 m) a driver who is
       // parked and waiting for a ride moves less than that, the OS sends no
-      // fix, and after 90s the backend drops him off the map — riders then see
+      // fix, and after the presence window the backend drops him off the map — riders then see
       // "no drivers around" while the driver's app is still open in background.
       distanceInterval: 0,
       pausesUpdatesAutomatically: false,

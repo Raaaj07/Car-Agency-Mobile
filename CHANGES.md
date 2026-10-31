@@ -5,6 +5,34 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Release-prep fixes from the full-project review (2026-10-31)
+
+- Docs/config conflict that would stop production from booting: `env.validation.ts` refuses
+  `OTP_LENGTH` below 6 in production unless `ALLOW_4_DIGIT_OTP=true`, while `backend/.env.example` said
+  to leave it at 4 (and did not list the flag). `.env.example` now explains the rule and lists
+  `ALLOW_4_DIGIT_OTP=false`; `RELEASE_CHECKLIST.md` has an "OTP length (boot blocker)" entry.
+- `RELEASE_CHECKLIST.md` refreshed: `DRIVER_PRESENCE_GRACE_SECONDS`, the driver-background test now
+  matches the 15-minute presence window, new tests for the waiting-ride match and the dashboard retry,
+  `expo-speech` is already installed (only a new native build is needed), and the `expo install
+  expo-location expo-notifications` patch step.
+- Driver dashboard: when the first profile request fails (weak network) the screen now says so and
+  offers "Try again"; the profile is also retried on every focus and every return from the
+  background. Before, the online switch stayed disabled until the app was restarted.
+- Presence window default changed from 15 minutes to **5 minutes** (`DRIVER_PRESENCE_GRACE_SECONDS`
+  default 300; `presence.ts`, specs, `.env.example`, checklist). Why: a live driver app reports every 5 s
+  (foreground) or 10 s (background task with "Allow all the time") and re-sends the last known position
+  without a GPS fix, so minutes of real silence mean a dead app or phone, and every offer to such a
+  ghost costs the rider a full offer timeout. A driver backgrounded WITHOUT the "all the time" permission
+  can still be dropped after 5 minutes: the dashboard already nags for that permission. Raise the
+  value if resting drivers are being dropped.
+- Still open from the review: PostGIS fallback on every empty Redis result (database load from the
+  3-second waiting-rides sweep and from rider home polls), the Choose a Ride arrival-time query is
+  capped at the 20 nearest drivers overall, offers to ghost drivers inside the presence window cost
+  the rider up to 15 s each, the rider hears "Your ride was cancelled" after cancelling themselves,
+  `RIDE_MAX_OFFER_ATTEMPTS` is not declared in `env.validation.ts`, admin screens not reviewed.
+
+---
+
 ## Parked online drivers stay visible (2026-10-30)
 
 Bug: a driver who was online but resting in a parking lot (no new location: phone locked, battery
@@ -12,7 +40,7 @@ saver, no GPS fix in a covered car park) was dropped after 90 s of silence: remo
 offline in the database and never offered rides.
 
 - Backend: a driver who is ONLINE stays visible inside the admin radius, and is offered rides, for the
-  presence window after his last ping: **15 minutes by default** (`DRIVER_PRESENCE_GRACE_SECONDS`,
+  presence window after his last ping: **15 minutes by default, since changed to 5 minutes (see the 2026-10-31 section above)** (`DRIVER_PRESENCE_GRACE_SECONDS`,
   allowed 90-21600; 90 restores the old strict behaviour). `drivers/presence.ts` (new), `GeoService`
   (last-seen cutoff, stale sweep, meta TTL) and `DriversService.findNearby` (Redis hit filter and PostGIS
   fallback) use it. Past the window the driver is removed and forced offline as before, so a crashed app

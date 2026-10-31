@@ -46,13 +46,21 @@ Backend, set in the host (Render etc.):
 - Redis: `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_TLS`. Without Redis, offers stop
   timing out and rate limiting fails open.
 - Auth: `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` (32+ chars), `OTP_DEV_MODE=false`,
-  `MSG91_AUTH_KEY`, `MSG91_OTP_TEMPLATE_ID`, `MSG91_SENDER_ID`, `OTP_LENGTH` (see the note in
-  `.env.example` before changing it).
+  `MSG91_AUTH_KEY`, `MSG91_OTP_TEMPLATE_ID`, `MSG91_SENDER_ID`.
+- **OTP length (boot blocker):** production refuses to start with `OTP_LENGTH` below 6 unless
+  `ALLOW_4_DIGIT_OTP=true`. Set `OTP_LENGTH=6` (current app builds render the server's length); use
+  `ALLOW_4_DIGIT_OTP=true` only while old 4-box builds are still in use, then remove it. Make sure the
+  MSG91 template accepts the longer code.
 - Payments: `PAYMENTS_DEV_MODE=false`; if Razorpay is used: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
   `RAZORPAY_WEBHOOK_SECRET` (required in production when dev mode is off).
 - Rides: `RIDE_REQUEST_TIMEOUT_SECONDS` (default offer time until an admin saves one),
   `RIDE_MAX_OFFER_ATTEMPTS`, `RIDE_SEARCH_TIMEOUT_SECONDS`, `MAX_TRIP_KM`, optional
   `SERVICE_AREA_BBOX`.
+- Drivers: `DRIVER_PRESENCE_GRACE_SECONDS` (default 300 = an ONLINE driver with no new location stays
+  visible and is offered rides for 5 minutes; allowed 90-21600; 90 = the old strict behaviour). A live
+  app reports every 5-10 s (background task needs "Allow all the time"), so real silence means a dead
+  app or phone. A shorter value means fewer ghost offers, a longer one fewer drops for resting drivers
+  without the background permission.
 - Third parties: `MAPBOX_TOKEN`, `GOOGLE_PLACES_API_KEY` (Places API (New) must be enabled in the
   Google Cloud project or "popular places" stay empty), `GOOGLE_WEB_CLIENT_ID`, `APPLE_CLIENT_ID`,
   Cloudinary keys if `STORAGE_DRIVER=cloudinary`, `ADMIN_PHONES`.
@@ -80,20 +88,32 @@ Never run on real devices yet; the highest-value checks:
    driver cancels; foreground the rider: it must move to review / the cancelled screen with no stuck
    "Searching" or map.
 6. **Driver background:** online driver, app backgrounded: stays visible while online; going offline
-   or closing removes them within about 90 s; no ghost driver after the app is killed.
+   removes them at once; a driver whose app was killed or whose phone died disappears after the
+   presence window (`DRIVER_PRESENCE_GRACE_SECONDS`, default 5 min; set it to 120 for a quick test,
+   then remove it). Also test a parked driver with GPS off or the phone locked: still visible and
+   offered rides inside the window.
 7. **Double booking:** two riders book at the same moment with one driver nearby: only one gets the
    offer.
 8. **Payment:** UPI QR on the driver phone, "Amount Received" sets the payment status; admin dispute
    resolution works.
 9. **Outage:** with Redis down, the backend log shows one error then one line per 30 s, then a
    "recovered" line (not a line every 2 s).
+10. **Waiting ride:** book with nobody online, bring the driver online within about 60 s: the offer
+    should arrive within a few seconds (the waiting-rides sweep runs every 3 s); accept and the rider
+    moves on. With nobody coming, the ride cancels after the search window (about 90 s); after an
+    offer was made and declined, the window starts again.
+11. **Driver dashboard retry:** start the driver app with the network off: the card "Couldn't load
+    your driver profile" shows with "Try again"; turn the network on and tap it (or reopen the app):
+    the switch becomes usable without restarting.
 
 ### Known product gaps to decide before release
 
 - **Voice announcements** (Profile > Ride preferences / Home bell > Audio Announcements): built with
-  `expo-speech` (text-to-speech on the phone). Needs `cd frontend && npx expo install expo-speech` and a
-  NEW native build (a JS-only update cannot add it; an older build shows "Voice is not available" on
-  "Play sample"). Spoken: rider = driver found, driver arriving, trip started, trip finished with the fare,
+  `expo-speech` (text-to-speech on the phone). `expo-speech` is already in `frontend/package.json`; the
+  app needs a NEW native build (a JS-only update cannot add it; an older build shows "Voice is not
+  available" on "Play sample"). Before that build run `cd frontend && npx expo install expo-location
+  expo-notifications` (`expo-doctor` reports them two patch versions behind), then retest background
+  location and push. Spoken: rider = driver found, driver arriving, trip started, trip finished with the fare,
   cancelled / no drivers; driver = new ride request, ride cancelled, over-speed warning (80 km/h, one fixed
   limit, there is no road speed-limit data). English, Tamil, Hindi: Tamil / Hindi are spoken only if the phone
   has that voice installed, otherwise English. It plays while the app is open (not guaranteed when the app is

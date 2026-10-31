@@ -47,7 +47,7 @@ export interface NearbyPublicDriver {
 export class DriversService {
   private readonly defaultRadiusMeters: number;
   // How long an online driver may go without a location ping and still be
-  // found by riders / ride matching (see ./presence.ts; default 15 min).
+  // found by riders / ride matching (see ./presence.ts; default 5 min).
   private readonly presenceMs: number;
   private readonly logger = new Logger(DriversService.name);
 
