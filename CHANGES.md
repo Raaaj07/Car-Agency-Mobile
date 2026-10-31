@@ -5,6 +5,27 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Parked online drivers stay visible (2026-10-30)
+
+Bug: a driver who was online but resting in a parking lot (no new location: phone locked, battery
+saver, no GPS fix in a covered car park) was dropped after 90 s of silence: removed from the map, forced
+offline in the database and never offered rides.
+
+- Backend: a driver who is ONLINE stays visible inside the admin radius, and is offered rides, for the
+  presence window after his last ping: **15 minutes by default** (`DRIVER_PRESENCE_GRACE_SECONDS`,
+  allowed 90-21600; 90 restores the old strict behaviour). `drivers/presence.ts` (new), `GeoService`
+  (last-seen cutoff, stale sweep, meta TTL) and `DriversService.findNearby` (Redis hit filter and PostGIS
+  fallback) use it. Past the window the driver is removed and forced offline as before, so a crashed app
+  is no longer a ghost for more than 15 minutes (before: 90 s). Offline or busy drivers stay hidden;
+  going online still needs a location from the last 2 minutes.
+- App: the driver heartbeat gives up a GPS read after 4 s (`withTimeout`) and, while there is no fix,
+  keeps sending the last known position (only for 30 minutes after the last real fix) instead of going
+  silent (`utils/heartbeat.ts`, `DriverDashboardScreen`).
+- Tests: `presence.spec.ts`, 4 in `geo.service.spec.ts`, 5 in `drivers.service.spec.ts`,
+  `heartbeat.test.ts` (frontend).
+
+---
+
 ## Rides waiting for a driver are matched when a driver comes online (2026-10-30)
 
 Bug: a rider who booked while no driver was online stayed in "Searching" and was never offered to a

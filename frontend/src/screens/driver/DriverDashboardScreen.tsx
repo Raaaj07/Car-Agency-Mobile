@@ -25,6 +25,7 @@ import {
   startDriverBackgroundLocation,
   stopDriverBackgroundLocation,
 } from '../../lib/locationTask';
+import { canSendLastKnown, GPS_FIX_TIMEOUT_MS, withTimeout } from '../../utils/heartbeat';
 
 // Dashboard stack screens + the driver tabs it jumps between + the shared
 // root modals (RideAnnouncementsSettings) — fully typed, no `any`.
@@ -236,15 +237,29 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
   const startHeartbeat = useCallback(() => {
     if (heartbeatRef.current) return;
     heartbeatRef.current = setInterval(async () => {
+      let coords: LatLng | null = null;
       try {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+        // A GPS read that never returns (covered car park, tunnel) must not
+        // block the heartbeat, hence the timeout.
+        const loc = await withTimeout(
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+          GPS_FIX_TIMEOUT_MS,
+        );
+        coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
         setDriverCoords(coords);
         latestCoords.current = coords;
         latestCoordsAt.current = Date.now();
-        driversApi.updateLocation(coords.lat, coords.lng).catch(() => {});
       } catch {
-        // Ignored — GPS may be momentarily unavailable
+        // No GPS fix right now (a driver resting in a covered parking lot, a
+        // tunnel, indoors). Keep him "seen" at his last known position instead of
+        // going silent, so riders can still find him while he is parked. Only
+        // for 30 minutes after the last real fix (utils/heartbeat.ts).
+        if (latestCoords.current && canSendLastKnown(latestCoordsAt.current, Date.now())) {
+          coords = latestCoords.current;
+        }
+      }
+      if (coords) {
+        driversApi.updateLocation(coords.lat, coords.lng).catch(() => {});
       }
     }, LOCATION_HEARTBEAT_MS);
   }, []);
@@ -306,8 +321,9 @@ export const DriverDashboardScreen: React.FC<Props> = ({ onRideRequest }) => {
 
   // ── Background permission check ───────────────────────────────────────────
   // Without "allow all the time" the OS stops our location the moment the app
-  // is backgrounded; the backend then drops the driver after 90 s and riders
-  // see "no drivers around". Tell the driver instead of failing silently.
+  // is backgrounded; the backend then drops the driver once he has been silent
+  // for its presence window (15 min by default) and riders see "no drivers
+  // around". Tell the driver instead of failing silently.
   const refreshBgPermission = useCallback(async () => {
     setBgPermission(await hasBackgroundLocationPermission());
   }, []);
