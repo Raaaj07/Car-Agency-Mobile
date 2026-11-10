@@ -98,12 +98,16 @@ export const AdminRideDetailScreen: React.FC<Props> = ({ navigation, route }) =>
     };
   }, [rideId]);
 
-  const reload = async () => {
+  // Returns false when the ride could not be reloaded (the screen then still
+  // shows the previous state, so the caller has to say so).
+  const reload = async (): Promise<boolean> => {
     try {
       setDetail(await adminApi.rideDetail(rideId));
       setError(null);
+      return true;
     } catch (err) {
       setError(getApiError(err));
+      return false;
     }
   };
 
@@ -136,8 +140,18 @@ export const AdminRideDetailScreen: React.FC<Props> = ({ navigation, route }) =>
       } else {
         await adminApi.resolvePayment(rideId, kind, value);
       }
-      await reload();
+      const reloaded = await reload();
       useAdminStore.getState().notifyDataChanged();
+      if (!reloaded) {
+        // The action itself worked; only the refresh failed. Without this the
+        // screen would silently keep showing the old status.
+        Alert.alert(
+          'Saved, but not refreshed',
+          kind === 'cancel'
+            ? 'The ride was cancelled, but this screen could not refresh. Go back and open the ride again to see it.'
+            : 'The payment was updated, but this screen could not refresh. Go back and open the ride again to see it.',
+        );
+      }
     } catch (err) {
       Alert.alert(
         kind === 'cancel' ? 'Cancel failed' : 'Payment update failed',
@@ -166,6 +180,8 @@ export const AdminRideDetailScreen: React.FC<Props> = ({ navigation, route }) =>
   const fare = detail.fareBreakdown;
   const canCancel = detail.status !== 'completed' && detail.status !== 'cancelled';
   const canResolve = detail.status === 'completed' && detail.paymentStatus !== 'paid';
+  // Already flagged: marking it disputed again would change nothing.
+  const canMarkDisputed = canResolve && detail.paymentStatus !== 'disputed';
   const markedBy = detail.paymentMarkedBy ? MARKED_BY_LABEL[detail.paymentMarkedBy] : null;
 
   const timeline: { label: string; at: string | null }[] = [
@@ -337,15 +353,17 @@ export const AdminRideDetailScreen: React.FC<Props> = ({ navigation, route }) =>
                 disabled={busy !== null && busy !== 'paid'}
                 onPress={() => openModal('paid')}
               />
-              <Button
-                title="Mark disputed"
-                variant="outline"
-                fullWidth={false}
-                style={styles.actionBtn}
-                loading={busy === 'disputed'}
-                disabled={busy !== null && busy !== 'disputed'}
-                onPress={() => openModal('disputed')}
-              />
+              {canMarkDisputed ? (
+                <Button
+                  title="Mark disputed"
+                  variant="outline"
+                  fullWidth={false}
+                  style={styles.actionBtn}
+                  loading={busy === 'disputed'}
+                  disabled={busy !== null && busy !== 'disputed'}
+                  onPress={() => openModal('disputed')}
+                />
+              ) : null}
             </>
           ) : null}
         </ActionBar>

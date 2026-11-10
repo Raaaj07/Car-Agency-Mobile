@@ -30,11 +30,19 @@ export interface NearbyDriverHit {
   lng: number;
 }
 
+// Every vehicle type a driver can have (one Redis geo-set each).
+const ALL_VEHICLE_TYPES: VehicleType[] = ['auto', 'mini', 'sedan', 'suv'];
+// Nearest drivers kept PER vehicle type when searching all types at once.
+const PER_TYPE_LIMIT = 5;
+
 @Injectable()
 export class GeoService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(GeoService.name);
   private cleanupTimer: NodeJS.Timeout | null = null;
   private staleSweepInFlight = false;
+  // GEOSEARCH failures are logged at most once per 30 s (a Redis outage would
+  // otherwise log on every rider poll, four times per all-types search).
+  private lastSearchFailLogAt = 0;
   // How long a driver may stay silent and still count as present (./presence.ts).
   private readonly freshMs: number;
 
@@ -84,10 +92,14 @@ export class GeoService implements OnModuleInit, OnApplicationShutdown {
 
   /**
    * GEOSEARCH within radiusMeters of (lat, lng), sorted nearest-first.
-   * Members whose last-seen heartbeat is older than 90s are dropped (ghost
-   * filter) — a crashed driver stays invisible even if the cleanup job
-   * hasn't run yet. Returns [] if the key doesn't exist yet or ioredis errors
-   * (e.g. Redis version < 6.2 without GEOSEARCH) so callers can fall back.
+   * Members whose last-seen heartbeat is older than the presence window are
+   * dropped (ghost filter) — a crashed driver stays invisible even if the
+   * cleanup job hasn't run yet.
+   *
+   * Returns `[]` when Redis answered and nobody is there, and `null` when Redis
+   * could NOT answer (down, timeout, Redis < 6.2 without GEOSEARCH). Callers use
+   * the difference: only `null` justifies the slower PostGIS fallback, otherwise
+   * every poll with nobody online would hit the database.
    */
   async searchNearby(
     lat: number,
@@ -95,7 +107,7 @@ export class GeoService implements OnModuleInit, OnApplicationShutdown {
     radiusMeters: number,
     vehicleType?: VehicleType,
     limit = 20,
-  ): Promise<NearbyDriverHit[]> {
+  ): Promise<NearbyDriverHit[] | null> {
     const key = vehicleType ? this.geoKey(vehicleType) : ALL_DRIVERS_GEO_KEY;
     try {
       const raw = (await this.redis.call(
@@ -127,9 +139,33 @@ export class GeoService implements OnModuleInit, OnApplicationShutdown {
           lat: parseFloat(coord[1]),
         }));
     } catch (err) {
-      this.logger.warn(`GEOSEARCH failed, falling back to PostGIS: ${(err as Error).message}`);
-      return [];
+      const now = Date.now();
+      if (now - this.lastSearchFailLogAt >= 30_000) {
+        this.lastSearchFailLogAt = now;
+        this.logger.warn(`GEOSEARCH failed, falling back to PostGIS: ${(err as Error).message}`);
+      }
+      return null;
     }
+  }
+
+  /**
+   * The nearest few drivers of EACH vehicle type (not the nearest 20 overall).
+   * A rider's "Choose a ride" list needs an arrival time per type: with one
+   * search over all types, twenty nearby drivers of one type used to push every
+   * other type out of the result and read "No drivers nearby right now".
+   * Nearest first; `null` when any of the lookups could not reach Redis.
+   */
+  async searchNearbyPerType(
+    lat: number,
+    lng: number,
+    radiusMeters: number,
+    perType = PER_TYPE_LIMIT,
+  ): Promise<NearbyDriverHit[] | null> {
+    const parts = await Promise.all(
+      ALL_VEHICLE_TYPES.map((type) => this.searchNearby(lat, lng, radiusMeters, type, perType)),
+    );
+    if (parts.some((part) => part === null)) return null;
+    return (parts as NearbyDriverHit[][]).flat().sort((a, b) => a.distanceMeters - b.distanceMeters);
   }
 
   /** D-3: start the ghost-driver sweep once Redis wiring is ready. */

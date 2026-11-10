@@ -88,6 +88,9 @@ export const AdminDriverDetailScreen: React.FC<Props> = ({ navigation, route }) 
   const [docLoading, setDocLoading] = useState(false);
   const [docError, setDocError] = useState<string | null>(null);
   const expiryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Which document the viewer is showing right now (null = closed). A silent
+  // refresh that finishes after the viewer was closed must not touch anything.
+  const openDocKind = useRef<DocKind | null>(null);
 
   // Inline promise chain — calling a setState-bearing function directly from
   // an effect trips react-hooks/set-state-in-effect (A-9).
@@ -148,14 +151,22 @@ export const AdminDriverDetailScreen: React.FC<Props> = ({ navigation, route }) 
     }
   };
 
-  const openDoc = async (kind: DocKind, label: string) => {
-    setDoc({ kind, label });
-    setDocLoading(true);
-    setDocError(null);
-    setDocFile(null);
+  // `silent`: the background refresh of an expiring signed link. It swaps the
+  // new link in without blanking the viewer or showing the spinner, so a
+  // document the admin is reading does not flash every ~9 minutes.
+  const openDoc = async (kind: DocKind, label: string, silent = false) => {
+    if (!silent) {
+      openDocKind.current = kind;
+      setDoc({ kind, label });
+      setDocLoading(true);
+      setDocError(null);
+      setDocFile(null);
+    }
     clearExpiryTimer();
     try {
       const file = await adminApi.file(driverId, kind);
+      // Closed (or another document opened) while the request was running.
+      if (openDocKind.current !== kind) return;
       setDocFile(file);
       // Signed URLs live ~10 min — refresh silently just before expiry so an
       // admin reading documents never hits a dead link (spec §3.2).
@@ -164,18 +175,20 @@ export const AdminDriverDetailScreen: React.FC<Props> = ({ navigation, route }) 
         if (ms > 0 && ms < 10 * 60_000) {
           expiryTimer.current = setTimeout(() => {
             expiryTimer.current = null;
-            void openDoc(kind, label);
+            void openDoc(kind, label, true);
           }, ms);
         }
       }
     } catch (err) {
-      setDocError(getApiError(err));
+      // A failed silent refresh keeps the document that is already on screen.
+      if (!silent) setDocError(getApiError(err));
     } finally {
-      setDocLoading(false);
+      if (!silent) setDocLoading(false);
     }
   };
 
   const closeDoc = () => {
+    openDocKind.current = null;
     clearExpiryTimer();
     setDoc(null);
     setDocFile(null);

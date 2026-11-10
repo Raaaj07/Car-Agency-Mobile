@@ -77,6 +77,9 @@ export interface ActiveRide {
   // Needed so FindingDriverScreen can hand the real cancellation reason to
   // RideCancelledScreen when the poll (not the modal) detects the cancel.
   cancellationReason?: string | null;
+  // Who ended the ride ('rider' | 'driver' | 'admin' | 'system'); lets the voice
+  // announcements stay silent for a cancel the person just made themselves.
+  cancelledBy?: string | null;
   // Safe driver info (name/vehicle) when a driver is assigned.
   driver?: RideDriverInfo | null;
   // Tip submitted with the rider's review (part of the collectable amount).
@@ -120,6 +123,12 @@ interface RideState {
   setDropoff: (location: string, address?: string, coords?: LatLng) => void;
   setSelectedVehicle: (vehicle: VehicleOption) => void;
   applyPromoCode: (code: string) => void;
+  /**
+   * Sets (or, with null, clears) the promo the server has already validated
+   * (POST /promos/validate). The rider's real code entry on the ride summary
+   * uses this; the discount amount always comes from the server.
+   */
+  setPromo: (code: string | null, discountAmount: number) => void;
   setCancellationReason: (reason: string) => void;
   setRating: (rating: number) => void;
   toggleCompliment: (compliment: string) => void;
@@ -193,6 +202,9 @@ export const useRideStore = create<RideState>((set, get) => ({
     }),
 
   applyPromoCode: (code) => {
+    // @deprecated Not used by the ride summary any more: it accepted only the
+    // hard-coded VAZHI20, so promo codes created in the admin console could not
+    // be applied. Use setPromo() with the amount the server validated.
     const normalized = code.trim().toUpperCase();
     // Only known codes apply; unknown codes are rejected (no silent discount).
     // PR-1: must match backend PROMOS_CONFIG (discountFor) — Rs 20 for VAZHI20.
@@ -204,6 +216,13 @@ export const useRideStore = create<RideState>((set, get) => ({
       set({ promoCode: null, discountAmount: 0 });
     }
   },
+
+  setPromo: (code, discountAmount) =>
+    set(() =>
+      code
+        ? { promoCode: code, discountAmount: Math.max(0, Math.round(discountAmount)) }
+        : { promoCode: null, discountAmount: 0 },
+    ),
 
   setCancellationReason: (reason) => set({ cancellationReason: reason }),
 

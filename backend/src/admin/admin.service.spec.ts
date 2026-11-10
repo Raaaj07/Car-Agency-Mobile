@@ -781,3 +781,44 @@ describe('AdminService users list + rides CSV export (Task 9)', () => {
     });
   });
 });
+
+// The Overview "Online drivers" card opens the driver list filtered to the drivers
+// that are online right now, so the number on the card matches the list.
+describe('AdminService.listApplications online filter', () => {
+  const build = () => {
+    const qb: Record<string, jest.Mock> = {};
+    for (const name of ['leftJoinAndSelect', 'andWhere', 'addSelect', 'orderBy', 'addOrderBy', 'skip', 'take']) {
+      qb[name] = jest.fn(() => qb);
+    }
+    qb.getManyAndCount = jest.fn().mockResolvedValue([[], 0]);
+    const drivers = { createQueryBuilder: jest.fn(() => qb) };
+    const service = new AdminService(
+      {} as unknown as Repository<UserEntity>,
+      drivers as unknown as Repository<DriverEntity>,
+      {} as unknown as Repository<RideEntity>,
+      {} as unknown as Repository<PaymentEntity>,
+      {} as unknown as GeoService,
+      {} as unknown as StorageService,
+      {} as unknown as RidesGateway,
+      { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService,
+      {} as unknown as AdminAuditService,
+      {} as unknown as RidesService,
+      {} as unknown as RouteDistanceService,
+    );
+    return { service, qb };
+  };
+
+  it('adds the online condition only when asked', async () => {
+    const { service, qb } = build();
+    await service.listApplications('approved', 1, 20, { online: true });
+    expect(qb.andWhere).toHaveBeenCalledWith('d.status = :status', { status: 'approved' });
+    expect(qb.andWhere).toHaveBeenCalledWith('d."isOnline" = true');
+  });
+
+  it('does not filter on online by default or when online is false', async () => {
+    const { service, qb } = build();
+    await service.listApplications('approved', 1, 20);
+    await service.listApplications('approved', 1, 20, { online: false });
+    expect(qb.andWhere).not.toHaveBeenCalledWith('d."isOnline" = true');
+  });
+});

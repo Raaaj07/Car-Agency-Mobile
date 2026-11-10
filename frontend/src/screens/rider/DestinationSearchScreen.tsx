@@ -8,6 +8,7 @@ import { useMergedRecents, usePlacesStore } from '../../store/placesStore';
 import { GeocodeResult } from '../../api/mapbox';
 import { useAddressSearch } from '../../hooks/useAddressSearch';
 import { PlaceSearchRow } from '../../components/home/PlaceSearchRow';
+import { conflictingLabel } from '../../utils/savedPlaces';
 
 export interface DestinationSelection {
   title: string;
@@ -107,13 +108,20 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
     resetSearch();
   };
 
-  // Saves the chosen place as Home / Work. `setHomeWork` swallows request errors, so
-  // success is confirmed by looking for the place in the saved list afterwards.
+  // Saves the chosen place as Home / Work. `setHomeWork` returns true only when the
+  // server stored it, so a failure is shown instead of looking as if it worked.
   const saveAsHomeWork = async (place: { title: string; subtitle: string; lat: number; lng: number }) => {
     const label = savingLabel;
     if (!label || savingBusy) return;
+    // The server keeps one row per place: saving it here would take it away from
+    // the other shortcut (Work set to Home's place would silently lose Home).
+    const clash = conflictingLabel(savedPlaces, label, place);
+    if (clash) {
+      setSavedNote({ text: `That place is already your ${labelName(clash)}. Pick a different place.`, ok: false });
+      return;
+    }
     setSavingBusy(true);
-    await setHomeWork(label, {
+    const stored = await setHomeWork(label, {
       id: `${label}-${place.lat.toFixed(4)},${place.lng.toFixed(4)}`,
       title: place.title,
       subtitle: place.subtitle,
@@ -121,9 +129,6 @@ export const DestinationSearchScreen: React.FC<Props> = ({ onBack, onSelectDesti
       lng: place.lng,
       imageUrl: null,
     });
-    const stored = usePlacesStore
-      .getState()
-      .saved.some((s) => s.label === label && Math.abs(s.lat - place.lat) < 1e-4 && Math.abs(s.lng - place.lng) < 1e-4);
     setSavingBusy(false);
     if (stored) {
       setSavingLabel(null);

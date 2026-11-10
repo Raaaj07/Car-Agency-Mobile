@@ -213,6 +213,60 @@ describe('RidesService phase-1 fixes', () => {
       expect(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')).toBeNull(); // claimed away
     });
 
+    // The window runs from BOOKING: a ride that was already offered to (and turned
+    // down by) drivers gets only what is left of it, not a fresh 90 s every time.
+    describe('the search window is measured from booking', () => {
+      const armedInMs = async () => Number(await fake.zscore(RIDE_TIMERS_KEY, 'search:r1')) - Date.now();
+
+      it('a freshly booked ride gets the full window', async () => {
+        const ride = requestedRide({ createdAt: new Date() });
+        drivers.findNearby.mockResolvedValue([]);
+        rides.findOne.mockResolvedValue(ride);
+
+        await internals.matchNearestDriver(ride as unknown as RideEntity);
+
+        expect(await armedInMs()).toBeGreaterThan(88_000);
+        expect(await armedInMs()).toBeLessThanOrEqual(90_000);
+      });
+
+      it('a ride booked 60 s ago (offers declined meanwhile) gets only the remaining ~30 s', async () => {
+        const ride = requestedRide({ createdAt: new Date(Date.now() - 60_000) });
+        drivers.findNearby.mockResolvedValue([]);
+        rides.findOne.mockResolvedValue(ride);
+
+        await internals.matchNearestDriver(ride as unknown as RideEntity);
+
+        expect(await armedInMs()).toBeGreaterThan(28_000);
+        expect(await armedInMs()).toBeLessThanOrEqual(30_000);
+      });
+
+      it('a window that has already elapsed fires on the next sweep, not 90 s later', async () => {
+        const ride = requestedRide({ createdAt: new Date(Date.now() - 200_000) });
+        drivers.findNearby.mockResolvedValue([]);
+        rides.findOne.mockResolvedValue(ride);
+
+        await internals.matchNearestDriver(ride as unknown as RideEntity);
+
+        expect(await armedInMs()).toBeLessThanOrEqual(1_000);
+
+        queryRunner.manager.findOne.mockResolvedValue(ride);
+        applyLockUpdates(ride);
+        expect(await internals.sweepDueTimers(Date.now() + 1_500)).toBe(1);
+        expect(ride.status).toBe('cancelled');
+        expect(ride.cancellationReason).toBe('no_drivers_available');
+      });
+
+      it('without a usable createdAt it falls back to the full window', async () => {
+        const ride = requestedRide({ createdAt: undefined });
+        drivers.findNearby.mockResolvedValue([]);
+        rides.findOne.mockResolvedValue(ride);
+
+        await internals.matchNearestDriver(ride as unknown as RideEntity);
+
+        expect(await armedInMs()).toBeGreaterThan(88_000);
+      });
+    });
+
     it('does not cancel the search once a driver has been offered', async () => {
       const ride = requestedRide();
       drivers.findNearby.mockResolvedValue([]);

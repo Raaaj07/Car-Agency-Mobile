@@ -62,7 +62,7 @@ interface PlacesState {
    */
   fetchLocationPlaces: (coords: { lat: number; lng: number }) => Promise<void>;
   toggleSaved: (place: PlaceItem) => Promise<void>;
-  setHomeWork: (label: 'home' | 'work', place: PlaceItem) => Promise<void>;
+  setHomeWork: (label: 'home' | 'work', place: PlaceItem) => Promise<boolean>;
   /** Remember a destination the rider picked (bumps to the top, deduped by geo-key). */
   recordSearch: (place: PlaceItem) => void;
   /** Drop every cached list — called on logout so accounts never share places. */
@@ -260,6 +260,8 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
     }
   },
 
+  // Saves `place` as the rider's Home / Work. Returns true when the server stored
+  // it (callers show a failure instead of pretending it worked).
   setHomeWork: async (label, place) => {
     try {
       const created = await placesApi.upsertSaved({
@@ -270,12 +272,15 @@ export const usePlacesStore = create<PlacesState>((set, get) => ({
         label,
       });
       set((state) => {
-        // Remove any previous entry with this label
-        const filtered = state.saved.filter((s) => s.label !== label);
+        // Drop the previous entry with this label AND any older entry for the same
+        // place (the server keeps one row per place, so a hearted place that is now
+        // Home would otherwise show up twice).
+        const filtered = state.saved.filter((s) => s.label !== label && s.id !== created.id);
         return { saved: [created, ...filtered] };
       });
+      return true;
     } catch {
-      // Silently fail; the user can retry
+      return false;
     }
   },
 

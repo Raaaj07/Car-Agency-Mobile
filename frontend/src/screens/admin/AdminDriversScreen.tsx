@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { AdminDriversStackParamList, AdminDriversSegment } from '../../navigation/types';
 import { AdminHeader } from '../../components/admin/AdminHeader';
@@ -15,7 +15,7 @@ import { adminApi, ApplicationCounts, ApplicationSummary } from '../../api/admin
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { usePaginatedList } from '../../hooks/usePaginatedList';
 import { useAdminStore } from '../../store/adminStore';
-import { colors } from '../../theme/theme';
+import { colors, radii, typography } from '../../theme/theme';
 
 type Props = NativeStackScreenProps<AdminDriversStackParamList, 'AdminDrivers'>;
 
@@ -44,6 +44,9 @@ export const AdminDriversScreen: React.FC<Props> = ({ navigation, route }) => {
   const params = route.params;
   const [appliedParams, setAppliedParams] = useState(params);
   const [segment, setSegment] = useState<AdminDriversSegment>(params?.segment ?? 'pending');
+  // "Online now": only the active drivers who are online right now (the Overview
+  // "Online drivers" card opens the list this way, so its number matches the list).
+  const [onlineOnly, setOnlineOnly] = useState<boolean>(!!params?.online);
   const [query, setQuery] = useState('');
   const [counts, setCounts] = useState<ApplicationCounts | null>(null);
   const debouncedQuery = useDebouncedValue(query, 300);
@@ -51,12 +54,16 @@ export const AdminDriversScreen: React.FC<Props> = ({ navigation, route }) => {
   if (appliedParams !== params) {
     setAppliedParams(params);
     if (params?.segment) setSegment(params.segment);
+    setOnlineOnly(!!params?.online);
   }
+
+  const onlineFilter = segment === 'approved' && onlineOnly;
 
   const list = usePaginatedList<ApplicationSummary>(
     async (page) => {
       const res = await adminApi.list({
         status: segment,
+        online: onlineFilter || undefined,
         q: debouncedQuery.trim() || undefined,
         // Pending queue: oldest waiter first (A-10); everything else newest.
         sort: segment === 'pending' ? 'oldest' : 'newest',
@@ -65,7 +72,7 @@ export const AdminDriversScreen: React.FC<Props> = ({ navigation, route }) => {
       });
       return { items: res.items, total: res.total };
     },
-    [segment, debouncedQuery, newSeq, dataSeq],
+    [segment, onlineFilter, debouncedQuery, newSeq, dataSeq],
   );
 
   // Counts feed the segmented badges AND the tab badge; refetch when a new
@@ -108,6 +115,11 @@ export const AdminDriversScreen: React.FC<Props> = ({ navigation, route }) => {
         />
       );
     }
+    if (onlineFilter) {
+      return (
+        <EmptyState title="No drivers online" message="Drivers who are online right now appear here." />
+      );
+    }
     return <EmptyState title={EMPTY_COPY[segment].title} message={EMPTY_COPY[segment].message} />;
   };
 
@@ -140,7 +152,11 @@ export const AdminDriversScreen: React.FC<Props> = ({ navigation, route }) => {
             <SegmentedControl
               options={segmentOptions}
               value={segment}
-              onChange={(key) => setSegment(key as AdminDriversSegment)}
+              onChange={(key) => {
+                setSegment(key as AdminDriversSegment);
+                // "Online now" only exists on the Active list.
+                if (key !== 'approved') setOnlineOnly(false);
+              }}
             />
             <SearchBar
               value={query}
@@ -148,6 +164,18 @@ export const AdminDriversScreen: React.FC<Props> = ({ navigation, route }) => {
               placeholder="Search name, phone or plate"
               style={styles.search}
             />
+            {segment === 'approved' ? (
+              <TouchableOpacity
+                style={[styles.chip, onlineOnly && styles.chipActive]}
+                onPress={() => setOnlineOnly((v) => !v)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: onlineOnly }}
+                accessibilityLabel="Show only drivers who are online now"
+              >
+                <View style={[styles.onlineDot, onlineOnly && styles.onlineDotActive]} />
+                <Text style={[styles.chipText, onlineOnly && styles.chipTextActive]}>Online now</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         }
         ListEmptyComponent={renderEmpty()}
@@ -180,6 +208,39 @@ const styles = StyleSheet.create({
   },
   search: {
     marginTop: 2,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: '#FFFFFF',
+  },
+  chipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  chipText: {
+    ...typography.bodyBold,
+    fontSize: 13,
+    color: colors.textPrimary,
+  },
+  chipTextActive: {
+    color: '#FFFFFF',
+  },
+  onlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.textMuted,
+  },
+  onlineDotActive: {
+    backgroundColor: colors.success,
   },
   more: {
     marginVertical: 14,

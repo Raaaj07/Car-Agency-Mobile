@@ -70,6 +70,8 @@ export const WAITING_RIDES_SWEEP_MS = 3_000;
 // Upper bound of waiting rides handled per tick (they are few: each one ends
 // within the search window).
 const WAITING_RIDES_PER_TICK = 25;
+// A search window that has already elapsed still fires on the next timer sweep.
+const SEARCH_WINDOW_MIN_REMAINING_MS = 1_000;
 // A finished trip the rider never rated is offered back on the review screen
 // (after the app was killed) for this long after completion.
 export const UNREVIEWED_RESUME_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -440,6 +442,21 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       return this.matchNearestDriver(locked, false, manager, { retry: true });
     });
     return result?.status === 'offered';
+  }
+
+  /**
+   * How much of the search window is left for this ride, in ms. The window is
+   * measured from the moment the ride was booked (`createdAt`): after drivers
+   * were offered the ride and declined or let their offer expire, the rider has
+   * already waited, so the ride gets only what remains instead of a fresh 90 s
+   * each time. At least 1 s, so an already-elapsed window fires on the next timer
+   * sweep; without a usable `createdAt` it falls back to the full window.
+   */
+  private searchWindowRemainingMs(ride: RideEntity, now = Date.now()): number {
+    const full = this.searchTimeoutSeconds * 1000;
+    const bookedAt = ride.createdAt ? new Date(ride.createdAt).getTime() : Number.NaN;
+    if (!Number.isFinite(bookedAt)) return full;
+    return Math.min(full, Math.max(bookedAt + full - now, SEARCH_WINDOW_MIN_REMAINING_MS));
   }
 
   /** Logs a waiting-rides failure at most once per TIMER_SWEEP_FAIL_LOG_EVERY_MS. */
@@ -1106,9 +1123,11 @@ export class RidesService implements OnApplicationBootstrap, OnModuleDestroy {
       } else {
         // R-1: nobody is nearby — arm (or re-arm) the search window so the
         // rider isn't locked into `requested` forever. A background retry keeps
-        // the window that is already running.
+        // the window that is already running. The window runs from the moment the
+        // ride was BOOKED, so a ride that has already been offered to (and turned
+        // down by) several drivers does not get a fresh full window each time.
         if (!opts.retry) {
-          await this.scheduleSearchTimeout(ride.id, this.searchTimeoutSeconds * 1000);
+          await this.scheduleSearchTimeout(ride.id, this.searchWindowRemainingMs(ride));
         }
       }
       return { status: 'no_drivers', candidates: 0 };

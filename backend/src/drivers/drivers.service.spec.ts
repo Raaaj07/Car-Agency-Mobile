@@ -108,7 +108,7 @@ describe('DriversService.setStatus (R-3)', () => {
     const hit = { driverId: 'd1', distanceMeters: 800, lat: 11.6643, lng: 78.146 };
 
     it('returns position + eta only — no ids, names, models or ratings', async () => {
-      geo.searchNearby = jest.fn().mockResolvedValue([hit]);
+      geo.searchNearbyPerType = jest.fn().mockResolvedValue([hit]);
       drivers.find = jest.fn().mockResolvedValue([
         driverFixture({
           isOnline: true,
@@ -129,7 +129,7 @@ describe('DriversService.setStatus (R-3)', () => {
     });
 
     it('redacts the drivers array in the grouped response but keeps the counts', async () => {
-      geo.searchNearby = jest.fn().mockResolvedValue([hit]);
+      geo.searchNearbyPerType = jest.fn().mockResolvedValue([hit]);
       drivers.find = jest.fn().mockResolvedValue([
         driverFixture({ isOnline: true, isAvailable: true, user: { name: 'Arun' } }),
       ]);
@@ -237,6 +237,76 @@ describe('DriversService.setStatus (R-3)', () => {
     });
   });
 
+  // The PostGIS query is only the fallback for "Redis could not answer". Riders
+  // and waiting rides ask for nearby drivers every few seconds, so a healthy Redis
+  // that says "nobody here" must not turn each of those into a database query.
+  describe('findNearby: PostGIS only when Redis is unavailable', () => {
+    const hit = { driverId: 'd1', distanceMeters: 600, lat: 11.6643, lng: 78.146 };
+    let createQueryBuilder: jest.Mock;
+
+    beforeEach(() => {
+      createQueryBuilder = jest.fn(() => {
+        const qb: any = {
+          leftJoinAndSelect: () => qb,
+          addSelect: () => qb,
+          where: () => qb,
+          andWhere: () => qb,
+          setParameters: () => qb,
+          orderBy: () => qb,
+          limit: () => qb,
+          getRawAndEntities: async () => ({ entities: [], raw: [] }),
+        };
+        return qb;
+      });
+      (drivers as any).createQueryBuilder = createQueryBuilder;
+      drivers.find = jest.fn().mockResolvedValue([]);
+    });
+
+    it('does NOT query PostGIS when Redis answers that nobody is online', async () => {
+      geo.searchNearby = jest.fn().mockResolvedValue([]);
+      geo.searchNearbyPerType = jest.fn().mockResolvedValue([]);
+
+      expect(await service.findNearby(11.6643, 78.146, undefined, 'auto')).toEqual([]);
+      expect(await service.findNearby(11.6643, 78.146)).toEqual([]);
+
+      expect(createQueryBuilder).not.toHaveBeenCalled();
+      expect(drivers.find).not.toHaveBeenCalled();
+    });
+
+    it('does NOT query PostGIS when Redis finds drivers that are busy or offline in the database', async () => {
+      geo.searchNearby = jest.fn().mockResolvedValue([hit]);
+      drivers.find = jest.fn().mockResolvedValue([
+        driverFixture({ isOnline: true, isAvailable: false, locationUpdatedAt: new Date(), user: { name: 'A' } }),
+      ]);
+
+      expect(await service.findNearby(11.6643, 78.146, undefined, 'auto')).toEqual([]);
+
+      expect(createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('falls back to PostGIS when Redis could not answer (null)', async () => {
+      geo.searchNearby = jest.fn().mockResolvedValue(null);
+      geo.searchNearbyPerType = jest.fn().mockResolvedValue(null);
+
+      await service.findNearby(11.6643, 78.146, undefined, 'auto');
+      await service.findNearby(11.6643, 78.146);
+
+      expect(createQueryBuilder).toHaveBeenCalledTimes(2);
+    });
+
+    it('searches all vehicle types per type, one type with the single-type search', async () => {
+      geo.searchNearby = jest.fn().mockResolvedValue([]);
+      geo.searchNearbyPerType = jest.fn().mockResolvedValue([]);
+
+      await service.findNearby(11.6643, 78.146);
+      expect(geo.searchNearbyPerType).toHaveBeenCalledTimes(1);
+      expect(geo.searchNearby).not.toHaveBeenCalled();
+
+      await service.findNearby(11.6643, 78.146, undefined, 'suv');
+      expect(geo.searchNearby).toHaveBeenCalledWith(11.6643, 78.146, expect.any(Number), 'suv');
+    });
+  });
+
   // Admin-configured radius: the rider's nearby view and matching share it,
   // and a client-supplied radius can never widen what a rider sees.
   describe('findNearby radius (admin setting)', () => {
@@ -254,6 +324,7 @@ describe('DriversService.setStatus (R-3)', () => {
 
     beforeEach(() => {
       geo.searchNearby = jest.fn().mockResolvedValue([]);
+      geo.searchNearbyPerType = jest.fn().mockResolvedValue([]);
       drivers.find = jest.fn().mockResolvedValue([]);
       (drivers as any).createQueryBuilder = jest.fn(() => {
         const qb: any = {
@@ -273,13 +344,21 @@ describe('DriversService.setStatus (R-3)', () => {
     it('rider view uses the admin radius', async () => {
       const svc = withSettings(8_000);
       await svc.findNearbyPublic(11.66, 78.14);
-      expect(geo.searchNearby).toHaveBeenCalledWith(11.66, 78.14, 8_000, undefined);
+      // All vehicle types: the nearest few of EACH type, within the admin radius.
+      expect(geo.searchNearbyPerType).toHaveBeenCalledWith(11.66, 78.14, 8_000);
     });
 
     it('ignores a larger radius requested by the client', async () => {
       const svc = withSettings(8_000);
       await svc.findNearbyPublic(11.66, 78.14, 50_000);
-      expect(geo.searchNearby).toHaveBeenCalledWith(11.66, 78.14, 8_000, undefined);
+      expect(geo.searchNearbyPerType).toHaveBeenCalledWith(11.66, 78.14, 8_000);
+    });
+
+    it('a rider view of one vehicle type searches only that type', async () => {
+      const svc = withSettings(8_000);
+      await svc.findNearbyPublic(11.66, 78.14, undefined, 'sedan');
+      expect(geo.searchNearby).toHaveBeenCalledWith(11.66, 78.14, 8_000, 'sedan');
+      expect(geo.searchNearbyPerType).not.toHaveBeenCalled();
     });
 
     it('matching (internal findNearby) defaults to the admin radius too', async () => {

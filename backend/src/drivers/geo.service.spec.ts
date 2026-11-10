@@ -204,3 +204,75 @@ describe('GeoService presence grace window (parked driver)', () => {
     expect(await fake.ttl('drivers:meta:drv-1')).toBe(300);
   });
 });
+
+// searchNearby tells "Redis answered: nobody" ([]) apart from "Redis could not
+// answer" (null), so callers only fall back to PostGIS in the second case, and
+// searchNearbyPerType gives every vehicle type its own nearest drivers.
+describe('GeoService.searchNearby / searchNearbyPerType', () => {
+  const row = (id: string, meters: number): [string, string, [string, string]] => [id, String(meters), ['77.6', '12.9']];
+
+  const build = (callImpl: (cmd: string, key: string) => unknown, freshIds: string[] = []) => {
+    const redis = {
+      call: jest.fn(async (cmd: string, key: string) => callImpl(cmd, key)),
+      zrangebyscore: jest.fn().mockResolvedValue(freshIds),
+    };
+    const geo = new GeoService(
+      redis as unknown as Redis,
+      { update: jest.fn() } as unknown as Repository<DriverEntity>,
+    );
+    return { geo, redis };
+  };
+
+  it('returns [] when Redis answers and nobody is there', async () => {
+    const { geo } = build(() => []);
+    expect(await geo.searchNearby(12.9, 77.6, 5000, 'auto')).toEqual([]);
+  });
+
+  it('returns null (not []) when Redis cannot answer, so the caller knows to fall back', async () => {
+    const { geo } = build(() => {
+      throw new Error('ECONNRESET');
+    });
+    expect(await geo.searchNearby(12.9, 77.6, 5000, 'auto')).toBeNull();
+  });
+
+  it('per type: merges the nearest drivers of every vehicle type, nearest first', async () => {
+    const { geo, redis } = build(
+      (_cmd, key) => {
+        if (key === 'drivers:geo:auto') return [row('a1', 900), row('a2', 1200)];
+        if (key === 'drivers:geo:sedan') return [row('s1', 300)];
+        return [];
+      },
+      ['a1', 'a2', 's1'],
+    );
+
+    const hits = await geo.searchNearbyPerType(12.9, 77.6, 5000);
+
+    expect(hits?.map((h) => h.driverId)).toEqual(['s1', 'a1', 'a2']);
+    // One lookup per vehicle type, each capped to the nearest few of that type.
+    const keys = redis.call.mock.calls.map((c) => c[1] as string).sort();
+    expect(keys).toEqual(['drivers:geo:auto', 'drivers:geo:mini', 'drivers:geo:sedan', 'drivers:geo:suv']);
+  });
+
+  it('per type: asks Redis for only the nearest few of each type, so one busy type cannot crowd out the others', async () => {
+    const { geo, redis } = build(
+      (_cmd, key) => (key === 'drivers:geo:suv' ? [row('far-suv', 4000)] : []),
+      ['far-suv'],
+    );
+
+    const hits = (await geo.searchNearbyPerType(12.9, 77.6, 5000)) ?? [];
+
+    expect(hits.map((h) => h.driverId)).toEqual(['far-suv']);
+    // COUNT 5 was sent for every type search (not one COUNT 20 over all types).
+    const calls = redis.call.mock.calls as unknown as unknown[][];
+    expect(calls).toHaveLength(4);
+    expect(calls.every((args) => args[args.indexOf('COUNT') + 1] === 5)).toBe(true);
+  });
+
+  it('per type: null when any lookup could not reach Redis', async () => {
+    const { geo } = build((_cmd, key) => {
+      if (key === 'drivers:geo:mini') throw new Error('timeout');
+      return [];
+    });
+    expect(await geo.searchNearbyPerType(12.9, 77.6, 5000)).toBeNull();
+  });
+});

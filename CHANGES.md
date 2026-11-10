@@ -5,6 +5,71 @@ Deviations from the prompt are noted inline with justification.
 
 ---
 
+## Home / Work shortcuts on the rider home screen (2026-11-10)
+
+Bug: the Home and Work buttons were not on the rider home screen at all (they only existed on the
+"change pickup" search screen) and the logic had gaps.
+
+- New `components/home/HomeWorkRow.tsx`: two chips under the search box (and in the inline search while
+  nothing is typed). Tap a saved one = book a ride to it; "Add Home" / "Add Work" = search mode (banner
+  "Search for your Home address" + Cancel; the next place picked is saved instead of booked); press and
+  hold a saved one = change it. `HomeDashboardScreen` holds the logic and reserves room in the sheet.
+- `placesStore.setHomeWork` now returns whether the server stored the place (before it swallowed
+  failures) and no longer leaves a duplicate when the place was already saved (hearted).
+- A place that is already the OTHER shortcut is refused with "That place is already your Home/Work"
+  (the server keeps one row per place, so saving it would have silently removed the other shortcut).
+  Same check on `DestinationSearchScreen`. Rules in `utils/savedPlaces.ts` (+ 7 tests).
+
+---
+
+## Promo codes in the rider app + admin leftovers (2026-10-31)
+
+- **Riders can now apply promo codes.** The rider app had no way to enter a code (the old promo carousel
+  was gone, and `rideStore.applyPromoCode` only knew the hard-coded `VAZHI20`), so codes created in the
+  admin console could never be used. `RideDetailsScreen` (Ride Summary) has a PROMO CODE card: type a code
+  and Apply, or tap one of the offers from `GET /promos/active`; the amount comes from
+  `POST /promos/validate` (the booking checks it again), and a remove (x) button clears it. New store
+  action `setPromo`; `applyPromoCode` is deprecated and unused. Rules in `utils/promo.ts` (+ tests).
+- **Admin "Online drivers" card matches its list.** `GET /admin/driver-applications?online=true`
+  (`ListApplicationsQueryDto.online`, `AdminService.listApplications`); the Drivers screen has an
+  "Online now" chip on the Active list and the Overview card opens it switched on.
+- **Ride detail:** if the reload after a cancel / payment update fails the admin now gets an alert (the
+  change was saved) instead of the old state with no message; "Mark disputed" is hidden on an already
+  disputed ride.
+- **Driver detail:** the silent refresh of an expiring document link no longer blanks the viewer or shows
+  the spinner, and a refresh that finishes after the viewer was closed does nothing (before, it could
+  re-open it).
+- **Rides list:** choosing "Custom" without pressing Apply shows a "Choose a date range" prompt instead of
+  every ride.
+- **Promo form (admin):** keyboard avoidance on iOS.
+- Tests: `promo.test.ts` (9, frontend), `admin.service.spec.ts` (+2).
+
+---
+
+## Five open items from the review closed (2026-10-31)
+
+- **No PostGIS query while Redis is healthy.** `GeoService.searchNearby` now returns `[]` when Redis
+  answered and nobody is there and `null` only when Redis could not answer; `DriversService.findNearby`
+  falls back to PostGIS only on `null`. Before, every rider poll and the 3 s waiting-rides sweep ran a
+  database query whenever nobody was online. GEOSEARCH failures are logged at most once per 30 s.
+- **"Choose a ride" arrival times per vehicle type.** With no vehicle type, `findNearby` uses the new
+  `GeoService.searchNearbyPerType` (nearest 5 of EACH type, merged nearest-first), so a type is no longer
+  shown as "No drivers nearby right now" because 20 nearer drivers of another type filled the list.
+- **Search window from booking.** `RidesService.searchWindowRemainingMs`: when no driver is left to offer,
+  the search timer is armed with what remains of the window since `createdAt` (at least 1 s), not a fresh
+  90 s after every declined / expired offer. A ride that had its window used up cancels on the next sweep.
+- **No "Your ride was cancelled" after cancelling yourself.** `cancelledBy` is now on `Ride` / `ActiveRide`
+  and in the announcement snapshot; a cancel by the rider is silent, a cancel by the driver, an admin or
+  the system (including "no drivers") is still announced.
+- **Admin screens reviewed** (see `Vazhi_handoff_5.md` section 7). Fixed: the radius and offer-time cards
+  no longer show an invented value (10 km / 15 s) when loading failed; pull-to-refresh and retry on the
+  overview refresh the Drivers-tab badge; editing a promo showed the day BEFORE its start date and moved the
+  start a day earlier on every save (`utils/dateInput.ts`).
+- Tests: `geo.service.spec.ts` (+5), `drivers.service.spec.ts` (+5), `rides.service.spec.ts` (+4),
+  `announcements.test.ts` (+1), `dateInput.test.ts` (new, 4).
+
+---
+
 ## Release-prep fixes from the full-project review (2026-10-31)
 
 - Docs/config conflict that would stop production from booting: `env.validation.ts` refuses

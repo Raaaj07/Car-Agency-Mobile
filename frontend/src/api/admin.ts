@@ -188,6 +188,8 @@ export interface Page<T> {
 
 export interface ListApplicationsParams {
   status?: ApplicationStatus;
+  /** Only drivers that are online right now. */
+  online?: boolean;
   q?: string;
   sort?: 'oldest' | 'newest';
   page?: number;
@@ -294,6 +296,7 @@ export const adminApi = {
       await api.get<Page<ApplicationSummary>>('/admin/driver-applications', {
         params: {
           ...(params.status ? { status: params.status } : {}),
+          ...(params.online ? { online: true } : {}),
           ...(params.q ? { q: params.q } : {}),
           ...(params.sort ? { sort: params.sort } : {}),
           page: params.page ?? 1,

@@ -116,6 +116,10 @@ function DriverRadiusCard() {
 
       {loading ? (
         <ActivityIndicator style={styles.radiusLoading} color={colors.accent} />
+      ) : saved === null ? (
+        // The current value could not be loaded: show only the error (with the
+        // Retry button below), not a made-up number that looks like the setting.
+        error ? <Text style={styles.radiusError}>{error}</Text> : null
       ) : (
         <>
           <View style={styles.stepper}>
@@ -260,6 +264,10 @@ function OfferTimeoutCard() {
 
       {loading ? (
         <ActivityIndicator style={styles.radiusLoading} color={colors.accent} />
+      ) : saved === null ? (
+        // The current value could not be loaded: show only the error (with the
+        // Retry button below), not a made-up number that looks like the setting.
+        error ? <Text style={styles.radiusError}>{error}</Text> : null
       ) : (
         <>
           <View style={styles.stepper}>

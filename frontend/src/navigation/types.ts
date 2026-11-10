@@ -89,7 +89,7 @@ export type AdminOverviewStackParamList = {
 export type AdminDriversSegment = 'pending' | 'approved' | 'suspended' | 'rejected';
 
 export type AdminDriversStackParamList = {
-  AdminDrivers: { segment?: AdminDriversSegment } | undefined;
+  AdminDrivers: { segment?: AdminDriversSegment; online?: boolean } | undefined;
   AdminDriverDetail: { driverId: string };
 };
 

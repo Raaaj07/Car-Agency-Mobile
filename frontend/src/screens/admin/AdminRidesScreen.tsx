@@ -121,9 +121,13 @@ export const AdminRidesScreen: React.FC<Props> = ({ navigation, route }) => {
           ? (customRange?.from ?? null)
           : null;
   const to = dateKey === 'custom' ? (customRange?.to ?? null) : null;
+  // "Custom" picked but no range applied yet: show a prompt, not every ride (the
+  // chip says Custom, so an unfiltered list would be misleading).
+  const customPending = dateKey === 'custom' && !customRange;
 
   const list = usePaginatedList<AdminRideSummary>(
     async (page) => {
+      if (customPending) return { items: [], total: 0 };
       const status: RideStatus[] | undefined =
         statusKey === 'all'
           ? undefined
@@ -147,7 +151,7 @@ export const AdminRidesScreen: React.FC<Props> = ({ navigation, route }) => {
       });
       return { items: res.items, total: res.total };
     },
-    [statusKey, paymentKey, dateKey, from, to, debouncedQuery, dataSeq],
+    [statusKey, paymentKey, dateKey, customPending, from, to, debouncedQuery, dataSeq],
   );
 
   const applyCustom = () => {
@@ -181,6 +185,14 @@ export const AdminRidesScreen: React.FC<Props> = ({ navigation, route }) => {
     statusKey !== 'all' || paymentKey !== 'all' || dateKey !== 'all' || debouncedQuery.trim() !== '';
 
   const renderEmpty = () => {
+    if (customPending) {
+      return (
+        <EmptyState
+          title="Choose a date range"
+          message="Enter the first and the last day (YYYY-MM-DD) and press Apply."
+        />
+      );
+    }
     if (list.loading) return <SkeletonList count={5} />;
     if (list.error && list.items.length === 0) {
       return <ErrorState message={list.error} onRetry={list.refresh} />;

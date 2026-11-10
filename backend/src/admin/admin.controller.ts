@@ -67,6 +67,7 @@ export class AdminController {
     return this.admin.listApplications(query.status, query.page, query.limit, {
       q: query.q,
       sort: query.sort,
+      online: query.online,
     });
   }
 

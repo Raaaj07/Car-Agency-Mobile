@@ -1,5 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Modal, Switch, RefreshControl } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Modal,
+  Switch,
+  RefreshControl,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Pencil, Plus, Tag, Trash2, X } from 'lucide-react-native';
@@ -15,6 +25,7 @@ import { Input } from '../../components/primitives/Input';
 import { Pill } from '../../components/primitives/Pill';
 import { adminApi, AdminPromo, AdminPromoInput } from '../../api/admin';
 import { getApiError } from '../../api/client';
+import { isoToLocalDay } from '../../utils/dateInput';
 import { colors, radii, typography } from '../../theme/theme';
 
 type Props = NativeStackScreenProps<AdminAccountStackParamList, 'AdminPromos'>;
@@ -54,8 +65,10 @@ const formFromPromo = (p: AdminPromo): FormState => ({
   subtitle: p.subtitle ?? '',
   firstRideOnly: p.firstRideOnly,
   active: p.active,
-  validFrom: p.validFrom ? p.validFrom.slice(0, 10) : '',
-  validTo: p.validTo ? p.validTo.slice(0, 10) : '',
+  // The LOCAL calendar day (not the first 10 characters of the UTC ISO string,
+  // which showed the previous day for a start date and shifted it on every save).
+  validFrom: isoToLocalDay(p.validFrom),
+  validTo: isoToLocalDay(p.validTo),
   maxRedemptions: p.maxRedemptions != null ? String(p.maxRedemptions) : '',
 });
 
@@ -365,7 +378,11 @@ export const AdminPromosScreen: React.FC<Props> = ({ navigation }) => {
         transparent
         onRequestClose={() => setForm(null)}
       >
-        <View style={styles.modalBackdrop}>
+        {/* KeyboardAvoidingView: on iOS the keyboard would cover the lower fields. */}
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <View style={[styles.modalSheet, { paddingBottom: insets.bottom + 16 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{form?.id ? 'Edit promo' : 'New promo'}</Text>
@@ -467,7 +484,7 @@ export const AdminPromosScreen: React.FC<Props> = ({ navigation }) => {
               </ScrollView>
             ) : null}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

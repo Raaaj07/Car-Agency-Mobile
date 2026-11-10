@@ -175,6 +175,7 @@ export interface RideLike {
   status: string;
   source?: string;
   cancellationReason?: string | null;
+  cancelledBy?: string | null;
   driver?: { name?: string | null } | null;
   fareBreakdown?: { total?: number | string | null } | null;
   distanceKm?: string | null;
@@ -185,6 +186,7 @@ export interface RideSnapshot {
   status: string;
   source?: string;
   cancellationReason?: string | null;
+  cancelledBy?: string | null;
   driverName?: string;
   fare?: number;
   km?: number;
@@ -200,6 +202,7 @@ export function snapshotRide(ride: RideLike | null | undefined): RideSnapshot | 
     status: ride.status,
     source: ride.source,
     cancellationReason: ride.cancellationReason,
+    cancelledBy: ride.cancelledBy,
     driverName: ride.driver?.name?.trim() || undefined,
     fare: Number.isFinite(fare) ? fare : undefined,
     km: Number.isFinite(km) ? km : undefined,
@@ -257,6 +260,8 @@ export function detectRideAnnouncement(
       return null;
     case 'cancelled':
       if (ACTIVE.includes(was)) {
+        // The rider just cancelled this ride themselves: they know, say nothing.
+        if (next.cancelledBy === 'rider') return null;
         return {
           event: next.cancellationReason === 'no_drivers_available' ? 'no_drivers' : 'ride_cancelled',
           rideId: next.id,

@@ -192,7 +192,7 @@ export class AdminService implements OnApplicationBootstrap {
     status?: string,
     page = 1,
     limit = 20,
-    opts?: { q?: string; sort?: 'oldest' | 'newest' },
+    opts?: { q?: string; sort?: 'oldest' | 'newest'; online?: boolean },
   ) {
     // A-16: clamp once, at the top — skip/take always use the same numbers.
     const lim = Math.min(Math.max(limit || 20, 1), 100);
@@ -200,6 +200,8 @@ export class AdminService implements OnApplicationBootstrap {
 
     const qb = this.drivers.createQueryBuilder('d').leftJoinAndSelect('d.user', 'u');
     if (status && this.requireStatus(status)) qb.andWhere('d.status = :status', { status });
+    // Only drivers that are online right now (Overview "Online drivers" card).
+    if (opts?.online) qb.andWhere('d."isOnline" = true');
 
     const q = (opts?.q ?? '').trim();
     if (q) {

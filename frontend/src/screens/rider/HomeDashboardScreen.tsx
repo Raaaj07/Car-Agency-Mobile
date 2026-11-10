@@ -33,6 +33,8 @@ import { useTabBarSpace } from '../../components/primitives/BottomTabBar';
 import { PickupPin } from '../../components/home/PickupPin';
 import { PlaceSearchRow } from '../../components/home/PlaceSearchRow';
 import { QuickPickTile } from '../../components/home/QuickPickTile';
+import { HomeWorkRow } from '../../components/home/HomeWorkRow';
+import { conflictingLabel, labelName, PlaceLabel, savedForLabel } from '../../utils/savedPlaces';
 import { PopularPlaceCard } from '../../components/home/PopularPlaceCard';
 import { BottomSheet, SnapPoint, SnapPointsConfig } from '../../components/home/BottomSheet';
 
@@ -50,6 +52,8 @@ let pointSeq = 0;
 const GRID_PLACE_COUNT = 8;
 // Rows (frequent first, then recent) shown directly under the search box.
 const RECENT_ROW_COUNT = 3;
+// Height of the Home / Work shortcut row above them (chip + its gap).
+const SHORTCUT_ROW_HEIGHT = 72;
 
 export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVehicle }) => {
   const insets = useSafeAreaInsets();
@@ -74,6 +78,12 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   const lastFetchedAt = usePlacesStore((state) => state.lastFetchedAt);
   const toggleSaved = usePlacesStore((state) => state.toggleSaved);
   const recordSearch = usePlacesStore((state) => state.recordSearch);
+  // The rider's saved places: the ones labelled home / work are the shortcuts
+  // under the search box.
+  const saved = usePlacesStore((state) => state.saved);
+  const setHomeWork = usePlacesStore((state) => state.setHomeWork);
+  const homePlace = useMemo(() => savedForLabel(saved, 'home'), [saved]);
+  const workPlace = useMemo(() => savedForLabel(saved, 'work'), [saved]);
   // Rider's own recent searches + trips: shown only while typing in search.
   const mergedRecent = useMergedRecents();
   // Big places and popular places are photo cards: a place without a
@@ -115,9 +125,9 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   // ── Bottom Sheet Snap Points ────────────────────────────────────────────────
   // Header: grab handle + the pill-shaped search field.
   const HEADER_HEIGHT = 80;
-  // Room for the recent rows (~62 each) shown under the search box. Anything
-  // below (frequent, nearest) is reached by scrolling the sheet.
-  const recentRowsHeight = Math.min(recentRows.length, 3) * 62;
+  // Room for the Home / Work row and the recent rows (~62 each) shown under the
+  // search box. Anything below (frequent, nearest) is reached by scrolling the sheet.
+  const recentRowsHeight = Math.min(recentRows.length, 3) * 62 + SHORTCUT_ROW_HEIGHT;
 
   const defaultVisibleHeight = Math.max(
     windowHeight * 0.5,
@@ -157,6 +167,11 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   // ── Inline "Where do you want to go?" search ───────────────────────────────
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  // "Add Home" / "Add Work" (or press and hold to change one): the next place the
+  // rider picks is saved under that label instead of starting a booking.
+  const [savingLabel, setSavingLabel] = useState<PlaceLabel | null>(null);
+  const [savingBusy, setSavingBusy] = useState(false);
+  const [shortcutNote, setShortcutNote] = useState<{ text: string; ok: boolean } | null>(null);
   const [snapRequest, setSnapRequest] = useState<{ point: SnapPoint; nonce: number } | null>(null);
   const snapNonceRef = useRef(0);
   const {
@@ -174,12 +189,14 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
   const openInlineSearch = useCallback(() => {
     setSearchActive(true);
     setSearchQuery('');
+    setSavingLabel(null);
     requestSnap('expanded');
   }, [requestSnap]);
 
   const closeInlineSearch = useCallback(() => {
     setSearchActive(false);
     setSearchQuery('');
+    setSavingLabel(null);
     resetSearch();
     Keyboard.dismiss();
     requestSnap('default');
@@ -324,15 +341,101 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
     [pickupCoords, setPickup],
   );
 
+  // The "Home saved" confirmation disappears by itself; an error stays until the
+  // rider tries again or cancels.
+  useEffect(() => {
+    if (!shortcutNote?.ok) return;
+    const timer = setTimeout(() => setShortcutNote(null), 3000);
+    return () => clearTimeout(timer);
+  }, [shortcutNote]);
+
+  // Saves the chosen place as Home / Work. The server confirms (setHomeWork returns
+  // true only when it stored the place); a failure keeps the search open with a
+  // message instead of looking as if it worked.
+  const saveAsHomeWork = useCallback(
+    async (place: PlaceItem) => {
+      const label = savingLabel;
+      if (!label || savingBusy) return;
+      // The server keeps one row per place: saving it here would take it away from
+      // the other shortcut, so say so instead of silently losing that one.
+      const clash = conflictingLabel(saved, label, place);
+      if (clash) {
+        setShortcutNote({
+          text: `That place is already your ${labelName(clash)}. Pick a different place.`,
+          ok: false,
+        });
+        return;
+      }
+      setSavingBusy(true);
+      setShortcutNote(null);
+      const stored = await setHomeWork(label, place);
+      setSavingBusy(false);
+      if (stored) {
+        closeInlineSearch();
+        setShortcutNote({ text: `${labelName(label)} saved`, ok: true });
+      } else {
+        setShortcutNote({ text: 'Could not save. Check your connection and try again.', ok: false });
+      }
+    },
+    [savingLabel, savingBusy, saved, setHomeWork, closeInlineSearch],
+  );
+
   // Actions
   const handleSelectPlace = useCallback(
     (place: PlaceItem) => {
+      // "Add Home" / "Add Work" is waiting for a place: save it, do not book.
+      if (savingLabel) {
+        void saveAsHomeWork(place);
+        return;
+      }
       recordSearch(place);
       setDropoff(place.title, place.subtitle, { lat: place.lat, lng: place.lng });
       if (searchActive) closeInlineSearch();
       onSelectVehicle();
     },
-    [recordSearch, setDropoff, searchActive, closeInlineSearch, onSelectVehicle],
+    [savingLabel, saveAsHomeWork, recordSearch, setDropoff, searchActive, closeInlineSearch, onSelectVehicle],
+  );
+
+  // Add Home / Add Work, or change a saved one (press and hold): opens the inline
+  // search in "save" mode.
+  const startSaving = useCallback(
+    (label: PlaceLabel) => {
+      setSavingLabel(label);
+      setShortcutNote(null);
+      setSearchActive(true);
+      setSearchQuery('');
+      resetSearch();
+      requestSnap('expanded');
+    },
+    [requestSnap, resetSearch],
+  );
+
+  const cancelSaving = useCallback(() => {
+    setSavingLabel(null);
+    setShortcutNote(null);
+    setSearchQuery('');
+    resetSearch();
+  }, [resetSearch]);
+
+  // Tap on a shortcut: go there when it is saved, otherwise start adding it.
+  const handleShortcutPress = useCallback(
+    (label: PlaceLabel) => {
+      const place = label === 'home' ? homePlace : workPlace;
+      if (!place) {
+        startSaving(label);
+        return;
+      }
+      setShortcutNote(null);
+      handleSelectPlace({
+        id: place.id,
+        title: place.title,
+        subtitle: place.address,
+        lat: place.lat,
+        lng: place.lng,
+        imageUrl: null,
+      });
+    },
+    [homePlace, workPlace, startSaving, handleSelectPlace],
   );
 
   const handlePickSuggestion = useCallback(
@@ -491,12 +594,14 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
                   style={styles.searchInput}
                   value={searchQuery}
                   onChangeText={handleSearchTextChange}
-                  placeholder="Where do you want to go?"
+                  placeholder={savingLabel ? `Search your ${labelName(savingLabel)} address` : 'Where do you want to go?'}
                   placeholderTextColor="#6B7280"
                   autoFocus
                   returnKeyType="search"
                   selectionColor={colors.primary}
-                  accessibilityLabel="Where do you want to go?"
+                  accessibilityLabel={
+                    savingLabel ? `Search your ${labelName(savingLabel)} address` : 'Where do you want to go?'
+                  }
                 />
                 {searchQuery.length > 0 && (
                   <TouchableOpacity
@@ -530,6 +635,30 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
+            {/* "Add Home" / "Add Work" mode: the next place picked is saved, not booked */}
+            {savingLabel ? (
+              <View style={styles.savingBanner}>
+                <Text style={styles.savingText}>
+                  {savingBusy ? 'Saving...' : `Search for your ${labelName(savingLabel)} address`}
+                </Text>
+                <TouchableOpacity
+                  onPress={cancelSaving}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel"
+                >
+                  <Text style={styles.savingCancel}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            {shortcutNote ? (
+              <Text style={[styles.noteText, { color: shortcutNote.ok ? colors.success : colors.danger }]}>
+                {shortcutNote.text}
+              </Text>
+            ) : null}
+            {!savingLabel && searchQuery.trim().length < 3 ? (
+              <HomeWorkRow home={homePlace} work={workPlace} onPress={handleShortcutPress} onLongPress={startSaving} />
+            ) : null}
             {searchQuery.trim().length < 3 ? (
               mergedRecent.length > 0 ? (
                 mergedRecent.map((item, idx) => (
@@ -576,6 +705,14 @@ export const HomeDashboardScreen: React.FC<Props> = ({ onSearchPress, onSelectVe
             contentContainerStyle={[styles.scrollContent, { paddingBottom: tabBarSpace + 16 }]}
             showsVerticalScrollIndicator={false}
           >
+            {/* Home / Work shortcuts: tap to go, "Add" to set, press and hold to change */}
+            {shortcutNote ? (
+              <Text style={[styles.noteText, { color: shortcutNote.ok ? colors.success : colors.danger }]}>
+                {shortcutNote.text}
+              </Text>
+            ) : null}
+            <HomeWorkRow home={homePlace} work={workPlace} onPress={handleShortcutPress} onLongPress={startSaving} />
+
             {/* Frequent + recent places: flat rows straight under the search pill, no titles */}
             {recentRows.map((item, idx) => (
               <PlaceSearchRow
@@ -842,6 +979,28 @@ const styles = StyleSheet.create({
   errorRetryRow: {
     paddingVertical: 12,
     alignItems: 'center',
+  },
+  savingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+  },
+  savingText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.primary,
+  },
+  savingCancel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textMuted,
+    paddingLeft: 12,
+  },
+  noteText: {
+    fontSize: 12,
+    paddingBottom: 8,
   },
   emptyCard: {
     borderRadius: radii.card,

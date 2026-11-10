@@ -426,14 +426,21 @@ export class DriversService {
     const freshSince = new Date(Date.now() - this.presenceMs);
 
     let results: NearbyDriverResult[] = [];
-    const redisHits = await this.geo.searchNearby(lat, lng, radius, vehicleType);
-    if (redisHits.length > 0) {
-      results = await this.hydrateFromRedis(redisHits, freshSince);
-    }
-
-    // Fall back to PostGIS if Redis returned 0 results or all were filtered out
-    if (results.length === 0) {
+    // One vehicle type -> that type's geo-set. All types -> the nearest few of EACH
+    // type, so a type with drivers is never crowded out by nearer drivers of another.
+    const redisHits = vehicleType
+      ? await this.geo.searchNearby(lat, lng, radius, vehicleType)
+      : await this.geo.searchNearbyPerType(lat, lng, radius);
+    if (redisHits === null) {
+      // Redis could NOT answer (down / timeout / no GEOSEARCH): only then fall
+      // back to PostGIS, slower but always available.
       results = await this.findNearbyViaPostgis(lat, lng, radius, vehicleType, freshSince);
+    } else if (redisHits.length > 0) {
+      // Redis answered and holds the live driver positions: an EMPTY answer means
+      // nobody is online here (no database query needed, which matters because
+      // riders and waiting rides ask this every few seconds), and a hit that the
+      // database then rejects (busy / offline) is not a reason to search again.
+      results = await this.hydrateFromRedis(redisHits, freshSince);
     }
 
     if (groupByType) {

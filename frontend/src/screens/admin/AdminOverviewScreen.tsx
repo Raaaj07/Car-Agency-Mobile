@@ -123,6 +123,8 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
       .then((d) => {
         setData(d);
         setError(null);
+        // Keep the Drivers-tab badge in step with the refreshed numbers.
+        useAdminStore.getState().setPendingCount(d.applications.pending);
       })
       .catch((err) => setError(getApiError(err)))
       .finally(() => {
@@ -158,6 +160,7 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
       .then((d) => {
         setData(d);
         setError(null);
+        useAdminStore.getState().setPendingCount(d.applications.pending);
       })
       .catch((err) => setError(getApiError(err)))
       .finally(() => setLoading(false));
@@ -167,8 +170,8 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
   // D11: stat-card tap-through uses `pop: true` so that when the target tab's
   // stack is already sitting on a detail screen, the list pops back into view
   // (with its filters) instead of a duplicate list being pushed on top of it.
-  const openDrivers = (segment: AdminDriversSegment) =>
-    tabNav?.navigate('drivers', { screen: 'AdminDrivers', params: { segment }, pop: true });
+  const openDrivers = (segment: AdminDriversSegment, online?: boolean) =>
+    tabNav?.navigate('drivers', { screen: 'AdminDrivers', params: { segment, ...(online ? { online } : {}) }, pop: true });
   const openRides = (preset: AdminRidesPreset) =>
     tabNav?.navigate('rides', { screen: 'AdminRides', params: preset, pop: true });
   const openDriver = (driverId: string) =>
@@ -218,7 +221,7 @@ export const AdminOverviewScreen: React.FC<Props> = ({ navigation }) => {
                 label="Online drivers"
                 value={data.drivers.online}
                 icon={<Users size={18} color={colors.success} />}
-                onPress={() => openDrivers('approved')}
+                onPress={() => openDrivers('approved', true)}
                 style={styles.cell}
               />
               <StatCard

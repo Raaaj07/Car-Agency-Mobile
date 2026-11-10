@@ -24,6 +24,8 @@ export interface Ride {
   rating?: number | null;
   tipAmount?: number;
   cancellationReason?: string | null;
+  // Who ended the ride: 'rider' | 'driver' | 'admin' | 'system'.
+  cancelledBy?: string | null;
   createdAt?: string;
   // Set when the driver verified the pickup OTP (the trip really began).
   startedAt?: string | null;

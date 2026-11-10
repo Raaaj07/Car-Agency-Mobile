@@ -165,6 +165,26 @@ describe('detectRideAnnouncement - rider', () => {
     expect(result?.event).toBe('no_drivers');
   });
 
+  it('stays silent when the rider cancelled the ride themselves, but not when the driver or an admin did', () => {
+    expect(
+      detectRideAnnouncement(snap({ status: 'matched' }), snap({ status: 'cancelled', cancelledBy: 'rider' }), 'rider'),
+    ).toBeNull();
+    expect(
+      detectRideAnnouncement(snap({ status: 'matched' }), snap({ status: 'cancelled', cancelledBy: 'driver' }), 'rider')?.event,
+    ).toBe('ride_cancelled');
+    expect(
+      detectRideAnnouncement(snap({ status: 'in_progress' }), snap({ status: 'cancelled', cancelledBy: 'admin' }), 'rider')?.event,
+    ).toBe('ride_cancelled');
+    // The system cancelling a search nobody answered is still announced.
+    expect(
+      detectRideAnnouncement(
+        snap(),
+        snap({ status: 'cancelled', cancelledBy: 'system', cancellationReason: 'no_drivers_available' }),
+        'rider',
+      )?.event,
+    ).toBe('no_drivers');
+  });
+
   it('stays silent for a ride seen for the first time (a booking just made, or a resume)', () => {
     expect(detectRideAnnouncement(null, snap({ status: 'driver_en_route' }), 'rider')).toBeNull();
     expect(detectRideAnnouncement(snap({ id: 'old', status: 'completed' }), snap({ id: 'new', status: 'in_progress' }), 'rider')).toBeNull();
